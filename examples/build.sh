@@ -184,24 +184,7 @@ build_ios() {
         fi
     fi
 
-    # ── Build the Rust static library ────────────────────────────────────
-    step "Building Rust static library for ${rust_target} (${PROFILE})"
-
-    cd "$GPUI_ROOT"
-    cargo build \
-        --target "$rust_target" \
-        --features "ios,font-kit" \
-        $cargo_profile_flag \
-        2>&1
-
-    local static_lib="$GPUI_ROOT/target/${rust_target}/${cargo_profile_dir}/libgpui_mobile.a"
-    if [[ ! -f "$static_lib" ]]; then
-        error "Static library not found at: $static_lib"
-        exit 1
-    fi
-    info "Static library: $static_lib"
-
-    # ── Also build the example crate (it provides ios_main / Router) ─────
+    # ── Build the example crate (it depends on gpui-mobile, so both are built) ─
     step "Building example crate for ${rust_target} (${PROFILE})"
 
     cd "$EXAMPLES_DIR"
@@ -210,6 +193,13 @@ build_ios() {
         --features "ios,font-kit" \
         $cargo_profile_flag \
         2>&1
+
+    local example_lib="$EXAMPLES_DIR/target/${rust_target}/${cargo_profile_dir}/libgpui_mobile_example.a"
+    if [[ ! -f "$example_lib" ]]; then
+        error "Example static library not found at: $example_lib"
+        exit 1
+    fi
+    info "Example static library: $example_lib"
 
     # ── Generate Xcode project via XcodeGen ──────────────────────────────
     step "Generating Xcode project with XcodeGen"
@@ -274,7 +264,6 @@ build_ios() {
         -destination "$resolved_destination" \
         -derivedDataPath "$build_dir" \
         -allowProvisioningUpdates \
-        GPUI_STATIC_LIB="$static_lib" \
         CODE_SIGN_STYLE=Automatic \
         build \
         2>&1 | tail -30

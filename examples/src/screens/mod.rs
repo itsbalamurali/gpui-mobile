@@ -13,6 +13,7 @@
 //! - **Shaders** — dynamic gradients, floating orbs, and ripple effects.
 
 pub mod about;
+pub mod components;
 pub mod counter;
 pub mod home;
 pub mod settings;
@@ -33,6 +34,7 @@ pub enum Screen {
     Counter,
     Settings,
     About,
+    Components,
     Animations,
     Shaders,
 }
@@ -45,6 +47,7 @@ impl Screen {
             Screen::Counter => "Counter",
             Screen::Settings => "Settings",
             Screen::About => "About",
+            Screen::Components => "Components",
             Screen::Animations => "Animations",
             Screen::Shaders => "Shaders",
         }
@@ -324,6 +327,7 @@ impl Router {
             Screen::Counter => self.render_counter_screen(cx).into_any_element(),
             Screen::Settings => self.render_settings_screen(cx).into_any_element(),
             Screen::About => self.render_about_screen(cx).into_any_element(),
+            Screen::Components => self.render_components_screen(cx).into_any_element(),
             // Animations and Shaders are rendered fullscreen (handled above
             // in Render::render) and should never reach here.
             Screen::Animations | Screen::Shaders => div().into_any_element(),
@@ -345,7 +349,7 @@ impl Router {
             ("[H]", "Home", Screen::Home),
             ("[#]", "Counter", Screen::Counter),
             ("[▶]", "Anims", Screen::Animations),
-            ("[~]", "Shaders", Screen::Shaders),
+            ("[◆]", "UI Kit", Screen::Components),
             ("[S]", "Settings", Screen::Settings),
             ("[i]", "About", Screen::About),
         ];
@@ -404,6 +408,10 @@ impl Router {
 
     fn render_about_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         about::render(self)
+    }
+
+    fn render_components_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        components::render(self)
     }
 
     // ── Fullscreen demo screens ──────────────────────────────────────────────
@@ -474,19 +482,20 @@ impl Router {
                     }
                 }),
             )
-            // Render the playground content
+            // Render the playground content with a single back button
             .child(if let Some(playground) = &mut self.animation_playground {
                 playground
-                    .render_with_back_button(window, |_, _window, _cx| {})
+                    .render_with_back_button(
+                        window,
+                        cx.listener(|this, _, _window, cx| {
+                            this.go_back();
+                            cx.notify();
+                        }),
+                    )
                     .into_any_element()
             } else {
                 div().into_any_element()
             })
-            // Overlay back button
-            .child(back_button(cx.listener(|this, _, _window, cx| {
-                this.go_back();
-                cx.notify();
-            })))
     }
 
     /// Render the Shaders screen — fullscreen, edge-to-edge.
@@ -541,19 +550,20 @@ impl Router {
                     }
                 }),
             )
-            // Render the showcase content
+            // Render the showcase content with a single back button
             .child(if let Some(showcase) = &mut self.shader_showcase {
                 showcase
-                    .render_with_back_button(window, |_, _window, _cx| {})
+                    .render_with_back_button(
+                        window,
+                        cx.listener(|this, _, _window, cx| {
+                            this.go_back();
+                            cx.notify();
+                        }),
+                    )
                     .into_any_element()
             } else {
                 div().into_any_element()
             })
-            // Overlay back button
-            .child(back_button(cx.listener(|this, _, _window, cx| {
-                this.go_back();
-                cx.notify();
-            })))
     }
 }
 

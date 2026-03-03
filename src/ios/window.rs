@@ -150,6 +150,24 @@ fn handle_touches(view: &mut Object, touches: *mut Object, event: *mut Object) {
 }
 
 /// iOS Window backed by UIWindow + UIViewController.
+/// Distance (logical px) the finger must travel before a touch
+/// is promoted from a potential tap to a scroll gesture.
+const SCROLL_SLOP: f32 = 8.0;
+
+/// Tracks the current touch gesture state machine.
+///
+/// This distinguishes taps (short, stationary touches) from scroll gestures
+/// (finger drags). The same pattern is used on Android.
+#[derive(Clone, Copy, Debug)]
+enum TouchState {
+    /// No active touch.
+    Idle,
+    /// Finger is down but hasn't moved beyond the slop threshold.
+    Pending { start_x: f32, start_y: f32 },
+    /// Finger has moved beyond the threshold — we are scrolling.
+    Scrolling { prev_x: f32, prev_y: f32 },
+}
+
 pub(crate) struct IosWindow {
     /// Handle used by GPUI to identify this window
     handle: AnyWindowHandle,
@@ -196,6 +214,8 @@ pub(crate) struct IosWindow {
     modifiers: Cell<Modifiers>,
     /// Track if a touch is currently pressed
     touch_pressed: Cell<bool>,
+    /// Touch gesture state machine — distinguishes taps from scroll drags.
+    touch_state: Cell<TouchState>,
     /// The wgpu renderer (Metal backend on iOS).
     /// Wrapped in a `Mutex<Option<…>>` so that `draw()` (called from the
     /// `request_frame` callback) can acquire a mutable reference without
@@ -291,6 +311,7 @@ impl IosWindow {
                 mouse_position: Cell::new(Point::default()),
                 modifiers: Cell::new(Modifiers::default()),
                 touch_pressed: Cell::new(false),
+                touch_state: Cell::new(TouchState::Idle),
                 renderer: Mutex::new(None),
             };
 
@@ -369,33 +390,170 @@ impl IosWindow {
         }
     }
 
-    /// Handle a touch event from UIKit
+    /// Handle a touch event from UIKit.
+    ///
+    /// Uses a state machine to distinguish **taps** from **drag gestures**:
+    ///
+    ///   DOWN  → record start position, emit `MouseDown`, enter "pending"
+    ///   MOVE  → if finger moved > threshold → switch to "scrolling",
+    ///           emit `ScrollWheel` deltas (for scrollable containers) AND
+    ///           `MouseMove` (for interactive canvas screens like Animations)
+    ///   UP    → if still "pending" → emit `MouseUp` (completes a tap)
+    ///           if "scrolling"   → emit final `ScrollWheel` (Ended) +
+    ///           `MouseUp` (so drag-to-throw works)
+    ///
+    /// This dual-emit approach ensures that:
+    /// - Scrollable containers (About, Home) receive `ScrollWheel` events
+    /// - Interactive screens (Animations, Shaders) receive `MouseDown` /
+    ///   `MouseMove` / `MouseUp` events for drag interactions
     pub fn handle_touch(&self, touch: *mut Object, _event: *mut Object) {
         let position = touch_location_in_view(touch, self.view);
         let phase = touch_phase(touch);
         let tap_count = touch_tap_count(touch);
         let modifiers = self.modifiers.get();
 
+        let logical_x: f32 = position.x.into();
+        let logical_y: f32 = position.y.into();
+
         self.mouse_position.set(position);
 
-        let platform_input = match phase {
-            UITouchPhase::Began => {
-                self.touch_pressed.set(true);
-                touch_began_to_mouse_down(position, tap_count, modifiers)
+        let mut ts = self.touch_state.get();
+
+        let mut emit = |input: PlatformInput| {
+            if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
+                callback(input);
             }
-            UITouchPhase::Moved => {
-                touch_moved_to_mouse_move(position, modifiers, Some(gpui::MouseButton::Left))
-            }
-            UITouchPhase::Ended | UITouchPhase::Cancelled => {
-                self.touch_pressed.set(false);
-                touch_ended_to_mouse_up(position, tap_count, modifiers)
-            }
-            UITouchPhase::Stationary => return,
         };
 
-        if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
-            callback(platform_input);
+        match phase {
+            UITouchPhase::Began => {
+                self.touch_pressed.set(true);
+                ts = TouchState::Pending {
+                    start_x: logical_x,
+                    start_y: logical_y,
+                };
+                // Emit MouseDown immediately so interactive screens
+                // (Animations, Shaders) can track the touch start.
+                emit(PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position,
+                    modifiers,
+                    click_count: tap_count as usize,
+                    first_mouse: false,
+                }));
+            }
+
+            UITouchPhase::Moved => {
+                match ts {
+                    TouchState::Pending { start_x, start_y } => {
+                        let dx = logical_x - start_x;
+                        let dy = logical_y - start_y;
+                        let distance = (dx * dx + dy * dy).sqrt();
+
+                        if distance > SCROLL_SLOP {
+                            // Promote to scrolling — emit the first scroll
+                            // delta from the start position.
+                            ts = TouchState::Scrolling {
+                                prev_x: logical_x,
+                                prev_y: logical_y,
+                            };
+                            emit(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                position,
+                                delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                    gpui::px(dx),
+                                    gpui::px(dy),
+                                )),
+                                modifiers,
+                                touch_phase: gpui::TouchPhase::Started,
+                            }));
+                        }
+                        // Always emit MouseMove so interactive screens can
+                        // track finger position (e.g. drag line in Animations,
+                        // gradient control in Shaders).
+                        emit(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position,
+                            modifiers,
+                            pressed_button: Some(gpui::MouseButton::Left),
+                        }));
+                    }
+                    TouchState::Scrolling { prev_x, prev_y } => {
+                        let dx = logical_x - prev_x;
+                        let dy = logical_y - prev_y;
+                        ts = TouchState::Scrolling {
+                            prev_x: logical_x,
+                            prev_y: logical_y,
+                        };
+                        // Scroll event for scrollable containers.
+                        emit(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            position,
+                            delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                gpui::px(dx),
+                                gpui::px(dy),
+                            )),
+                            modifiers,
+                            touch_phase: gpui::TouchPhase::Moved,
+                        }));
+                        // MouseMove for interactive screens.
+                        emit(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position,
+                            modifiers,
+                            pressed_button: Some(gpui::MouseButton::Left),
+                        }));
+                    }
+                    TouchState::Idle => {
+                        // Spurious move without a preceding down — ignore.
+                    }
+                }
+            }
+
+            UITouchPhase::Ended | UITouchPhase::Cancelled => {
+                self.touch_pressed.set(false);
+                match ts {
+                    TouchState::Pending { .. } => {
+                        // Finger lifted without exceeding slop → tap.
+                        // MouseDown was already sent in Began; just send
+                        // MouseUp to complete the click.
+                        emit(PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            button: gpui::MouseButton::Left,
+                            position,
+                            modifiers,
+                            click_count: tap_count as usize,
+                        }));
+                    }
+                    TouchState::Scrolling { prev_x, prev_y } => {
+                        // End the scroll gesture.
+                        let dx = logical_x - prev_x;
+                        let dy = logical_y - prev_y;
+                        emit(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            position,
+                            delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                gpui::px(dx),
+                                gpui::px(dy),
+                            )),
+                            modifiers,
+                            touch_phase: gpui::TouchPhase::Ended,
+                        }));
+                        // Also emit MouseUp so interactive screens can
+                        // detect the end of a drag (e.g. fling a ball).
+                        emit(PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            button: gpui::MouseButton::Left,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
+                    TouchState::Idle => {}
+                }
+                ts = TouchState::Idle;
+            }
+
+            UITouchPhase::Stationary => {
+                // No change — ignore.
+                return;
+            }
         }
+
+        self.touch_state.set(ts);
     }
 
     /// Get the safe area insets

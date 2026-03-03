@@ -51,8 +51,6 @@ targets:
         # the linker picking up the .dylib that sits in the same directory.
         OTHER_LDFLAGS:
           - "-force_load"
-          - "$(GPUI_STATIC_LIB)"
-          - "-force_load"
           - "$(EXAMPLE_STATIC_LIB)"
           - "-lc++"
           - "-framework UIKit"
@@ -79,13 +77,11 @@ targets:
         ONLY_ACTIVE_ARCH: YES
       configs:
         Debug:
-          GPUI_STATIC_LIB: "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libgpui_mobile.a"
           EXAMPLE_STATIC_LIB: "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libgpui_mobile_example.a"
           GCC_OPTIMIZATION_LEVEL: "0"
           DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
-          GPUI_STATIC_LIB: "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libgpui_mobile.a"
           EXAMPLE_STATIC_LIB: "$(PROJECT_DIR)/../target/aarch64-apple-ios/release/libgpui_mobile_example.a"
           GCC_OPTIMIZATION_LEVEL: "s"
           DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
