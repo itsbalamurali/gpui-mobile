@@ -1,0 +1,121 @@
+name: GpuiExample
+options:
+  bundleIdPrefix: dev.zed
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: Z4NN89S239
+
+targets:
+  GpuiExample:
+    type: application
+    platform: iOS
+    sources:
+      - path: main.m
+        type: file
+        buildPhase: sources
+      - path: gpui_ios.h
+        type: file
+        buildPhase: headers
+      - path: LaunchScreen.storyboard
+        type: file
+        buildPhase: resources
+      - path: Assets.xcassets
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zed.gpui-ios-example
+        PRODUCT_NAME: GpuiExample
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: Z4NN89S239
+        SWIFT_VERSION: "5.0"
+        CLANG_ENABLE_MODULES: YES
+        CLANG_ENABLE_OBJC_ARC: YES
+        ENABLE_BITCODE: NO
+        # Disable Xcode 16 debug dylib executor — we statically link
+        # the Rust library, so the dynamic loader approach fails on device.
+        ENABLE_DEBUG_DYLIB: NO
+        OTHER_LINK_BINARY_WITH_LIBRARIES_SECTION_TYPE: static
+        DEAD_CODE_STRIPPING: NO
+        # Link the Rust static library — use explicit path to .a to avoid
+        # the linker picking up the .dylib that sits in the same directory.
+        OTHER_LDFLAGS:
+          - "-force_load"
+          - "$(GPUI_STATIC_LIB)"
+          - "-lc++"
+          - "-framework UIKit"
+          - "-framework Metal"
+          - "-framework MetalKit"
+          - "-framework QuartzCore"
+          - "-framework CoreGraphics"
+          - "-framework CoreText"
+          - "-framework CoreFoundation"
+          - "-framework Foundation"
+          - "-framework Security"
+          - "-framework SystemConfiguration"
+          - "-ObjC"
+        # Preprocessor macros — enable Rust GPUI integration
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - "USE_GPUI_RUST=1"
+          - "$(inherited)"
+        # Header search paths so #import "gpui_ios.h" resolves
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)"
+        # Valid architectures
+        VALID_ARCHS: "arm64"
+        ARCHS: "arm64"
+        ONLY_ACTIVE_ARCH: YES
+      configs:
+        Debug:
+          GPUI_STATIC_LIB: "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libgpui_mobile.a"
+          GCC_OPTIMIZATION_LEVEL: "0"
+          DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          GPUI_STATIC_LIB: "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libgpui_mobile.a"
+          GCC_OPTIMIZATION_LEVEL: "s"
+          DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    preBuildScripts:
+      - name: "Build Rust Static Library"
+        script: |
+          set -euo pipefail
+
+          RUST_PROJECT_DIR="${PROJECT_DIR}/../.."
+          cd "${RUST_PROJECT_DIR}"
+
+          # Determine the Rust target triple based on Xcode SDK
+          if [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
+            RUST_TARGET="aarch64-apple-ios-sim"
+          else
+            RUST_TARGET="aarch64-apple-ios"
+          fi
+
+          # Determine build profile
+          if [ "${CONFIGURATION}" = "Release" ]; then
+            CARGO_FLAGS="--release"
+          else
+            CARGO_FLAGS=""
+          fi
+
+          echo "Building gpui-mobile for ${RUST_TARGET} (${CONFIGURATION})..."
+
+          # Ensure the Rust target is installed
+          rustup target add "${RUST_TARGET}" 2>/dev/null || true
+
+          # Build the Rust static library
+          cargo build --target "${RUST_TARGET}" --features "ios,font-kit" ${CARGO_FLAGS} 2>&1
+
+          echo "Rust build complete for ${RUST_TARGET}"
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false

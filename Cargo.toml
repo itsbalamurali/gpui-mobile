@@ -19,12 +19,6 @@ ios = []
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# ── examples ─────────────────────────────────────────────────────────────────
-
-[[example]]
-name = "ios_app"
-path = "examples/ios_app/main.rs"
-
 # ── shared deps (all platforms) ──────────────────────────────────────────────
 
 [dependencies]

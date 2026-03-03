@@ -12,9 +12,10 @@
 use super::events::*;
 use super::IosDisplay;
 use gpui::{
-    AnyWindowHandle, Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
+    point, AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds,
+    Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, Scene, Size, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
 use objc::{
@@ -24,9 +25,11 @@ use objc::{
     runtime::{Class, Object, Sel, BOOL, NO, YES},
     sel, sel_impl,
 };
+use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     ffi::c_void,
     ptr::{self, NonNull},
     rc::Rc,
@@ -191,6 +194,8 @@ pub(crate) struct IosWindow {
     modifiers: Cell<Modifiers>,
     /// Track if a touch is currently pressed
     touch_pressed: Cell<bool>,
+    /// Fallback sprite atlas (used until a real Blade/Metal renderer is wired up)
+    sprite_atlas: Arc<FallbackAtlas>,
 }
 
 // Required for raw_window_handle
@@ -295,6 +300,7 @@ impl IosWindow {
                 mouse_position: Cell::new(Point::default()),
                 modifiers: Cell::new(Modifiers::default()),
                 touch_pressed: Cell::new(false),
+                sprite_atlas: Arc::new(FallbackAtlas::new()),
             };
 
             Ok(ios_window)
@@ -715,9 +721,7 @@ impl PlatformWindow for IosWindow {
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        // This would return the atlas from the Blade renderer.
-        // For now, we panic since this requires proper renderer integration.
-        unimplemented!("sprite_atlas requires Blade renderer integration")
+        self.sprite_atlas.clone()
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -732,5 +736,74 @@ impl PlatformWindow for IosWindow {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
         // iOS handles IME positioning automatically
+    }
+}
+
+// ── Fallback atlas ────────────────────────────────────────────────────────────
+
+/// A minimal fallback `PlatformAtlas` used until a real Blade/Metal renderer is
+/// wired up.  It records tiles in memory but does not upload texture data to the
+/// GPU — just enough to satisfy GPUI's atlas queries without panicking.
+struct FallbackAtlas {
+    state: Mutex<FallbackAtlasState>,
+}
+
+struct FallbackAtlasState {
+    next_id: u32,
+    tiles: HashMap<AtlasKey, AtlasTile>,
+}
+
+impl FallbackAtlas {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(FallbackAtlasState {
+                next_id: 1,
+                tiles: HashMap::new(),
+            }),
+        }
+    }
+}
+
+impl PlatformAtlas for FallbackAtlas {
+    fn get_or_insert_with<'a>(
+        &self,
+        key: &AtlasKey,
+        build: &mut dyn FnMut() -> anyhow::Result<
+            Option<(Size<DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
+        >,
+    ) -> anyhow::Result<Option<AtlasTile>> {
+        let mut state = self.state.lock();
+
+        if let Some(tile) = state.tiles.get(key) {
+            return Ok(Some(tile.clone()));
+        }
+
+        let data = build()?;
+        if let Some((size, _pixels)) = data {
+            let id = state.next_id;
+            state.next_id += 1;
+
+            let tile = AtlasTile {
+                texture_id: AtlasTextureId {
+                    index: 0,
+                    kind: AtlasTextureKind::Monochrome,
+                },
+                tile_id: TileId(id),
+                padding: 0,
+                bounds: Bounds {
+                    origin: point(DevicePixels(0), DevicePixels(0)),
+                    size,
+                },
+            };
+
+            state.tiles.insert(key.clone(), tile.clone());
+            Ok(Some(tile))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn remove(&self, key: &AtlasKey) {
+        self.state.lock().tiles.remove(key);
     }
 }
