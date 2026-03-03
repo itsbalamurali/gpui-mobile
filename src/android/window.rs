@@ -1063,59 +1063,165 @@ impl PlatformWindow for AndroidPlatformWindow {
         let input_cb = Arc::new(Mutex::new(send_callback));
 
         // ── Touch events → PlatformInput ─────────────────────────────────
+        //
+        // Android touch events must be translated into both mouse events
+        // (for taps / clicks) and scroll-wheel events (for drag-to-scroll).
+        //
+        // A small state machine distinguishes the two gestures:
+        //
+        //   DOWN  → record start position, enter "pending" state
+        //   MOVE  → if finger moved > threshold → switch to "scrolling",
+        //           cancel the mouse-down, emit ScrollWheel deltas
+        //   UP    → if still "pending" → emit MouseDown + MouseUp (tap)
+        //           if "scrolling"   → emit final ScrollWheel (Ended)
+        //
+        // The threshold is in logical pixels (~8 px ≈ ~3 mm at 160 dpi).
         {
             let cb = Arc::clone(&input_cb);
             let scale_factor = self.window.scale_factor();
+
+            /// Distance (logical px) the finger must travel before a touch
+            /// is promoted from a potential tap to a scroll gesture.
+            const SCROLL_SLOP: f32 = 8.0;
+
+            /// Tracks the current touch gesture.
+            #[derive(Clone, Copy, Debug)]
+            enum TouchState {
+                /// No active touch.
+                Idle,
+                /// Finger is down but hasn't moved beyond the slop threshold.
+                Pending { start_x: f32, start_y: f32 },
+                /// Finger has moved beyond the threshold — we are scrolling.
+                Scrolling { prev_x: f32, prev_y: f32 },
+            }
+
+            let state = Mutex::new(TouchState::Idle);
+
             self.window.on_touch(move |touch| {
-                // Translate touch action to GPUI mouse events.
-                // Android action constants: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL
-                //
                 // Android delivers touch coordinates in physical (device)
                 // pixels, but GPUI performs layout and hit-testing in logical
-                // pixels.  We must divide by the display scale factor so that
-                // touch positions match the element bounds produced by layout.
+                // pixels.  Divide by scale factor.
                 let logical_x = touch.x / scale_factor;
                 let logical_y = touch.y / scale_factor;
                 let position = gpui::point(gpui::px(logical_x), gpui::px(logical_y));
                 let modifiers = gpui::Modifiers::default();
 
-                let event = match touch.action {
-                    0 => {
-                        // ACTION_DOWN
-                        gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                            button: gpui::MouseButton::Left,
-                            position,
-                            modifiers,
-                            click_count: 1,
-                            first_mouse: false,
-                        })
-                    }
-                    1 | 3 => {
-                        // ACTION_UP or ACTION_CANCEL
-                        gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                            button: gpui::MouseButton::Left,
-                            position,
-                            modifiers,
-                            click_count: 1,
-                        })
-                    }
-                    2 => {
-                        // ACTION_MOVE
-                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                            position,
-                            modifiers,
-                            pressed_button: Some(gpui::MouseButton::Left),
-                        })
-                    }
-                    _ => return, // Unknown action, ignore
-                };
-
+                let mut ts = state.lock();
                 let mut guard = cb.lock();
-                let result = guard(event);
-                log::debug!(
-                    "on_input touch callback result: default_prevented={}",
-                    result.default_prevented,
-                );
+
+                match touch.action {
+                    // ── ACTION_DOWN ──────────────────────────────────────
+                    0 => {
+                        *ts = TouchState::Pending {
+                            start_x: logical_x,
+                            start_y: logical_y,
+                        };
+                        // Don't send MouseDown yet — wait to see if this
+                        // becomes a scroll or stays a tap.
+                    }
+
+                    // ── ACTION_MOVE ──────────────────────────────────────
+                    2 => {
+                        match *ts {
+                            TouchState::Pending { start_x, start_y } => {
+                                let dx = logical_x - start_x;
+                                let dy = logical_y - start_y;
+                                let distance = (dx * dx + dy * dy).sqrt();
+
+                                if distance > SCROLL_SLOP {
+                                    // Promote to scrolling — emit the first
+                                    // scroll delta from the start position.
+                                    *ts = TouchState::Scrolling {
+                                        prev_x: logical_x,
+                                        prev_y: logical_y,
+                                    };
+                                    let _ = guard(gpui::PlatformInput::ScrollWheel(
+                                        gpui::ScrollWheelEvent {
+                                            position,
+                                            delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                                gpui::px(dx),
+                                                gpui::px(dy),
+                                            )),
+                                            modifiers,
+                                            touch_phase: gpui::TouchPhase::Started,
+                                        },
+                                    ));
+                                }
+                                // else: still within slop, stay Pending
+                            }
+                            TouchState::Scrolling { prev_x, prev_y } => {
+                                let dx = logical_x - prev_x;
+                                let dy = logical_y - prev_y;
+                                *ts = TouchState::Scrolling {
+                                    prev_x: logical_x,
+                                    prev_y: logical_y,
+                                };
+                                let _ = guard(gpui::PlatformInput::ScrollWheel(
+                                    gpui::ScrollWheelEvent {
+                                        position,
+                                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                            gpui::px(dx),
+                                            gpui::px(dy),
+                                        )),
+                                        modifiers,
+                                        touch_phase: gpui::TouchPhase::Moved,
+                                    },
+                                ));
+                            }
+                            TouchState::Idle => {
+                                // Spurious move without a preceding down — ignore.
+                            }
+                        }
+                    }
+
+                    // ── ACTION_UP / ACTION_CANCEL ────────────────────────
+                    1 | 3 => {
+                        match *ts {
+                            TouchState::Pending { start_x, start_y } => {
+                                // Finger lifted without exceeding slop →
+                                // this is a tap.  Emit MouseDown + MouseUp
+                                // at the original down position so that
+                                // hit-testing matches the element under the
+                                // initial touch point.
+                                let tap_pos = gpui::point(gpui::px(start_x), gpui::px(start_y));
+                                let _ =
+                                    guard(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                                        button: gpui::MouseButton::Left,
+                                        position: tap_pos,
+                                        modifiers,
+                                        click_count: 1,
+                                        first_mouse: false,
+                                    }));
+                                let _ = guard(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                                    button: gpui::MouseButton::Left,
+                                    position: tap_pos,
+                                    modifiers,
+                                    click_count: 1,
+                                }));
+                            }
+                            TouchState::Scrolling { prev_x, prev_y } => {
+                                // End the scroll gesture.
+                                let dx = logical_x - prev_x;
+                                let dy = logical_y - prev_y;
+                                let _ = guard(gpui::PlatformInput::ScrollWheel(
+                                    gpui::ScrollWheelEvent {
+                                        position,
+                                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                            gpui::px(dx),
+                                            gpui::px(dy),
+                                        )),
+                                        modifiers,
+                                        touch_phase: gpui::TouchPhase::Ended,
+                                    },
+                                ));
+                            }
+                            TouchState::Idle => {}
+                        }
+                        *ts = TouchState::Idle;
+                    }
+
+                    _ => {} // Unknown action, ignore
+                }
             });
         }
 

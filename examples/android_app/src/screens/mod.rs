@@ -234,13 +234,23 @@ impl Router {
     }
 
     /// Render the content area for the currently active screen.
+    ///
+    /// The content is wrapped in a scrollable container so that screens
+    /// with more content than fits on screen (e.g. About) can be scrolled
+    /// vertically via touch drag gestures.
     fn render_current_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.current_screen {
+        let screen_content = match self.current_screen {
             Screen::Home => self.render_home_screen(cx).into_any_element(),
             Screen::Counter => self.render_counter_screen(cx).into_any_element(),
             Screen::Settings => self.render_settings_screen(cx).into_any_element(),
             Screen::About => self.render_about_screen(cx).into_any_element(),
-        }
+        };
+
+        div()
+            .id("screen-scroll-container")
+            .flex_1()
+            .overflow_y_scroll()
+            .child(screen_content)
     }
 
     /// Render the bottom tab bar.
