@@ -49,7 +49,7 @@ pub fn render(router: &Router) -> impl IntoElement {
                     div()
                         .text_xl()
                         .text_color(rgb(text_color))
-                        .child("GPUI Android Example"),
+                        .child("GPUI Mobile Example"),
                 )
                 .child(div().text_sm().text_color(rgb(sub_text)).child("v0.1.0")),
         )
@@ -64,12 +64,12 @@ pub fn render(router: &Router) -> impl IntoElement {
                     .child(div().text_sm().text_color(rgb(text_color)).child(
                         "A multi-screen demo app built with GPUI, \
                                  Zed's GPU-accelerated UI framework, running \
-                                 natively on Android via Vulkan.",
+                                 natively on Android (Vulkan) and iOS (Metal).",
                     ))
                     .child(div().text_xs().text_color(rgb(sub_text)).child(
                         "This example showcases navigation, interactive \
                                  controls, shared state, and theming — all rendered \
-                                 at 60 fps with wgpu.",
+                                 at 60 fps with GPU-accelerated graphics.",
                     )),
             ),
         )
@@ -106,8 +106,8 @@ pub fn render(router: &Router) -> impl IntoElement {
                 .child(divider_line(divider_color))
                 .child(tech_row(
                     "📱",
-                    "android-activity",
-                    "Native Android lifecycle",
+                    "Platform glue",
+                    "android-activity / UIKit lifecycle",
                     MAUVE,
                     text_color,
                     sub_text,
@@ -133,21 +133,33 @@ pub fn render(router: &Router) -> impl IntoElement {
                     .p_4()
                     .child(architecture_row(
                         "Entry Point",
-                        "android_main()",
+                        if cfg!(target_os = "ios") {
+                            "ios_main()"
+                        } else {
+                            "android_main()"
+                        },
                         BLUE,
                         text_color,
                         sub_text,
                     ))
                     .child(architecture_row(
                         "Platform",
-                        "AndroidPlatform (Arc)",
+                        if cfg!(target_os = "ios") {
+                            "IosPlatform (Rc)"
+                        } else {
+                            "AndroidPlatform (Arc)"
+                        },
                         MAUVE,
                         text_color,
                         sub_text,
                     ))
                     .child(architecture_row(
                         "Renderer",
-                        "WgpuRenderer (Vulkan)",
+                        if cfg!(target_os = "ios") {
+                            "BladeRenderer (Metal)"
+                        } else {
+                            "WgpuRenderer (Vulkan)"
+                        },
                         GREEN,
                         text_color,
                         sub_text,

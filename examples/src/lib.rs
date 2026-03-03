@@ -1,0 +1,183 @@
+//! Cross-platform GPUI example app.
+//!
+//! This crate provides a multi-screen GPUI demo app that runs on both
+//! **Android** and **iOS**.  The UI code (screens, router, navigation) is
+//! fully shared; only the platform initialisation differs.
+//!
+//! ## Screens
+//!
+//! - **Home** — welcome message, colour swatches, stats, and quick-nav cards.
+//! - **Counter** — increment / decrement / reset a shared tap counter.
+//! - **Settings** — toggle dark mode, reset counter, change user name.
+//! - **About** — app info, technology stack, architecture, and credits.
+//!
+//! ## Entry points
+//!
+//! ### Android
+//!
+//! This crate defines `android_main` directly — the `android-activity` crate
+//! calls it on a dedicated native thread after loading the `.so`.
+//!
+//! ### iOS
+//!
+//! The companion `main.rs` binary calls [`ios_main`] which creates an
+//! `IosPlatform`, opens a fullscreen window with the `Router`, and hands
+//! control to the GPUI run loop.
+//!
+//! ## Window lifecycle
+//!
+//! On Android, windows are NOT created by calling `cx.open_window(...)` at
+//! startup.  Instead, the system delivers a `MainEvent::InitWindow` lifecycle
+//! event when the native surface is ready.
+//!
+//! The GPUI `Application::run` callback (the `|cx| { ... }` closure) is
+//! **deferred** until the native window exists.  `Platform::run` blocks on the
+//! Android event loop, and the finish-launching callback is invoked from
+//! inside `run_event_loop` once `InitWindow` has been processed.  This keeps
+//! the `Application` (and its internal `Rc<RefCell<AppContext>>`) alive on the
+//! call stack for the entire lifetime of the event loop, so that weak
+//! references held by GPUI's `on_request_frame` / `on_input` callbacks remain
+//! valid.
+//!
+//! On iOS, `Application::run` similarly blocks until the app exits.
+//! `IosPlatform` hooks into the UIKit lifecycle via Objective-C FFI callbacks.
+//!
+//! ## Building
+//!
+//! ```text
+//! # Android
+//! rustup target add aarch64-linux-android
+//! cargo ndk -t arm64-v8a build -p gpui-android-example
+//!
+//! # iOS simulator
+//! cargo build --target aarch64-apple-ios-sim -p gpui-android-example --features font-kit
+//!
+//! # iOS device
+//! cargo build --target aarch64-apple-ios -p gpui-android-example --features font-kit
+//! ```
+
+// Link gpui-mobile so its symbols (jni helpers, platform, etc.) are available.
+extern crate gpui_mobile;
+
+pub mod screens;
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use gpui::{prelude::*, App, Application, WindowOptions};
+
+#[cfg(any(target_os = "ios", target_os = "android"))]
+use screens::Router;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Android entry point
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(target_os = "android")]
+use gpui_mobile::android::jni_entry;
+
+/// Called by the `android-activity` crate on a dedicated native thread.
+/// Does NOT return until the app is ready to exit.
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: android_activity::AndroidApp) {
+    // Logger first — so everything after this is visible in logcat.
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Debug)
+            .with_tag("gpui-android-example"),
+    );
+
+    // Panic hook — routes panics to logcat instead of silently aborting.
+    jni_entry::install_panic_hook();
+
+    log::info!("android_main: entered");
+
+    // Initialise the global AndroidApp + AndroidPlatform.
+    let _platform = jni_entry::init_platform(&app);
+    log::info!("android_main: platform initialised");
+
+    // Get a SharedPlatform (Rc-compatible wrapper around the global
+    // Arc<AndroidPlatform>) so we can hand it to GPUI.
+    let shared = match jni_entry::shared_platform() {
+        Some(s) => s,
+        None => {
+            log::error!("android_main: shared_platform() returned None — aborting");
+            return;
+        }
+    };
+
+    log::info!("android_main: creating GPUI Application");
+
+    // `Application::with_platform(...).run(...)` calls `Platform::run` which,
+    // on Android, **blocks** by driving the native event loop.  The user's
+    // `|cx| { ... }` closure is deferred: it runs inside `run_event_loop`
+    // once `MainEvent::InitWindow` has delivered a native surface and an
+    // `AndroidWindow` exists.
+    //
+    // Because `Platform::run` blocks, the `Application` stays alive on this
+    // stack frame for the entire duration of the event loop.  This means the
+    // `Rc<RefCell<AppContext>>` (which GPUI callbacks hold via `Weak`) remains
+    // valid — solving the lifetime mismatch that previously caused
+    // `default_prevented=false` on touch events and potential crashes.
+    Application::with_platform(shared.into_rc()).run(|cx: &mut App| {
+        log::info!("Application::run callback — opening window with Router");
+        open_main_window(cx);
+    });
+
+    // `Application::run` returns here only after the event loop exits
+    // (i.e. the activity was destroyed or quit() was called).
+    log::info!("android_main: Application.run returned — activity will finish");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// iOS entry point
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// iOS application entry point.
+///
+/// Creates an `IosPlatform`, opens a fullscreen window containing the shared
+/// `Router` view, and enters the GPUI run loop.  This function does **not**
+/// return until the application exits.
+///
+/// Called from `main.rs` on iOS.
+#[cfg(target_os = "ios")]
+pub fn ios_main() {
+    use std::rc::Rc;
+
+    let platform = Rc::new(gpui_mobile::ios::IosPlatform::new());
+    Application::with_platform(platform).run(|cx: &mut App| {
+        open_main_window(cx);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared window creation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Open the main application window with the shared `Router` view.
+///
+/// This is called from both the Android and iOS entry points.  On both
+/// platforms, windows are fullscreen so `window_bounds` is `None`.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+fn open_main_window(cx: &mut App) {
+    match cx.open_window(
+        WindowOptions {
+            window_bounds: None,
+            ..Default::default()
+        },
+        |_, cx| cx.new(|_| Router::new()),
+    ) {
+        Ok(_handle) => {
+            #[cfg(target_os = "android")]
+            log::info!("cx.open_window succeeded — Router is live");
+        }
+        Err(_e) => {
+            #[cfg(target_os = "android")]
+            log::error!("cx.open_window failed: {_e:#}");
+
+            #[cfg(target_os = "ios")]
+            eprintln!("cx.open_window failed: {_e:#}");
+        }
+    }
+
+    cx.activate(true);
+}

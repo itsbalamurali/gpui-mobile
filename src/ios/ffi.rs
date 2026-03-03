@@ -1,269 +1,261 @@
-//! FFI (Foreign Function Interface) bridge for iOS.
+//! FFI (Foreign Function Interface) module for iOS.
 //!
-//! This module exposes `#[no_mangle]` C-compatible functions that the iOS
-//! Objective-C app delegate calls to drive the GPUI application lifecycle.
-//!
-//! # Lifecycle overview
-//!
-//! ```text
-//! ObjC app delegate                    Rust / GPUI
-//! ─────────────────                    ──────────────────────────────────────
-//! application:didFinishLaunching  ──►  gpui_ios_initialize()
-//!                                 ──►  gpui_ios_did_finish_launching()
-//!                                       └─ invokes finish-launching callback
-//! CADisplayLink tick              ──►  gpui_ios_request_frame(window_ptr)
-//! touchesBegan / Moved / Ended    ──►  gpui_ios_handle_touch(window_ptr, …)
-//! applicationWillEnterForeground  ──►  gpui_ios_will_enter_foreground()
-//! applicationDidBecomeActive      ──►  gpui_ios_did_become_active()
-//! applicationWillResignActive     ──►  gpui_ios_will_resign_active()
-//! applicationDidEnterBackground   ──►  gpui_ios_did_enter_background()
-//! applicationWillTerminate        ──►  gpui_ios_will_terminate()
-//! ```
-//!
-//! All functions are guarded by `target_os = "ios"` at the module level
-//! (the enclosing `ios` module in `lib.rs`).
-//!
-//! # Thread safety
-//!
-//! Every function in this module **must** be called from the UIKit main
-//! thread.  The statics below use `UnsafeCell` intentionally; accesses are
-//! always single-threaded because UIKit enforces main-thread-only UI work.
+//! This module exposes C-compatible functions that can be called from
+//! Objective-C code in the iOS app delegate to initialize and control
+//! the GPUI application lifecycle.
 
-use super::window::IosWindow;
-use std::{cell::UnsafeCell, ffi::c_void, sync::OnceLock};
+use gpui::{App, AppContext, Application, RequestFrameOptions, WindowOptions};
+use std::ffi::c_void;
+use std::rc::Rc;
+use std::sync::OnceLock;
 
-// ── Global app state ──────────────────────────────────────────────────────────
+/// Global storage for the GPUI application state.
+/// This is set during initialization and used by FFI callbacks.
+static IOS_APP_STATE: OnceLock<IosAppState> = OnceLock::new();
 
-/// Holds the finish-launching callback supplied by `IosPlatform::run()`.
-///
-/// Only written once (during `gpui_ios_initialize` / `set_finish_launching_callback`)
-/// and read once (during `gpui_ios_did_finish_launching`).
+/// Holds the state needed for iOS FFI callbacks.
+/// Note: On iOS, all UI code runs on the main thread, so we use a RefCell
+/// instead of Mutex and don't require Send.
 struct IosAppState {
-    finish_launching: UnsafeCell<Option<Box<dyn FnOnce()>>>,
+    /// The callback to invoke when the app finishes launching.
+    /// This is the closure passed to Application::run().
+    /// Using std::cell::UnsafeCell since this is only accessed from the main thread.
+    finish_launching: std::cell::UnsafeCell<Option<Box<dyn FnOnce()>>>,
 }
 
-// SAFETY: All accesses happen on the UIKit main thread.
+// Safety: On iOS, all GPUI operations happen on the main thread.
+// The FFI functions are only called from the iOS app delegate which runs on main thread.
+// We implement both Send and Sync because OnceLock requires Send for its value type,
+// and we need Sync for the static. The actual access is always single-threaded.
 unsafe impl Send for IosAppState {}
 unsafe impl Sync for IosAppState {}
 
-static IOS_APP_STATE: OnceLock<IosAppState> = OnceLock::new();
+// Safety wrapper for window list - only accessed from main thread
+struct WindowListWrapper(std::cell::UnsafeCell<Vec<*const super::window::IosWindow>>);
+unsafe impl Send for WindowListWrapper {}
+unsafe impl Sync for WindowListWrapper {}
 
-// ── Global window list ────────────────────────────────────────────────────────
+static IOS_WINDOW_LIST: OnceLock<WindowListWrapper> = OnceLock::new();
 
-struct WindowList(UnsafeCell<Vec<*const IosWindow>>);
+/// Initialize the GPUI iOS application.
+///
+/// This should be called from `application:didFinishLaunchingWithOptions:`
+/// in the iOS app delegate, before any other GPUI functions.
+///
+/// Returns a pointer to the app state that should be passed to other FFI functions.
+/// Returns null if initialization fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_initialize() -> *mut c_void {
+    // Initialize logging - iOS logging is typically handled via os_log
+    // or NSLog, but for debug builds we can try to use env_logger if available
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    {
+        // Try to initialize logging, ignore if already initialized
+        let _ = env_logger::try_init();
+    }
 
-// SAFETY: All accesses happen on the UIKit main thread.
-unsafe impl Send for WindowList {}
-unsafe impl Sync for WindowList {}
+    log::info!("GPUI iOS: Initializing");
 
-static IOS_WINDOW_LIST: OnceLock<WindowList> = OnceLock::new();
+    // Initialize the app state
+    let state = IosAppState {
+        finish_launching: std::cell::UnsafeCell::new(None),
+    };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+    if IOS_APP_STATE.set(state).is_err() {
+        log::error!("GPUI iOS: Already initialized");
+        return std::ptr::null_mut();
+    }
 
-/// Ensure both statics are initialised.  Safe to call multiple times.
-fn ensure_initialized() {
-    IOS_APP_STATE.get_or_init(|| IosAppState {
-        finish_launching: UnsafeCell::new(None),
-    });
-    IOS_WINDOW_LIST.get_or_init(|| WindowList(UnsafeCell::new(Vec::new())));
+    // Initialize the window list
+    let _ = IOS_WINDOW_LIST.set(WindowListWrapper(std::cell::UnsafeCell::new(Vec::new())));
+
+    // Return a non-null pointer to indicate success
+    // The actual state is stored in the static
+    1 as *mut c_void
 }
 
-/// Store the finish-launching callback so the FFI layer can invoke it later.
+/// Register a window with the FFI layer.
 ///
-/// Called internally by `IosPlatform::run()`.
+/// This is called internally when a new IosWindow is created.
+/// The window pointer can then be retrieved by Objective-C code.
 ///
 /// # Safety
-/// Must only be called from the main thread.
+/// This must only be called from the main thread.
+pub(crate) fn register_window(window: *const super::window::IosWindow) {
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            (*wrapper.0.get()).push(window);
+            log::info!("GPUI iOS: Registered window {:p}", window);
+        }
+    }
+}
+
+/// Get the most recently created window pointer.
+///
+/// Returns the pointer to the IosWindow that was most recently registered,
+/// or null if no windows have been created.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_get_window() -> *mut c_void {
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            let windows = &*wrapper.0.get();
+            if let Some(&window) = windows.last() {
+                log::info!("GPUI iOS: Returning window {:p}", window);
+                return window as *mut c_void;
+            }
+        }
+    }
+    log::warn!("GPUI iOS: No windows registered");
+    std::ptr::null_mut()
+}
+
+/// Store the finish launching callback.
+///
+/// This is called internally by IosPlatform::run() to store the callback
+/// that will be invoked when the app finishes launching.
+///
+/// # Safety
+/// This must only be called from the main thread.
 pub(crate) fn set_finish_launching_callback(callback: Box<dyn FnOnce()>) {
-    ensure_initialized();
     if let Some(state) = IOS_APP_STATE.get() {
-        // SAFETY: main-thread-only access.
+        // Safety: Only called from main thread
         unsafe {
             *state.finish_launching.get() = Some(callback);
         }
     }
 }
 
-/// Register a newly-created `IosWindow` so Objective-C code can retrieve its
-/// pointer via `gpui_ios_get_window()`.
+/// Called when the iOS app has finished launching.
 ///
-/// Called internally by `IosWindow::register_with_ffi()`.
+/// This should be called from `application:didFinishLaunchingWithOptions:`
+/// in the iOS app delegate, after `gpui_ios_initialize()` returns.
 ///
-/// # Safety
-/// Must only be called from the main thread.  The caller is responsible for
-/// keeping the `IosWindow` alive as long as it is registered.
-pub(crate) fn register_window(window: *const IosWindow) {
-    ensure_initialized();
-    if let Some(list) = IOS_WINDOW_LIST.get() {
-        // SAFETY: main-thread-only access.
-        unsafe {
-            (*list.0.get()).push(window);
-        }
-        log::info!("GPUI iOS FFI: registered window {:p}", window);
-    }
-}
-
-// ── Public C-ABI functions ────────────────────────────────────────────────────
-
-/// Initialise the GPUI iOS runtime.
-///
-/// Call from `application:didFinishLaunchingWithOptions:` **before** any
-/// other `gpui_ios_*` function.
-///
-/// Returns a non-null sentinel on success, `NULL` if already initialised.
-#[unsafe(no_mangle)]
-pub extern "C" fn gpui_ios_initialize() -> *mut c_void {
-    #[cfg(debug_assertions)]
-    {
-        // Best-effort: init a basic logger that writes to NSLog / os_log.
-        // Ignore the error if a logger is already installed.
-        let _ = env_logger::try_init();
-    }
-
-    if IOS_APP_STATE.get().is_some() {
-        log::warn!("GPUI iOS FFI: gpui_ios_initialize called more than once");
-        return std::ptr::null_mut();
-    }
-
-    ensure_initialized();
-    log::info!("GPUI iOS FFI: initialized");
-
-    // Return a non-null sentinel so ObjC can distinguish success from failure.
-    1usize as *mut c_void
-}
-
-/// Invoke the finish-launching callback.
-///
-/// Call from `application:didFinishLaunchingWithOptions:` after
-/// `gpui_ios_initialize()` returns.
-///
-/// `app_ptr` is ignored; it exists only for forward-compatibility.
+/// This invokes the callback passed to Application::run().
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_did_finish_launching(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: did_finish_launching");
+    log::info!("GPUI iOS: Did finish launching");
 
-    let Some(state) = IOS_APP_STATE.get() else {
-        log::error!("GPUI iOS FFI: did_finish_launching called before initialize");
-        return;
-    };
-
-    // SAFETY: main-thread-only access.
-    let callback = unsafe { (*state.finish_launching.get()).take() };
-
-    match callback {
-        Some(cb) => {
-            log::info!("GPUI iOS FFI: invoking finish-launching callback");
-            cb();
+    if let Some(state) = IOS_APP_STATE.get() {
+        // Safety: Only called from main thread
+        let callback = unsafe { (*state.finish_launching.get()).take() };
+        if let Some(callback) = callback {
+            log::info!("GPUI iOS: Invoking finish launching callback");
+            callback();
+        } else {
+            log::warn!("GPUI iOS: No finish launching callback registered");
         }
-        None => {
-            log::warn!("GPUI iOS FFI: no finish-launching callback registered");
-        }
+    } else {
+        log::error!("GPUI iOS: Not initialized");
     }
 }
 
-/// Notify all windows that the app is about to enter the foreground.
+/// Called when the iOS app will enter the foreground.
 ///
-/// Call from `applicationWillEnterForeground:`.
+/// This should be called from `applicationWillEnterForeground:` in the app delegate.
+/// This notifies all GPUI windows that the app is becoming active.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_will_enter_foreground(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: will_enter_foreground");
-    notify_all_windows_active(true);
+    log::info!("GPUI iOS: Will enter foreground");
+
+    // Notify all windows that they're becoming active
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            let windows = &*wrapper.0.get();
+            for &window_ptr in windows.iter() {
+                if !window_ptr.is_null() {
+                    let window = &*window_ptr;
+                    window.notify_active_status_change(true);
+                }
+            }
+        }
+    }
 }
 
-/// Notify all windows that the app has become active.
+/// Called when the iOS app did become active.
 ///
-/// Call from `applicationDidBecomeActive:`.
+/// This should be called from `applicationDidBecomeActive:` in the app delegate.
+/// This indicates the app is now in the foreground and receiving events.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_did_become_active(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: did_become_active");
-    notify_all_windows_active(true);
+    log::info!("GPUI iOS: Did become active");
+
+    // App is now fully active - windows should be notified
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            let windows = &*wrapper.0.get();
+            for &window_ptr in windows.iter() {
+                if !window_ptr.is_null() {
+                    let window = &*window_ptr;
+                    window.notify_active_status_change(true);
+                }
+            }
+        }
+    }
 }
 
-/// Notify all windows that the app is about to resign active status.
+/// Called when the iOS app will resign active.
 ///
-/// Call from `applicationWillResignActive:`.
+/// This should be called from `applicationWillResignActive:` in the app delegate.
+/// This indicates the app is about to become inactive (e.g., incoming call, switching apps).
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_will_resign_active(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: will_resign_active");
-    notify_all_windows_active(false);
+    log::info!("GPUI iOS: Will resign active");
+
+    // App is about to become inactive
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            let windows = &*wrapper.0.get();
+            for &window_ptr in windows.iter() {
+                if !window_ptr.is_null() {
+                    let window = &*window_ptr;
+                    window.notify_active_status_change(false);
+                }
+            }
+        }
+    }
 }
 
-/// Notify all windows that the app has entered the background.
+/// Called when the iOS app did enter the background.
 ///
-/// Call from `applicationDidEnterBackground:`.
+/// This should be called from `applicationDidEnterBackground:` in the app delegate.
+/// At this point, the app should have already saved any user data and released
+/// shared resources. The app will be suspended shortly after this returns.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_did_enter_background(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: did_enter_background");
-    notify_all_windows_active(false);
+    log::info!("GPUI iOS: Did enter background");
+
+    // Notify windows they're no longer visible
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            let windows = &*wrapper.0.get();
+            for &window_ptr in windows.iter() {
+                if !window_ptr.is_null() {
+                    let window = &*window_ptr;
+                    window.notify_active_status_change(false);
+                }
+            }
+        }
+    }
 }
 
-/// Notify all windows that the app is about to terminate.
+/// Called when the iOS app will terminate.
 ///
-/// Call from `applicationWillTerminate:`.
+/// This should be called from `applicationWillTerminate:` in the app delegate.
+/// This is a good place to save any unsaved data.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_will_terminate(_app_ptr: *mut c_void) {
-    log::info!("GPUI iOS FFI: will_terminate");
-    // Future: invoke registered quit callbacks.
+    log::info!("GPUI iOS: Will terminate");
+
+    // TODO: Could invoke quit callbacks here if needed
 }
 
-/// Return a pointer to the most recently registered `IosWindow`, or NULL if
-/// no window has been created yet.
+/// Called when a touch event occurs.
 ///
-/// The Objective-C app delegate stores this pointer and passes it to
-/// `gpui_ios_request_frame` on every CADisplayLink tick.
-#[unsafe(no_mangle)]
-pub extern "C" fn gpui_ios_get_window() -> *mut c_void {
-    let Some(list) = IOS_WINDOW_LIST.get() else {
-        log::warn!("GPUI iOS FFI: get_window — not initialised");
-        return std::ptr::null_mut();
-    };
-
-    // SAFETY: main-thread-only access.
-    let ptr = unsafe { (*list.0.get()).last().copied().unwrap_or(std::ptr::null()) };
-
-    if ptr.is_null() {
-        log::warn!("GPUI iOS FFI: get_window — no windows registered");
-    } else {
-        log::debug!("GPUI iOS FFI: get_window → {:p}", ptr);
-    }
-
-    ptr as *mut c_void
-}
-
-/// Drive one rendering frame for the given window.
-///
-/// Call on every CADisplayLink tick.
-///
-/// `window_ptr` must be the value returned by `gpui_ios_get_window()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
-    if window_ptr.is_null() {
-        return;
-    }
-
-    // SAFETY: `window_ptr` is a valid `*const IosWindow` cast to `*mut c_void`
-    // by `gpui_ios_get_window`.  We only call the callback stored inside the
-    // window; the window itself is not mutated structurally.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
-
-    // Take the callback out, invoke it, then put it back.  We must release
-    // the borrow on `request_frame_callback` before invoking the callback
-    // because the callback itself may want to borrow the same `RefCell`.
-    let callback = window.request_frame_callback.borrow_mut().take();
-    if let Some(mut cb) = callback {
-        cb();
-        window.request_frame_callback.borrow_mut().replace(cb);
-    }
-}
-
-/// Forward a UIKit touch event to the given window.
-///
-/// - `window_ptr`  : pointer returned by `gpui_ios_get_window()`
-/// - `touch_ptr`   : `UITouch *`
-/// - `event_ptr`   : `UIEvent *`
-///
-/// Both `touch_ptr` and `event_ptr` are passed as `void *` to avoid
-/// a hard dependency on the Objective-C `id` type from the C header.
+/// This bridges UIKit touch events to GPUI's input system.
+/// Parameters:
+/// - `window_ptr`: Pointer to the IosWindow
+/// - `touch_ptr`: Pointer to the UITouch object
+/// - `event_ptr`: Pointer to the UIEvent object
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_handle_touch(
     window_ptr: *mut c_void,
@@ -274,60 +266,95 @@ pub extern "C" fn gpui_ios_handle_touch(
         return;
     }
 
-    // SAFETY: caller guarantees `window_ptr` is a valid `IosWindow`.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
+    // Cast to IosWindow and forward the touch event
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.handle_touch(
         touch_ptr as *mut objc::runtime::Object,
         event_ptr as *mut objc::runtime::Object,
     );
 }
 
-/// Show the software (on-screen) keyboard for the given window.
+/// Request a frame to be rendered.
 ///
-/// Call when a text-input field gains focus.
+/// This should be called from CADisplayLink callback to trigger GPUI rendering.
+/// The window_ptr should be the value returned by gpui_ios_get_window().
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
+    if window_ptr.is_null() {
+        return;
+    }
+
+    // Safety: window_ptr must be a valid pointer to an IosWindow
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
+
+    // Take the callback, invoke it, then restore it
+    // We must complete the borrow before invoking the callback,
+    // as the callback might try to borrow the same RefCell
+    let callback = window.request_frame_callback.borrow_mut().take();
+    if let Some(mut cb) = callback {
+        cb(RequestFrameOptions::default());
+        // Restore the callback for the next frame
+        window.request_frame_callback.borrow_mut().replace(cb);
+    }
+}
+
+/// Show the software keyboard.
+///
+/// Call this when a text input field gains focus.
+/// The window_ptr should be the value returned by gpui_ios_get_window().
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_show_keyboard(window_ptr: *mut c_void) {
     if window_ptr.is_null() {
         return;
     }
-    log::info!("GPUI iOS FFI: show_keyboard");
-    // SAFETY: caller guarantees `window_ptr` is a valid `IosWindow`.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
+
+    log::info!("GPUI iOS: Show keyboard requested");
+
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.show_keyboard();
 }
 
-/// Hide the software (on-screen) keyboard for the given window.
+/// Hide the software keyboard.
 ///
-/// Call when a text-input field loses focus.
+/// Call this when a text input field loses focus.
+/// The window_ptr should be the value returned by gpui_ios_get_window().
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_hide_keyboard(window_ptr: *mut c_void) {
     if window_ptr.is_null() {
         return;
     }
-    log::info!("GPUI iOS FFI: hide_keyboard");
-    // SAFETY: caller guarantees `window_ptr` is a valid `IosWindow`.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
+
+    log::info!("GPUI iOS: Hide keyboard requested");
+
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.hide_keyboard();
 }
 
-/// Deliver soft-keyboard text input to the given window.
+/// Handle text input from the software keyboard.
 ///
-/// `text_ptr` is an `NSString *` cast to `void *`.
+/// This is called when the user types on the keyboard.
+/// Parameters:
+/// - `window_ptr`: Pointer to the IosWindow
+/// - `text_ptr`: Pointer to NSString with the entered text
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_handle_text_input(window_ptr: *mut c_void, text_ptr: *mut c_void) {
     if window_ptr.is_null() || text_ptr.is_null() {
         return;
     }
-    // SAFETY: caller guarantees valid pointers.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
+
+    log::info!("GPUI iOS: Handle text input");
+
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.handle_text_input(text_ptr as *mut objc::runtime::Object);
 }
 
-/// Deliver a hardware-keyboard key event to the given window.
+/// Handle a key event from an external keyboard.
 ///
-/// - `key_code`   : `UIKeyboardHIDUsage` value (USB HID usage page 0x07)
-/// - `modifiers`  : `UIKeyModifierFlags` bitmask
-/// - `is_key_down`: `true` for key-down, `false` for key-up
+/// Parameters:
+/// - `window_ptr`: Pointer to the IosWindow
+/// - `key_code`: The key code from UIKeyboardHIDUsage
+/// - `modifiers`: Modifier flags from UIKeyModifierFlags
+/// - `is_key_down`: true for key down, false for key up
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_handle_key_event(
     window_ptr: *mut c_void,
@@ -338,57 +365,78 @@ pub extern "C" fn gpui_ios_handle_key_event(
     if window_ptr.is_null() {
         return;
     }
-    log::debug!(
-        "GPUI iOS FFI: key_event code=0x{:02x} mods=0x{:x} down={}",
+
+    log::info!(
+        "GPUI iOS: Handle key event - code: {}, modifiers: {}, down: {}",
         key_code,
         modifiers,
-        is_key_down,
+        is_key_down
     );
-    // SAFETY: caller guarantees `window_ptr` is a valid `IosWindow`.
-    let window = unsafe { &*(window_ptr as *const IosWindow) };
+
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.handle_key_event(key_code, modifiers, is_key_down);
 }
 
-/// Launch the built-in interactive demo application.
+// Import the demo module
+use super::demos::DemoApp;
+
+/// Run a demo GPUI application with interactive demos.
 ///
-/// Creates a GPUI `Application` with a menu that lets the user choose between
-/// the Animation Playground and the Shader Showcase demos.
+/// This creates a GPUI Application with a menu to select between different demos:
+/// - Animation Playground: Bouncing balls with physics and particle effects
+/// - Shader Showcase: Dynamic gradients and visual effects
 ///
-/// Call from `application:didFinishLaunchingWithOptions:` as a self-contained
-/// alternative to the `gpui_ios_initialize` / `gpui_ios_did_finish_launching`
-/// pair.
+/// Call this from application:didFinishLaunchingWithOptions: to start the demo.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_run_demo() {
-    log::info!("GPUI iOS FFI: run_demo — launching interactive demo");
+    log::info!("GPUI iOS: Starting demo application with interactive demos");
 
-    ensure_initialized();
+    // First initialize the FFI layer
+    if IOS_APP_STATE.get().is_none() {
+        let state = IosAppState {
+            finish_launching: std::cell::UnsafeCell::new(None),
+        };
+        let _ = IOS_APP_STATE.set(state);
+        let _ = IOS_WINDOW_LIST.set(WindowListWrapper(std::cell::UnsafeCell::new(Vec::new())));
+    }
 
-    // Store a no-op callback so the state machine is consistent.
-    set_finish_launching_callback(Box::new(|| {
-        log::info!("GPUI iOS FFI: run_demo finish-launching callback reached");
-    }));
+    // Create a boxed callback that will create our demo window
+    let callback: Box<dyn FnOnce()> = Box::new(|| {
+        log::info!("GPUI iOS: Demo callback executing, but Application context not available here");
+    });
 
-    // Invoke the finish-launching path immediately (the app delegate has
-    // already called UIApplicationMain before any Rust code runs, so the
-    // run loop is live and we can create windows right now).
-    gpui_ios_did_finish_launching(std::ptr::null_mut());
-}
+    // Store the callback
+    set_finish_launching_callback(callback);
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+    // Now create and run the application
+    // On iOS, Application::run() stores our callback and immediately returns
+    let platform = Rc::new(super::IosPlatform::new());
+    Application::with_platform(platform).run(|cx: &mut App| {
+        log::info!("GPUI iOS: Creating demo window with DemoApp");
 
-/// Notify every registered window of an active-status change.
-fn notify_all_windows_active(is_active: bool) {
-    let Some(list) = IOS_WINDOW_LIST.get() else {
-        return;
-    };
+        cx.open_window(
+            WindowOptions {
+                // On iOS, windows are always fullscreen, let the platform decide bounds
+                window_bounds: None,
+                ..Default::default()
+            },
+            |_, cx| cx.new(|_| DemoApp::new()),
+        )
+        .expect("Failed to open window");
 
-    // SAFETY: main-thread-only access.
-    unsafe {
-        let windows = &*list.0.get();
-        for &ptr in windows.iter() {
-            if !ptr.is_null() {
-                (*ptr).notify_active_status_change(is_active);
-            }
+        cx.activate(true);
+        log::info!("GPUI iOS: Demo window created successfully");
+    });
+
+    // The callback passed to Application::run() was stored by IosPlatform::run()
+    // and forwarded to set_finish_launching_callback. Now we need to invoke it.
+    // On a real iOS app, this would be called by gpui_ios_did_finish_launching()
+    // from the app delegate. Here we call it directly.
+    if let Some(state) = IOS_APP_STATE.get() {
+        let callback = unsafe { (*state.finish_launching.get()).take() };
+        if let Some(callback) = callback {
+            log::info!("GPUI iOS: Invoking Application::run callback");
+            callback();
         }
     }
 }

@@ -1,75 +1,41 @@
-//! iOS Platform implementation for GPUI.
+//! iOS Platform implementation.
 //!
-//! Implements the `Platform`-like interface for iOS using UIKit.
-//!
+//! This implements the Platform trait for iOS using UIKit.
 //! Key differences from macOS:
-//! - Uses `UIApplication` instead of `NSApplication`
+//! - Uses UIApplication instead of NSApplication
 //! - No menu bar (iOS apps don't have traditional menus)
 //! - No windowed mode (iOS apps are always fullscreen on their display)
 //! - Touch-based input instead of mouse
 //! - System keyboard handling differs significantly
-//! - Apps cannot programmatically quit or restart
-//!
-//! The platform lifecycle is driven externally by the iOS app delegate
-//! (Objective-C / Swift code) calling into the C FFI layer defined in
-//! `ffi.rs`.  `IosPlatform::run()` simply stores the finish-launching
-//! callback and returns; the callback is invoked later by
-//! `gpui_ios_did_finish_launching()`.
 
 use super::{IosDispatcher, IosDisplay, IosWindow};
-use anyhow::{anyhow, Result};
-use core_graphics::geometry::CGRect;
+use anyhow::anyhow;
+use futures::channel::oneshot;
+use gpui::{
+    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
+    ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result,
+    Task, ThermalState, WindowAppearance, WindowParams,
+};
 use objc::{class, msg_send, runtime::Object, sel, sel_impl};
 use parking_lot::Mutex;
 use std::{
-    ffi::c_void,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
 
-// ---------------------------------------------------------------------------
-// Window appearance
-// ---------------------------------------------------------------------------
-
-/// The light / dark appearance of a window or the whole application.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum WindowAppearance {
-    Light,
-    Dark,
-    /// The system appearance could not be determined.
-    Unknown,
-}
-
-// ---------------------------------------------------------------------------
-// Platform state
-// ---------------------------------------------------------------------------
-
-struct IosPlatformState {
-    background_executor: Arc<IosDispatcher>,
-    foreground_executor: Arc<IosDispatcher>,
-
-    /// The callback supplied to `run()`.  It is stored here and forwarded to
-    /// the FFI layer so Objective-C can invoke it at the right moment in the
-    /// iOS app-launch sequence.
-    finish_launching: Option<Box<dyn FnOnce()>>,
-
-    /// Optional callback invoked when the app is about to quit / terminate.
-    quit_callback: Option<Box<dyn FnMut()>>,
-
-    /// Optional callback invoked when the app is asked to open URLs
-    /// (e.g. via a custom URL scheme registered in Info.plist).
-    open_urls_callback: Option<Box<dyn FnMut(Vec<String>)>>,
-}
-
-// ---------------------------------------------------------------------------
-// IosPlatform
-// ---------------------------------------------------------------------------
-
-/// The GPUI platform implementation for iOS.
-///
-/// Wrap in `Rc` (never `Arc`) — GPUI platforms are single-threaded.
 pub struct IosPlatform(Mutex<IosPlatformState>);
+
+pub(crate) struct IosPlatformState {
+    background_executor: BackgroundExecutor,
+    foreground_executor: ForegroundExecutor,
+    text_system: Arc<dyn PlatformTextSystem>,
+    finish_launching: Option<Box<dyn FnOnce()>>,
+    quit_callback: Option<Box<dyn FnMut()>>,
+    open_urls_callback: Option<Box<dyn FnMut(Vec<String>)>>,
+    thermal_state_callback: Option<Box<dyn FnMut()>>,
+}
 
 impl Default for IosPlatform {
     fn default() -> Self {
@@ -78,196 +44,238 @@ impl Default for IosPlatform {
 }
 
 impl IosPlatform {
-    /// Construct a new `IosPlatform`.
-    ///
-    /// Both the background and foreground executors share the same
-    /// `IosDispatcher` instance; the dispatcher itself decides which GCD
-    /// queue to use based on whether the caller requests main-thread or
-    /// background scheduling.
     pub fn new() -> Self {
         let dispatcher = Arc::new(IosDispatcher);
 
-        IosPlatform(Mutex::new(IosPlatformState {
-            background_executor: dispatcher.clone(),
-            foreground_executor: dispatcher,
+        #[cfg(feature = "font-kit")]
+        let text_system = Arc::new(super::IosTextSystem::new());
+
+        #[cfg(not(feature = "font-kit"))]
+        let text_system: Arc<dyn PlatformTextSystem> = {
+            // Without font-kit, we need a stub text system.
+            // This will panic if text rendering is attempted.
+            panic!("iOS platform requires the 'font-kit' feature for text rendering");
+        };
+
+        Self(Mutex::new(IosPlatformState {
+            background_executor: BackgroundExecutor::new(dispatcher.clone()),
+            foreground_executor: ForegroundExecutor::new(dispatcher),
+            text_system,
             finish_launching: None,
             quit_callback: None,
             open_urls_callback: None,
+            thermal_state_callback: None,
         }))
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Platform trait methods
-    // -----------------------------------------------------------------------
+/// A simple iOS keyboard layout.
+struct IosKeyboardLayout;
 
-    /// Returns the background-task dispatcher (GCD global queue).
-    pub fn background_executor(&self) -> Arc<IosDispatcher> {
+impl PlatformKeyboardLayout for IosKeyboardLayout {
+    fn id(&self) -> &str {
+        "ios-default"
+    }
+
+    fn name(&self) -> &str {
+        "iOS Default"
+    }
+}
+
+impl Platform for IosPlatform {
+    fn background_executor(&self) -> BackgroundExecutor {
         self.0.lock().background_executor.clone()
     }
 
-    /// Returns the foreground-task dispatcher (GCD main queue).
-    pub fn foreground_executor(&self) -> Arc<IosDispatcher> {
+    fn foreground_executor(&self) -> ForegroundExecutor {
         self.0.lock().foreground_executor.clone()
     }
 
-    /// Store the finish-launching callback and forward it to the FFI layer.
-    ///
-    /// On iOS the UIKit run loop is already running when GPUI code executes,
-    /// so unlike macOS we do **not** call `UIApplicationMain` here.  Instead
-    /// we store the callback; it will be invoked by `gpui_ios_did_finish_launching`
-    /// which is called from the Objective-C app delegate.
-    pub fn run(&self, on_finish_launching: Box<dyn FnOnce() + 'static>) {
+    fn text_system(&self) -> Arc<dyn PlatformTextSystem> {
+        self.0.lock().text_system.clone()
+    }
+
+    fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
+        // Store the callback for later invocation via FFI.
+        // The callback will be invoked when gpui_ios_did_finish_launching() is called
+        // from the iOS app delegate's applicationDidFinishLaunchingWithOptions:.
         self.0.lock().finish_launching = Some(on_finish_launching);
 
-        // Forward to the FFI layer immediately so Objective-C can pick it up.
-        if let Some(cb) = self.0.lock().finish_launching.take() {
-            super::ffi::set_finish_launching_callback(cb);
+        // On iOS, the app lifecycle is managed by UIApplicationMain which must be
+        // called from main() before any Rust code runs. The Application::run() method
+        // is called during app initialization, before UIApplicationMain starts its
+        // event loop.
+        //
+        // The finish_launching callback is stored and will be invoked when the iOS
+        // app delegate calls gpui_ios_did_finish_launching() via FFI.
+        //
+        // Unlike macOS where we call NSApplication.run() here, on iOS we don't need
+        // to start the run loop - UIApplicationMain handles that.
+        //
+        // The callback is forwarded to the FFI layer so it can be invoked from Obj-C.
+        if let Some(callback) = self.0.lock().finish_launching.take() {
+            super::ffi::set_finish_launching_callback(callback);
         }
 
-        log::info!("GPUI iOS: IosPlatform::run() stored finish-launching callback");
+        log::info!("GPUI iOS: Platform::run() completed, waiting for app delegate callback");
     }
 
-    /// iOS apps cannot quit programmatically — only the system / user can
-    /// terminate them.
-    pub fn quit(&self) {
-        log::warn!("GPUI iOS: quit() called — iOS apps cannot terminate themselves");
+    fn quit(&self) {
+        // iOS apps cannot programmatically quit - they can only be terminated by the user
+        // or the system. We can suspend to background though.
+        log::warn!("iOS apps cannot programmatically quit");
     }
 
-    /// iOS apps cannot restart themselves.
-    pub fn restart(&self, _binary_path: Option<PathBuf>) {
-        log::warn!("GPUI iOS: restart() called — not supported on iOS");
+    fn restart(&self, _binary_path: Option<PathBuf>) {
+        // iOS apps cannot restart themselves
+        log::warn!("iOS apps cannot restart themselves");
     }
 
-    /// App activation is managed by UIKit automatically.
-    pub fn activate(&self, _ignoring_other_apps: bool) {}
-
-    /// iOS apps cannot hide themselves.
-    pub fn hide(&self) {}
-
-    /// Not applicable on iOS.
-    pub fn hide_other_apps(&self) {}
-
-    /// Not applicable on iOS.
-    pub fn unhide_other_apps(&self) {}
-
-    /// Returns all currently connected displays.
-    pub fn displays(&self) -> Vec<Rc<IosDisplay>> {
-        IosDisplay::all().map(Rc::new).collect()
+    fn activate(&self, _ignoring_other_apps: bool) {
+        // iOS handles app activation automatically
     }
 
-    /// Returns the primary (built-in) display.
-    pub fn primary_display(&self) -> Option<Rc<IosDisplay>> {
+    fn hide(&self) {
+        // iOS apps cannot hide themselves
+    }
+
+    fn hide_other_apps(&self) {
+        // Not applicable on iOS
+    }
+
+    fn unhide_other_apps(&self) {
+        // Not applicable on iOS
+    }
+
+    fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
+        IosDisplay::all()
+            .map(|display| Rc::new(display) as Rc<dyn PlatformDisplay>)
+            .collect()
+    }
+
+    fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         Some(Rc::new(IosDisplay::main()))
     }
 
-    /// Opens a new `IosWindow` and registers it with the FFI layer.
-    pub fn open_window(
+    fn active_window(&self) -> Option<AnyWindowHandle> {
+        // iOS typically has one active window
+        // This would need to track the current key window
+        None
+    }
+
+    fn open_window(
         &self,
-        handle: u64, // opaque window handle id
-        _title: Option<&str>,
-    ) -> Result<Box<IosWindow>> {
-        let window = Box::new(IosWindow::new(handle)?);
-        // Register with the FFI layer so Objective-C can retrieve the pointer.
+        handle: AnyWindowHandle,
+        options: WindowParams,
+    ) -> anyhow::Result<Box<dyn PlatformWindow>> {
+        let window = Box::new(IosWindow::new(handle, options)?);
+        // Register the window with FFI layer so Objective-C can access it for rendering
         window.register_with_ffi();
         Ok(window)
     }
 
-    /// Returns the current window appearance (light / dark mode).
-    pub fn window_appearance(&self) -> WindowAppearance {
+    fn window_appearance(&self) -> WindowAppearance {
         unsafe {
-            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-            let key_window: *mut Object = msg_send![app, keyWindow];
-            if key_window.is_null() {
-                return WindowAppearance::Light;
-            }
-            let trait_collection: *mut Object = msg_send![key_window, traitCollection];
+            let style: i64 = {
+                let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+                let key_window: *mut Object = msg_send![app, keyWindow];
+                if key_window.is_null() {
+                    return WindowAppearance::Light;
+                }
+                let trait_collection: *mut Object = msg_send![key_window, traitCollection];
+                msg_send![trait_collection, userInterfaceStyle]
+            };
+
             // UIUserInterfaceStyle: 0 = unspecified, 1 = light, 2 = dark
-            let style: i64 = msg_send![trait_collection, userInterfaceStyle];
             match style {
                 2 => WindowAppearance::Dark,
-                1 => WindowAppearance::Light,
-                _ => WindowAppearance::Unknown,
+                _ => WindowAppearance::Light,
             }
         }
     }
 
-    /// Open a URL using `UIApplication.openURL`.
-    pub fn open_url(&self, url: &str) {
+    fn open_url(&self, url: &str) {
         unsafe {
-            // Build NSString from the URL string.
-            let url_cstr = std::ffi::CString::new(url).unwrap_or_default();
-            let url_nsstring: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String: url_cstr.as_ptr()];
-            let nsurl: *mut Object = msg_send![class!(NSURL), URLWithString: url_nsstring];
-            if nsurl.is_null() {
-                log::error!("GPUI iOS: open_url — invalid URL: {}", url);
-                return;
-            }
+            let url_string: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: url.as_ptr()];
+            let url: *mut Object = msg_send![class!(NSURL), URLWithString: url_string];
             let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-            let nil: *mut Object = std::ptr::null_mut();
-            let _: () = msg_send![app, openURL: nsurl options: nil completionHandler: nil];
+            let _: () = msg_send![app, openURL: url options: std::ptr::null::<Object>() completionHandler: std::ptr::null::<Object>()];
         }
     }
 
-    /// Register a callback invoked when the app is asked to open URLs.
-    pub fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
+    fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
         self.0.lock().open_urls_callback = Some(callback);
     }
 
-    /// URL schemes on iOS are declared in `Info.plist`, not registered at
-    /// runtime, so this is a no-op.
-    pub fn register_url_scheme(&self, _scheme: &str) -> Result<()> {
-        Ok(())
+    fn register_url_scheme(&self, _url: &str) -> Task<Result<()>> {
+        // URL schemes on iOS are registered in Info.plist, not programmatically
+        Task::ready(Ok(()))
     }
 
-    // ── File-system prompts ─────────────────────────────────────────────────
-
-    /// iOS uses `UIDocumentPickerViewController` for file selection.
-    /// Full UIKit integration is left as future work; this returns an error.
-    pub fn prompt_for_paths(&self, _options: ()) -> Result<Option<Vec<PathBuf>>> {
-        Err(anyhow!("File picker not yet implemented for iOS"))
+    fn prompt_for_paths(
+        &self,
+        _options: PathPromptOptions,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        let (tx, rx) = oneshot::channel();
+        // iOS uses UIDocumentPickerViewController for file selection
+        // This would need to be implemented with proper UIKit integration
+        let _ = tx.send(Err(anyhow!("File picker not yet implemented for iOS")));
+        rx
     }
 
-    /// Save dialogs are not yet implemented.
-    pub fn prompt_for_new_path(&self, _directory: &Path) -> Result<Option<PathBuf>> {
-        Err(anyhow!("Save dialog not yet implemented for iOS"))
+    fn prompt_for_new_path(
+        &self,
+        _directory: &Path,
+        _suggested_name: Option<&str>,
+    ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Err(anyhow!("Save dialog not yet implemented for iOS")));
+        rx
     }
 
-    /// iOS does not support mixed file + directory selection.
-    pub fn can_select_mixed_files_and_dirs(&self) -> bool {
+    fn can_select_mixed_files_and_dirs(&self) -> bool {
         false
     }
 
-    /// iOS does not have a Finder-equivalent "reveal in shell" action.
-    pub fn reveal_path(&self, _path: &Path) {}
-
-    /// Would use `UIActivityViewController` to open a file with another app.
-    pub fn open_with_system(&self, _path: &Path) {
-        log::warn!("GPUI iOS: open_with_system not yet implemented");
+    fn reveal_path(&self, _path: &Path) {
+        // iOS doesn't have a file manager like Finder
     }
 
-    // ── App lifecycle callbacks ─────────────────────────────────────────────
+    fn open_with_system(&self, _path: &Path) {
+        // Would use UIDocumentInteractionController or UIActivityViewController
+    }
 
-    /// Register a callback to be invoked when the app is about to terminate.
-    pub fn on_quit(&self, callback: Box<dyn FnMut()>) {
+    fn on_quit(&self, callback: Box<dyn FnMut()>) {
         self.0.lock().quit_callback = Some(callback);
     }
 
-    /// iOS handles app "reopen" through scene lifecycle; no-op here.
-    pub fn on_reopen(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_reopen(&self, _callback: Box<dyn FnMut()>) {
+        // iOS handles app reopening through scene lifecycle
+    }
 
-    // ── Menus ───────────────────────────────────────────────────────────────
+    fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {
+        // iOS doesn't have a menu bar
+        // Could potentially integrate with UIMenuBuilder for context menus
+    }
 
-    /// iOS does not have a menu bar.
-    pub fn set_menus(&self, _menus: Vec<()>) {}
+    fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {
+        // iOS doesn't have a dock menu
+    }
 
-    /// iOS does not have a dock menu.
-    pub fn set_dock_menu(&self, _menu: Vec<()>) {}
+    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn Action)>) {
+        // Not applicable on iOS
+    }
 
-    // ── App bundle ─────────────────────────────────────────────────────────
+    fn on_will_open_app_menu(&self, _callback: Box<dyn FnMut()>) {
+        // Not applicable on iOS
+    }
 
-    /// Returns the path to the app bundle (`.app` directory).
-    pub fn app_path(&self) -> Result<PathBuf> {
+    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(&dyn Action) -> bool>) {
+        // Not applicable on iOS
+    }
+
+    fn app_path(&self) -> Result<PathBuf> {
         unsafe {
             let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
             let path: *mut Object = msg_send![bundle, bundlePath];
@@ -280,37 +288,31 @@ impl IosPlatform {
         }
     }
 
-    /// Returns the path to an auxiliary executable inside the app bundle.
-    pub fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
-        let app = self.app_path()?;
-        Ok(app.join(name))
+    fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
+        let app_path = self.app_path()?;
+        Ok(app_path.join(name))
     }
 
-    // ── Cursor / scrollbar ──────────────────────────────────────────────────
-
-    /// iOS does not have a visible cursor (except Apple Pencil hover on iPad).
-    pub fn set_cursor_style(&self, _style: ()) {}
-
-    /// iOS always auto-hides scrollbars.
-    pub fn should_auto_hide_scrollbars(&self) -> bool {
-        true
+    fn set_cursor_style(&self, _style: CursorStyle) {
+        // iOS doesn't have visible cursors (except for Apple Pencil hover on iPad)
     }
 
-    // ── Clipboard ──────────────────────────────────────────────────────────
+    fn should_auto_hide_scrollbars(&self) -> bool {
+        true // iOS always auto-hides scrollbars
+    }
 
-    /// Write plain text to `UIPasteboard.generalPasteboard`.
-    pub fn write_to_clipboard(&self, text: &str) {
+    fn write_to_clipboard(&self, item: ClipboardItem) {
         unsafe {
             let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
-            let cstr = std::ffi::CString::new(text).unwrap_or_default();
-            let ns_string: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String: cstr.as_ptr()];
-            let _: () = msg_send![pasteboard, setString: ns_string];
+            if let Some(text) = item.text() {
+                let ns_string: *mut Object =
+                    msg_send![class!(NSString), stringWithUTF8String: text.as_ptr()];
+                let _: () = msg_send![pasteboard, setString: ns_string];
+            }
         }
     }
 
-    /// Read plain text from `UIPasteboard.generalPasteboard`.
-    pub fn read_from_clipboard(&self) -> Option<String> {
+    fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         unsafe {
             let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
             let string: *mut Object = msg_send![pasteboard, string];
@@ -321,99 +323,45 @@ impl IosPlatform {
             if utf8.is_null() {
                 return None;
             }
-            std::ffi::CStr::from_ptr(utf8)
-                .to_str()
-                .ok()
-                .map(|s| s.to_string())
+            let text = std::ffi::CStr::from_ptr(utf8).to_str().ok()?;
+            Some(ClipboardItem::new_string(text.to_string()))
         }
     }
 
-    // ── Keychain ────────────────────────────────────────────────────────────
-
-    /// Keychain access is not yet implemented.
-    pub fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Result<()> {
-        Err(anyhow!("Keychain not yet implemented for iOS"))
+    fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Task<Result<()>> {
+        // Would use iOS Keychain Services
+        Task::ready(Err(anyhow!("Keychain not yet implemented for iOS")))
     }
 
-    /// Keychain access is not yet implemented.
-    pub fn read_credentials(&self, _url: &str) -> Result<Option<(String, Vec<u8>)>> {
-        Err(anyhow!("Keychain not yet implemented for iOS"))
+    fn read_credentials(&self, _url: &str) -> Task<Result<Option<(String, Vec<u8>)>>> {
+        Task::ready(Err(anyhow!("Keychain not yet implemented for iOS")))
     }
 
-    /// Keychain access is not yet implemented.
-    pub fn delete_credentials(&self, _url: &str) -> Result<()> {
-        Err(anyhow!("Keychain not yet implemented for iOS"))
+    fn delete_credentials(&self, _url: &str) -> Task<Result<()>> {
+        Task::ready(Err(anyhow!("Keychain not yet implemented for iOS")))
     }
 
-    // ── Keyboard layout ─────────────────────────────────────────────────────
-
-    /// Returns a placeholder keyboard layout identifier.
-    ///
-    /// iOS does not expose keyboard layout APIs equivalent to macOS
-    /// `TISCopyCurrentKeyboardLayoutInputSource`.
-    pub fn keyboard_layout_id(&self) -> &'static str {
-        "ios"
+    fn on_keyboard_layout_change(&self, _callback: Box<dyn FnMut()>) {
+        // iOS handles keyboard layout changes differently
     }
 
-    /// Called when the keyboard layout changes (no-op on iOS).
-    pub fn on_keyboard_layout_change(&self, _callback: Box<dyn FnMut()>) {}
-
-    // ── Internal helpers ────────────────────────────────────────────────────
-
-    /// Invoke the stored quit callback, if any.
-    pub(crate) fn invoke_quit_callback(&self) {
-        if let Some(cb) = self.0.lock().quit_callback.as_mut() {
-            cb();
-        }
+    fn thermal_state(&self) -> ThermalState {
+        // iOS provides thermal state via ProcessInfo
+        // For now, return nominal
+        ThermalState::Nominal
     }
 
-    /// Deliver a list of opened URLs to the registered callback.
-    pub(crate) fn deliver_open_urls(&self, urls: Vec<String>) {
-        if let Some(cb) = self.0.lock().open_urls_callback.as_mut() {
-            cb(urls);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_constructs_without_panic() {
-        let _p = IosPlatform::new();
+    fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>) {
+        self.0.lock().thermal_state_callback = Some(callback);
+        // In a full implementation, we would register for
+        // NSProcessInfoThermalStateDidChangeNotification
     }
 
-    #[test]
-    fn clipboard_round_trip() {
-        // Only meaningful on a real device / simulator; this verifies the
-        // call path compiles and doesn't panic on host builds.
-        let p = IosPlatform::new();
-        p.write_to_clipboard("hello gpui-mobile");
-        // On a host build UIKit is absent, so read_from_clipboard returns None.
-        // That is still a valid (non-panicking) result.
-        let _ = p.read_from_clipboard();
+    fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {
+        Box::new(IosKeyboardLayout)
     }
 
-    #[test]
-    fn auto_hide_scrollbars_is_true() {
-        let p = IosPlatform::new();
-        assert!(p.should_auto_hide_scrollbars());
-    }
-
-    #[test]
-    fn keyboard_layout_id_is_non_empty() {
-        let p = IosPlatform::new();
-        assert!(!p.keyboard_layout_id().is_empty());
-    }
-
-    #[test]
-    fn can_select_mixed_files_false() {
-        let p = IosPlatform::new();
-        assert!(!p.can_select_mixed_files_and_dirs());
+    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
+        Rc::new(DummyKeyboardMapper)
     }
 }

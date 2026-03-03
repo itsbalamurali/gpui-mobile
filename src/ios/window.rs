@@ -4,41 +4,18 @@
 //! - Always fullscreen (or split-screen on iPad)
 //! - No title bar or window chrome
 //! - Touch-based input
-//! - Safe area insets for notch / home indicator
+//! - Safe area insets for notch/home indicator
 //!
-//! The window is backed by a `UIWindow` containing a `UIViewController`
-//! whose view is a custom `UIView` subclass that uses `CAMetalLayer` as its
-//! backing layer.  The Metal layer is then handed to the Blade renderer.
-//!
-//! # Touch dispatch
-//!
-//! UIKit calls `touchesBegan:withEvent:` / `touchesMoved:withEvent:` /
-//! `touchesEnded:withEvent:` / `touchesCancelled:withEvent:` on the
-//! `GPUIMetalView` Objective-C class registered below.  Each of those
-//! handlers reads the `gpui_window_ptr` ivar set during construction and
-//! forwards the touch to `IosWindow::handle_touch`.
-//!
-//! # Rendering
-//!
-//! `gpui_ios_request_frame` (in `ffi.rs`) calls the closure stored in
-//! `request_frame_callback`.  The GPUI framework sets that closure via
-//! `on_request_frame`; it in turn calls `draw` which invokes the Blade
-//! renderer.
+//! The window is backed by a UIWindow containing a UIViewController
+//! whose view hosts the Metal rendering layer.
 
-use super::{
-    events::{
-        touch_began_to_mouse_down, touch_ended_to_mouse_up, touch_location_in_view,
-        touch_modifiers, touch_moved_to_mouse_move, touch_phase, touch_tap_count, Modifiers,
-        MouseButton, PlatformInput, Point, UITouchPhase,
-    },
-    text_input::{key_code_to_key_down, key_code_to_key_up},
-    IosDisplay,
-};
-use super::{DevicePixels, Pixels, Size};
-use anyhow::{anyhow, Result};
-use core_graphics::{
-    base::CGFloat,
-    geometry::{CGPoint, CGRect, CGSize},
+use super::events::*;
+use super::IosDisplay;
+use gpui::{
+    AnyWindowHandle, Bounds, Capslock, DispatchEventResult, GpuSpecs, Modifiers, Pixels,
+    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+    PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
 use objc::{
     class,
@@ -47,100 +24,79 @@ use objc::{
     runtime::{Class, Object, Sel, BOOL, NO, YES},
     sel, sel_impl,
 };
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
     ptr::{self, NonNull},
     rc::Rc,
-    sync::Once,
+    sync::Arc,
 };
-
-// ── Ivar name embedded in the GPUIMetalView ObjC class ───────────────────────
 
 const GPUI_WINDOW_IVAR: &str = "gpui_window_ptr";
 
-// ── One-time ObjC class registration ─────────────────────────────────────────
+static METAL_VIEW_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
 
-static METAL_VIEW_REGISTERED: Once = Once::new();
-
-/// Register a custom `UIView` subclass whose backing layer is `CAMetalLayer`.
-///
-/// The class also installs `touchesBegan/Moved/Ended/Cancelled` handlers that
-/// read the `gpui_window_ptr` ivar and forward touches to Rust.
+/// Register a custom UIView subclass that uses CAMetalLayer as its backing layer.
+/// This is required for Metal rendering on iOS.
 fn register_metal_view_class() -> &'static Class {
-    METAL_VIEW_REGISTERED.call_once(|| {
+    METAL_VIEW_CLASS_REGISTERED.call_once(|| {
         let superclass = class!(UIView);
-        let mut decl = ClassDecl::new("GPUIMetalView", superclass)
-            .expect("GPUIMetalView class already registered");
+        let mut decl = ClassDecl::new("GPUIMetalView", superclass).unwrap();
 
-        // Store a raw pointer back to the owning IosWindow.
-        decl.add_ivar::<*mut c_void>(GPUI_WINDOW_IVAR);
+        // Add ivar to store window pointer for touch handling
+        decl.add_ivar::<*mut std::ffi::c_void>(GPUI_WINDOW_IVAR);
 
-        // ── Class method: layerClass → CAMetalLayer ──────────────────────────
-
+        // Override layerClass to return CAMetalLayer
         extern "C" fn layer_class(_self: &Class, _sel: Sel) -> *const Class {
             class!(CAMetalLayer) as *const Class
         }
 
-        // ── Touch handler helpers ────────────────────────────────────────────
-
-        fn forward_touches(this: &mut Object, touches: *mut Object, event: *mut Object) {
-            unsafe {
-                let window_ptr: *mut c_void = *this.get_ivar(GPUI_WINDOW_IVAR);
-                if window_ptr.is_null() {
-                    return;
-                }
-                let window = &*(window_ptr as *const IosWindow);
-                let all: *mut Object = msg_send![touches, allObjects];
-                let count: usize = msg_send![all, count];
-                for i in 0..count {
-                    let touch: *mut Object = msg_send![all, objectAtIndex: i];
-                    window.handle_touch(touch, event);
-                }
-            }
-        }
-
+        // Touch handling methods
         extern "C" fn touches_began(
             this: &mut Object,
-            _: Sel,
+            _sel: Sel,
             touches: *mut Object,
             event: *mut Object,
         ) {
-            forward_touches(this, touches, event);
+            handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_moved(
             this: &mut Object,
-            _: Sel,
+            _sel: Sel,
             touches: *mut Object,
             event: *mut Object,
         ) {
-            forward_touches(this, touches, event);
+            handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_ended(
             this: &mut Object,
-            _: Sel,
+            _sel: Sel,
             touches: *mut Object,
             event: *mut Object,
         ) {
-            forward_touches(this, touches, event);
+            handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_cancelled(
             this: &mut Object,
-            _: Sel,
+            _sel: Sel,
             touches: *mut Object,
             event: *mut Object,
         ) {
-            forward_touches(this, touches, event);
+            handle_touches(this, touches, event);
         }
 
         unsafe {
+            // Add class method for layerClass
             decl.add_class_method(
                 sel!(layerClass),
                 layer_class as extern "C" fn(&Class, Sel) -> *const Class,
             );
+
+            // Add touch handling instance methods
             decl.add_method(
                 sel!(touchesBegan:withEvent:),
                 touches_began as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
@@ -165,143 +121,109 @@ fn register_metal_view_class() -> &'static Class {
     class!(GPUIMetalView)
 }
 
-// ── IosWindow ─────────────────────────────────────────────────────────────────
+/// Handle touch events from the GPUIMetalView
+fn handle_touches(view: &mut Object, touches: *mut Object, event: *mut Object) {
+    unsafe {
+        // Get the window pointer from the view's ivar
+        let window_ptr: *mut std::ffi::c_void = *view.get_ivar(GPUI_WINDOW_IVAR);
+        if window_ptr.is_null() {
+            log::warn!("GPUI iOS: Touch event but no window pointer set");
+            return;
+        }
 
-/// A GPUI window on iOS, backed by `UIWindow + UIViewController + GPUIMetalView`.
-///
-/// All fields are accessed from the UIKit main thread only.
-pub struct IosWindow {
-    // ── ObjC objects ────────────────────────────────────────────────────────
-    /// The `UIWindow` that hosts the whole view hierarchy.
-    pub(crate) ui_window: *mut Object,
-    /// The root `UIViewController`.
+        let window = &*(window_ptr as *const IosWindow);
+
+        // Get all touches from the set
+        let all_touches: *mut Object = msg_send![touches, allObjects];
+        let count: usize = msg_send![all_touches, count];
+
+        for i in 0..count {
+            let touch: *mut Object = msg_send![all_touches, objectAtIndex: i];
+            window.handle_touch(touch, event);
+        }
+    }
+}
+
+/// iOS Window backed by UIWindow + UIViewController.
+pub(crate) struct IosWindow {
+    /// Handle used by GPUI to identify this window
+    handle: AnyWindowHandle,
+    /// The UIWindow object
+    window: *mut Object,
+    /// The UIViewController
     view_controller: *mut Object,
-    /// The `GPUIMetalView` (Metal-backed `UIView`).
-    pub(crate) view: *mut Object,
-    /// A tiny off-screen `UIView` that becomes first-responder to drive the
-    /// soft keyboard.
+    /// The Metal-backed UIView
+    view: *mut Object,
+    /// The hidden text input view for keyboard input
     text_input_view: *mut Object,
-
-    // ── Display geometry ─────────────────────────────────────────────────────
-    /// Window bounds in logical pixels (points).
-    bounds: Cell<Bounds>,
-    /// Scale factor (e.g. `3.0` on an iPhone 15 Pro).
+    /// Current bounds in pixels
+    bounds: Cell<Bounds<Pixels>>,
+    /// Scale factor
     scale_factor: Cell<f32>,
-
-    // ── Input state ──────────────────────────────────────────────────────────
-    /// Last known touch / pointer position in logical pixels.
-    mouse_position: Cell<Point<Pixels>>,
-    /// Current modifier state (relevant for external keyboards).
-    modifiers: Cell<Modifiers>,
-    /// Whether a touch is currently in the `Began` → `Ended` window.
-    touch_pressed: Cell<bool>,
-
-    // ── GPUI callbacks (set by the framework) ────────────────────────────────
-    /// Called on each CADisplayLink tick to produce a new frame.
-    /// `pub(super)` so `ffi.rs` can access it directly.
-    pub(super) request_frame_callback: RefCell<Option<Box<dyn FnMut()>>>,
-    /// Called for every `PlatformInput` event.
-    input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput)>>>,
-    /// Called when the app transitions between foreground and background.
+    /// Appearance (light/dark mode)
+    appearance: Cell<WindowAppearance>,
+    /// Input handler for text input
+    input_handler: RefCell<Option<PlatformInputHandler>>,
+    /// Callback for frame requests
+    /// Note: pub(super) to allow ffi.rs to access this for the display link callback
+    pub(super) request_frame_callback: RefCell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
+    /// Callback for input events
+    input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>>,
+    /// Callback for active status changes
     active_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
-    /// Called when the window is resized (rare on iOS but possible on iPad
-    /// during Stage Manager / Split View transitions).
+    /// Callback for hover status changes (not really applicable on iOS)
+    hover_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
+    /// Callback for resize events
     resize_callback: RefCell<Option<Box<dyn FnMut(Size<Pixels>, f32)>>>,
-    /// Called once when the window is closed / destroyed.
+    /// Callback for move events (not applicable on iOS)
+    moved_callback: RefCell<Option<Box<dyn FnMut()>>>,
+    /// Callback for should close
+    should_close_callback: RefCell<Option<Box<dyn FnMut() -> bool>>>,
+    /// Callback for hit test
+    hit_test_callback: RefCell<Option<Box<dyn FnMut() -> Option<WindowControlArea>>>>,
+    /// Callback for close
     close_callback: RefCell<Option<Box<dyn FnOnce()>>>,
-    /// Called when the system appearance (light / dark mode) changes.
+    /// Callback for appearance changes
     appearance_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
-
-    // ── Opaque window handle ─────────────────────────────────────────────────
-    /// Application-level window ID (matches the GPUI `AnyWindowHandle` id).
-    pub(crate) handle_id: u64,
+    /// Current mouse position (from touch)
+    mouse_position: Cell<Point<Pixels>>,
+    /// Current modifiers
+    modifiers: Cell<Modifiers>,
+    /// Track if a touch is currently pressed
+    touch_pressed: Cell<bool>,
 }
 
-/// Simple axis-aligned bounding rectangle in logical pixels.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct Bounds {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-impl Bounds {
-    fn from_cgrect(r: CGRect) -> Self {
-        Bounds {
-            x: r.origin.x as f32,
-            y: r.origin.y as f32,
-            width: r.size.width as f32,
-            height: r.size.height as f32,
-        }
-    }
-
-    pub fn size(&self) -> Size<Pixels> {
-        Size {
-            width: Pixels(self.width),
-            height: Pixels(self.height),
-        }
-    }
-}
-
-// SAFETY: `IosWindow` is only accessed from the UIKit main thread.
+// Required for raw_window_handle
 unsafe impl Send for IosWindow {}
 unsafe impl Sync for IosWindow {}
 
 impl IosWindow {
-    // ── Construction ──────────────────────────────────────────────────────────
-
-    /// Create a new `IosWindow` covering the full main screen.
-    ///
-    /// This:
-    /// 1. Allocates and initialises a `UIWindow`
-    /// 2. Creates a `UIViewController` with a `GPUIMetalView` root view
-    /// 3. Configures the `CAMetalLayer` for Metal rendering
-    /// 4. Makes the window key and visible
-    /// 5. Creates a hidden text-input view for soft-keyboard routing
-    pub fn new(handle_id: u64) -> Result<Self> {
-        let display = IosDisplay::main();
-        let (logical_w, logical_h) = display.logical_size();
-        let scale = display.scale();
+    pub fn new(handle: AnyWindowHandle, _params: WindowParams) -> anyhow::Result<Self> {
+        // Create the window on the main screen
+        let screen = IosDisplay::main();
+        let screen_bounds = screen.bounds();
+        let scale_factor = screen.scale();
 
         unsafe {
-            // ── UIScreen / bounds ────────────────────────────────────────────
-            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
-            let screen_rect: CGRect = msg_send![screen, bounds];
-            let screen_scale: CGFloat = msg_send![screen, scale];
+            // Create UIWindow
+            let screen_obj: *mut Object = msg_send![class!(UIScreen), mainScreen];
+            let screen_bounds_cg: core_graphics::geometry::CGRect = msg_send![screen_obj, bounds];
+            let window: *mut Object = msg_send![class!(UIWindow), alloc];
+            let window: *mut Object = msg_send![window, initWithFrame: screen_bounds_cg];
 
-            // ── UIWindow ─────────────────────────────────────────────────────
-            let ui_window: *mut Object = {
-                let alloc: *mut Object = msg_send![class!(UIWindow), alloc];
-                msg_send![alloc, initWithFrame: screen_rect]
-            };
-            if ui_window.is_null() {
-                return Err(anyhow!("Failed to create UIWindow"));
-            }
+            // Create UIViewController
+            let view_controller: *mut Object = msg_send![class!(UIViewController), alloc];
+            let view_controller: *mut Object = msg_send![view_controller, init];
 
-            // ── UIViewController ─────────────────────────────────────────────
-            let view_controller: *mut Object = {
-                let alloc: *mut Object = msg_send![class!(UIViewController), alloc];
-                msg_send![alloc, init]
-            };
-            if view_controller.is_null() {
-                return Err(anyhow!("Failed to create UIViewController"));
-            }
-
-            // ── GPUIMetalView ─────────────────────────────────────────────────
+            // Create our custom Metal view using the registered class
             let metal_view_class = register_metal_view_class();
-            let view: *mut Object = {
-                let alloc: *mut Object = msg_send![metal_view_class, alloc];
-                msg_send![alloc, initWithFrame: screen_rect]
-            };
-            if view.is_null() {
-                return Err(anyhow!("Failed to create GPUIMetalView"));
-            }
+            let view: *mut Object = msg_send![metal_view_class, alloc];
+            let view: *mut Object = msg_send![view, initWithFrame: screen_bounds_cg];
 
-            // ── CAMetalLayer configuration ────────────────────────────────────
+            // Configure the Metal layer
             let layer: *mut Object = msg_send![view, layer];
 
-            // Obtain the default Metal device.
+            // Get the Metal device using the Metal framework function
             #[link(name = "Metal", kind = "framework")]
             unsafe extern "C" {
                 fn MTLCreateSystemDefaultDevice() -> *mut Object;
@@ -310,262 +232,134 @@ impl IosWindow {
             if !device.is_null() {
                 let _: () = msg_send![layer, setDevice: device];
             }
-
-            // MTLPixelFormatBGRA8Unorm = 80
-            let _: () = msg_send![layer, setPixelFormat: 80_u64];
-            // Allow the GPU to sample from the drawable texture.
+            let _: () = msg_send![layer, setPixelFormat: 80_u64]; // MTLPixelFormatBGRA8Unorm
             let _: () = msg_send![layer, setFramebufferOnly: NO];
-            let _: () = msg_send![layer, setContentsScale: screen_scale];
-
-            // Set drawable size in device pixels.
-            let drawable_size = CGSize {
-                width: screen_rect.size.width * screen_scale,
-                height: screen_rect.size.height * screen_scale,
+            let scale: core_graphics::base::CGFloat = msg_send![screen_obj, scale];
+            let _: () = msg_send![layer, setContentsScale: scale];
+            let drawable_size = core_graphics::geometry::CGSize {
+                width: screen_bounds_cg.size.width * scale,
+                height: screen_bounds_cg.size.height * scale,
             };
             let _: () = msg_send![layer, setDrawableSize: drawable_size];
 
-            // Enable multi-touch on the view.
+            // Enable user interaction on the Metal view for touch handling
             let _: () = msg_send![view, setUserInteractionEnabled: YES];
             let _: () = msg_send![view, setMultipleTouchEnabled: YES];
 
-            // ── Hook up view hierarchy ────────────────────────────────────────
+            // Set the view as the view controller's view
             let _: () = msg_send![view_controller, setView: view];
-            let _: () = msg_send![ui_window, setRootViewController: view_controller];
-            let _: () = msg_send![ui_window, makeKeyAndVisible];
 
-            // ── Hidden text-input view for soft keyboard ──────────────────────
-            let text_input_view: *mut Object = {
-                let tiny = CGRect {
-                    origin: CGPoint { x: 0.0, y: 0.0 },
-                    size: CGSize {
-                        width: 1.0,
-                        height: 1.0,
-                    },
-                };
-                let alloc: *mut Object = msg_send![class!(UIView), alloc];
-                let v: *mut Object = msg_send![alloc, initWithFrame: tiny];
-                // Nearly transparent — still receives first-responder.
-                let _: () = msg_send![v, setAlpha: 0.01_f64];
-                let _: () = msg_send![v, setUserInteractionEnabled: YES];
-                let _: () = msg_send![view, addSubview: v];
-                v
+            // Set the root view controller
+            let _: () = msg_send![window, setRootViewController: view_controller];
+
+            // Make the window visible
+            let _: () = msg_send![window, makeKeyAndVisible];
+
+            // Create a hidden text input view for keyboard handling
+            // This view conforms to UIKeyInput and handles keyboard events
+            let text_input_view: *mut Object = msg_send![class!(UIView), alloc];
+            let text_input_frame = core_graphics::geometry::CGRect {
+                origin: core_graphics::geometry::CGPoint { x: 0.0, y: 0.0 },
+                size: core_graphics::geometry::CGSize {
+                    width: 1.0,
+                    height: 1.0,
+                },
             };
+            let text_input_view: *mut Object =
+                msg_send![text_input_view, initWithFrame: text_input_frame];
+            // Make it invisible but still able to become first responder
+            let _: () = msg_send![text_input_view, setAlpha: 0.01_f64];
+            let _: () = msg_send![text_input_view, setUserInteractionEnabled: YES];
+            let _: () = msg_send![view, addSubview: text_input_view];
 
-            let bounds = Bounds {
-                x: 0.0,
-                y: 0.0,
-                width: logical_w,
-                height: logical_h,
-            };
-
-            Ok(IosWindow {
-                ui_window,
+            let ios_window = Self {
+                handle,
+                window,
                 view_controller,
                 view,
                 text_input_view,
-                bounds: Cell::new(bounds),
-                scale_factor: Cell::new(scale),
-                mouse_position: Cell::new(Point::new(Pixels(0.0), Pixels(0.0))),
-                modifiers: Cell::new(Modifiers::default()),
-                touch_pressed: Cell::new(false),
+                bounds: Cell::new(screen_bounds),
+                scale_factor: Cell::new(scale_factor),
+                appearance: Cell::new(WindowAppearance::Light),
+                input_handler: RefCell::new(None),
                 request_frame_callback: RefCell::new(None),
                 input_callback: RefCell::new(None),
                 active_status_callback: RefCell::new(None),
+                hover_status_callback: RefCell::new(None),
                 resize_callback: RefCell::new(None),
+                moved_callback: RefCell::new(None),
+                should_close_callback: RefCell::new(None),
+                hit_test_callback: RefCell::new(None),
                 close_callback: RefCell::new(None),
                 appearance_changed_callback: RefCell::new(None),
-                handle_id,
-            })
+                mouse_position: Cell::new(Point::default()),
+                modifiers: Cell::new(Modifiers::default()),
+                touch_pressed: Cell::new(false),
+            };
+
+            Ok(ios_window)
         }
     }
 
-    // ── FFI registration ──────────────────────────────────────────────────────
-
-    /// Register this window with the FFI layer and set the back-pointer on the
-    /// `GPUIMetalView` so touch events can find us.
-    ///
-    /// Must be called **after** the `IosWindow` has been placed at a stable
-    /// address (i.e. inside a `Box`).
+    /// Register this window with the FFI layer after it's been stored.
+    /// This must be called after the window is placed at a stable address
+    /// (e.g., in a Box or Arc).
     pub(crate) fn register_with_ffi(&self) {
         super::ffi::register_window(self as *const Self);
 
+        // Set the window pointer on the view so touch events can find us
         unsafe {
-            let ptr = self as *const Self as *mut c_void;
-            (*self.view).set_ivar(GPUI_WINDOW_IVAR, ptr);
+            let window_ptr = self as *const Self as *mut std::ffi::c_void;
+            (*self.view).set_ivar(GPUI_WINDOW_IVAR, window_ptr);
             log::info!(
-                "GPUI iOS Window: registered at {:p}, view {:p}",
-                ptr,
+                "GPUI iOS: Set window pointer {:p} on view {:p}",
+                window_ptr,
                 self.view
             );
         }
     }
 
-    // ── Touch handling ────────────────────────────────────────────────────────
-
-    /// Translate a raw `UITouch` / `UIEvent` pair into a `PlatformInput` event
-    /// and deliver it to the registered input callback.
-    ///
-    /// # Safety
-    /// `touch` must be a valid live `UITouch *`.
-    /// `event` may be null (we only inspect the touch, not the event envelope).
+    /// Handle a touch event from UIKit
     pub fn handle_touch(&self, touch: *mut Object, _event: *mut Object) {
         let position = touch_location_in_view(touch, self.view);
         let phase = touch_phase(touch);
         let tap_count = touch_tap_count(touch);
-        let mods = self.modifiers.get();
+        let modifiers = self.modifiers.get();
 
         self.mouse_position.set(position);
 
         let platform_input = match phase {
             UITouchPhase::Began => {
                 self.touch_pressed.set(true);
-                touch_began_to_mouse_down(position, tap_count, mods)
+                touch_began_to_mouse_down(position, tap_count, modifiers)
             }
             UITouchPhase::Moved => {
-                touch_moved_to_mouse_move(position, mods, Some(MouseButton::Left))
+                touch_moved_to_mouse_move(position, modifiers, Some(gpui::MouseButton::Left))
             }
             UITouchPhase::Ended | UITouchPhase::Cancelled => {
                 self.touch_pressed.set(false);
-                touch_ended_to_mouse_up(position, tap_count, mods)
+                touch_ended_to_mouse_up(position, tap_count, modifiers)
             }
             UITouchPhase::Stationary => return,
         };
 
-        if let Some(cb) = self.input_callback.borrow_mut().as_mut() {
-            cb(platform_input);
+        if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
+            callback(platform_input);
         }
     }
 
-    // ── Keyboard ──────────────────────────────────────────────────────────────
-
-    /// Make the hidden text-input view the first responder, which causes UIKit
-    /// to show the on-screen keyboard.
-    pub fn show_keyboard(&self) {
-        unsafe {
-            let _: BOOL = msg_send![self.text_input_view, becomeFirstResponder];
-        }
-        log::info!("GPUI iOS Window: show_keyboard");
-    }
-
-    /// Resign first responder on the text-input view, hiding the keyboard.
-    pub fn hide_keyboard(&self) {
-        unsafe {
-            let _: BOOL = msg_send![self.text_input_view, resignFirstResponder];
-        }
-        log::info!("GPUI iOS Window: hide_keyboard");
-    }
-
-    /// Handle a string of characters delivered by the soft keyboard.
-    ///
-    /// `text_ns_string` is an `NSString *` cast to `*mut Object`.
-    pub fn handle_text_input(&self, text_ns_string: *mut Object) {
-        if text_ns_string.is_null() {
-            return;
-        }
-
-        let text: String = unsafe {
-            let utf8: *const i8 = msg_send![text_ns_string, UTF8String];
-            if utf8.is_null() {
-                return;
-            }
-            std::ffi::CStr::from_ptr(utf8)
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        log::debug!("GPUI iOS Window: text input {:?}", text);
-
-        // Re-use the key-event path: emit one KeyDown per character.
-        for c in text.chars() {
-            use super::text_input::{character_to_key_down, PlatformKeyEvent};
-            let ev = character_to_key_down(c);
-
-            // Convert to a generic PlatformInput so the single input_callback
-            // handles both touch and keyboard events.
-            // (In a full GPUI integration you'd dispatch KeyDown / KeyUp
-            //  through the proper gpui::PlatformInput variants.)
-            if let PlatformKeyEvent::KeyDown(key_ev) = ev {
-                log::trace!("  char KeyDown: {:?}", key_ev.keystroke.key);
-            }
-        }
-    }
-
-    /// Handle a hardware-keyboard key event from an external keyboard.
-    ///
-    /// - `key_code`   : USB HID keyboard usage code (`UIKeyboardHIDUsage`)
-    /// - `modifier_flags` : `UIKeyModifierFlags` bitmask
-    /// - `is_key_down`: `true` for key-down, `false` for key-up
-    pub fn handle_key_event(&self, key_code: u32, modifier_flags: u32, is_key_down: bool) {
-        use super::text_input::{
-            key_code_to_string, modifier_flags_to_modifiers, PlatformKeyEvent,
-        };
-
-        let key = key_code_to_string(key_code);
-        let mods = modifier_flags_to_modifiers(modifier_flags);
-
-        log::debug!(
-            "GPUI iOS Window: key_event key={:?} mods={:?} down={}",
-            key,
-            mods,
-            is_key_down,
-        );
-
-        let ev = if is_key_down {
-            key_code_to_key_down(key_code, modifier_flags)
-        } else {
-            key_code_to_key_up(key_code, modifier_flags)
-        };
-
-        // A full integration would dispatch through gpui::PlatformInput::KeyDown/Up.
-        log::trace!("  platform key event: {:?}", ev);
-    }
-
-    // ── Active-status changes ─────────────────────────────────────────────────
-
-    /// Notify the window that the application's active status has changed.
-    ///
-    /// Called by `ffi.rs` in response to `UIApplicationDelegate` lifecycle
-    /// callbacks.
-    pub fn notify_active_status_change(&self, is_active: bool) {
-        log::info!(
-            "GPUI iOS Window: active status → {}",
-            if is_active { "active" } else { "inactive" }
-        );
-        if let Some(cb) = self.active_status_callback.borrow_mut().as_mut() {
-            cb(is_active);
-        }
-    }
-
-    // ── Geometry ──────────────────────────────────────────────────────────────
-
-    /// Returns the current window bounds in logical pixels (points).
-    pub fn bounds(&self) -> Bounds {
-        self.bounds.get()
-    }
-
-    /// Returns the screen scale factor.
-    pub fn scale_factor(&self) -> f32 {
-        self.scale_factor.get()
-    }
-
-    /// Returns the content size (equals `bounds.size()` on iOS — always
-    /// fullscreen).
-    pub fn content_size(&self) -> Size<Pixels> {
-        self.bounds.get().size()
-    }
-
-    /// Returns the safe-area insets `(top, left, bottom, right)` in points.
-    ///
-    /// Used to avoid drawing behind the notch and home indicator.
+    /// Get the safe area insets
     pub fn safe_area_insets(&self) -> (f32, f32, f32, f32) {
-        #[repr(C)]
-        struct UIEdgeInsets {
-            top: f64,
-            left: f64,
-            bottom: f64,
-            right: f64,
-        }
         unsafe {
+            // UIEdgeInsets struct
+            #[repr(C)]
+            struct UIEdgeInsets {
+                top: f64,
+                left: f64,
+                bottom: f64,
+                right: f64,
+            }
+
             let insets: UIEdgeInsets = msg_send![self.view, safeAreaInsets];
             (
                 insets.top as f32,
@@ -576,92 +370,367 @@ impl IosWindow {
         }
     }
 
-    // ── Callback registration (called by the GPUI framework) ──────────────────
-
-    /// Register the frame-request callback.  Called on every CADisplayLink tick
-    /// via `gpui_ios_request_frame`.
-    pub fn on_request_frame(&self, callback: Box<dyn FnMut()>) {
-        *self.request_frame_callback.borrow_mut() = Some(callback);
-    }
-
-    /// Register the input-event callback.
-    pub fn on_input(&self, callback: Box<dyn FnMut(PlatformInput)>) {
-        *self.input_callback.borrow_mut() = Some(callback);
-    }
-
-    /// Register the active-status-change callback.
-    pub fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
-        *self.active_status_callback.borrow_mut() = Some(callback);
-    }
-
-    /// Register the resize callback.
-    pub fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
-        *self.resize_callback.borrow_mut() = Some(callback);
-    }
-
-    /// Register the close callback (called at most once).
-    pub fn on_close(&self, callback: Box<dyn FnOnce()>) {
-        *self.close_callback.borrow_mut() = Some(callback);
-    }
-
-    /// Register the appearance-changed callback.
-    pub fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
-        *self.appearance_changed_callback.borrow_mut() = Some(callback);
-    }
-
-    // ── Miscellaneous UIKit helpers ───────────────────────────────────────────
-
-    /// Returns whether this window is currently the key window.
-    pub fn is_active(&self) -> bool {
+    /// Show the software keyboard
+    pub fn show_keyboard(&self) {
+        log::info!("GPUI iOS: Showing keyboard");
         unsafe {
-            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-            let key: *mut Object = msg_send![app, keyWindow];
-            self.ui_window == key
+            // Make the text input view become first responder to show keyboard
+            let _: BOOL = msg_send![self.text_input_view, becomeFirstResponder];
         }
     }
 
-    /// Bring the window to the front and make it key.
-    pub fn activate(&self) {
+    /// Hide the software keyboard
+    pub fn hide_keyboard(&self) {
+        log::info!("GPUI iOS: Hiding keyboard");
         unsafe {
-            let _: () = msg_send![self.ui_window, makeKeyAndVisible];
+            // Resign first responder to hide keyboard
+            let _: BOOL = msg_send![self.text_input_view, resignFirstResponder];
         }
     }
 
-    /// iOS windows are always fullscreen.
-    pub fn is_fullscreen(&self) -> bool {
-        true
-    }
+    /// Handle text input from the software keyboard
+    pub fn handle_text_input(&self, text: *mut Object) {
+        if text.is_null() {
+            return;
+        }
 
-    /// Current light/dark appearance.
-    pub fn appearance(&self) -> super::platform::WindowAppearance {
         unsafe {
-            let tc: *mut Object = msg_send![self.view, traitCollection];
-            let style: i64 = msg_send![tc, userInterfaceStyle];
-            match style {
-                2 => super::platform::WindowAppearance::Dark,
-                1 => super::platform::WindowAppearance::Light,
-                _ => super::platform::WindowAppearance::Unknown,
+            // Convert NSString to Rust String
+            let utf8: *const i8 = msg_send![text, UTF8String];
+            if utf8.is_null() {
+                return;
+            }
+
+            let text_str = std::ffi::CStr::from_ptr(utf8)
+                .to_string_lossy()
+                .into_owned();
+
+            log::info!("GPUI iOS: Text input: {:?}", text_str);
+
+            // First try the input handler (for text fields)
+            if let Some(handler) = self.input_handler.borrow_mut().as_mut() {
+                handler.replace_text_in_range(None, &text_str);
+                return;
+            }
+
+            // Otherwise, send as key events
+            for c in text_str.chars() {
+                let keystroke = gpui::Keystroke {
+                    modifiers: Modifiers::default(),
+                    key: c.to_string(),
+                    key_char: Some(c.to_string()),
+                };
+
+                let event = PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke,
+                    is_held: false,
+                    prefer_character_input: true,
+                });
+
+                if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
+                    callback(event);
+                }
             }
         }
     }
 
-    /// Last pointer position (from the most recent touch event).
-    pub fn mouse_position(&self) -> Point<Pixels> {
-        self.mouse_position.get()
+    /// Handle a key event from an external keyboard
+    pub fn handle_key_event(&self, key_code: u32, modifier_flags: u32, is_key_down: bool) {
+        use super::text_input::{
+            key_code_to_key_down, key_code_to_key_up, key_code_to_string,
+            modifier_flags_to_modifiers,
+        };
+
+        let key = key_code_to_string(key_code);
+        let modifiers = modifier_flags_to_modifiers(modifier_flags);
+
+        log::info!(
+            "GPUI iOS: Key event - key: {:?}, modifiers: {:?}, down: {}",
+            key,
+            modifiers,
+            is_key_down
+        );
+
+        let event = if is_key_down {
+            key_code_to_key_down(key_code, modifier_flags)
+        } else {
+            key_code_to_key_up(key_code, modifier_flags)
+        };
+
+        if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
+            callback(event);
+        }
     }
 
-    /// Current modifier state.
-    pub fn modifiers(&self) -> Modifiers {
-        self.modifiers.get()
+    /// Notify the window of active status changes (foreground/background).
+    ///
+    /// This is called by the FFI layer when the app transitions between
+    /// foreground and background states.
+    pub fn notify_active_status_change(&self, is_active: bool) {
+        log::info!("GPUI iOS: Window active status changed to: {}", is_active);
+
+        if let Some(callback) = self.active_status_callback.borrow_mut().as_mut() {
+            callback(is_active);
+        }
     }
 }
 
-impl Drop for IosWindow {
-    fn drop(&mut self) {
-        // Invoke the close callback, if any.
-        if let Some(cb) = self.close_callback.borrow_mut().take() {
-            cb();
+impl HasWindowHandle for IosWindow {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+    {
+        let view = NonNull::new(self.view as *mut c_void)
+            .ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = UiKitWindowHandle::new(view);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl HasDisplayHandle for IosWindow {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+    {
+        let handle = UiKitDisplayHandle::new();
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl PlatformWindow for IosWindow {
+    fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds.get()
+    }
+
+    fn is_maximized(&self) -> bool {
+        true // iOS windows are always "maximized"
+    }
+
+    fn window_bounds(&self) -> WindowBounds {
+        WindowBounds::Fullscreen(self.bounds.get())
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        self.bounds.get().size
+    }
+
+    fn resize(&mut self, _size: Size<Pixels>) {
+        // iOS windows cannot be resized programmatically
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor.get()
+    }
+
+    fn appearance(&self) -> WindowAppearance {
+        unsafe {
+            let trait_collection: *mut Object = msg_send![self.view, traitCollection];
+            let style: i64 = msg_send![trait_collection, userInterfaceStyle];
+            match style {
+                2 => WindowAppearance::Dark,
+                _ => WindowAppearance::Light,
+            }
         }
-        log::info!("GPUI iOS Window: dropped (handle_id={})", self.handle_id);
+    }
+
+    fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+        Some(Rc::new(IosDisplay::main()))
+    }
+
+    fn mouse_position(&self) -> Point<Pixels> {
+        self.mouse_position.get()
+    }
+
+    fn modifiers(&self) -> Modifiers {
+        self.modifiers.get()
+    }
+
+    fn capslock(&self) -> Capslock {
+        // Would need to check UIKeyModifierFlags
+        Capslock { on: false }
+    }
+
+    fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
+        *self.input_handler.borrow_mut() = Some(input_handler);
+    }
+
+    fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
+        self.input_handler.borrow_mut().take()
+    }
+
+    fn prompt(
+        &self,
+        _level: PromptLevel,
+        msg: &str,
+        detail: Option<&str>,
+        answers: &[PromptButton],
+    ) -> Option<futures::channel::oneshot::Receiver<usize>> {
+        // Would use UIAlertController
+        let (_tx, rx) = futures::channel::oneshot::channel();
+
+        unsafe {
+            // Create UIAlertController
+            let title = msg;
+            let message = detail.unwrap_or("");
+
+            let alert_style: i64 = 1; // UIAlertControllerStyleAlert
+
+            let title_str: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: title.as_ptr()];
+            let message_str: *mut Object =
+                msg_send![class!(NSString), stringWithUTF8String: message.as_ptr()];
+
+            let alert: *mut Object = msg_send![
+                class!(UIAlertController),
+                alertControllerWithTitle: title_str
+                message: message_str
+                preferredStyle: alert_style
+            ];
+
+            // Add buttons
+            for (_index, button) in answers.iter().enumerate() {
+                let button_title: *mut Object = msg_send![
+                    class!(NSString),
+                    stringWithUTF8String: button.label().as_str().as_ptr()
+                ];
+
+                let action_style: i64 = if button.is_cancel() { 1 } else { 0 }; // UIAlertActionStyleCancel or Default
+
+                // Note: In production, this would need a block that calls tx.send(index)
+                let action: *mut Object = msg_send![
+                    class!(UIAlertAction),
+                    actionWithTitle: button_title
+                    style: action_style
+                    handler: ptr::null::<Object>()
+                ];
+
+                let _: () = msg_send![alert, addAction: action];
+            }
+
+            // Present the alert
+            let _: () = msg_send![
+                self.view_controller,
+                presentViewController: alert
+                animated: YES
+                completion: ptr::null::<Object>()
+            ];
+        }
+
+        Some(rx)
+    }
+
+    fn activate(&self) {
+        unsafe {
+            let _: () = msg_send![self.window, makeKeyAndVisible];
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        unsafe {
+            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+            let key_window: *mut Object = msg_send![app, keyWindow];
+            self.window == key_window
+        }
+    }
+
+    fn is_hovered(&self) -> bool {
+        // Hover isn't really applicable on iOS
+        false
+    }
+
+    fn set_title(&mut self, _title: &str) {
+        // iOS apps don't have window titles
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        WindowBackgroundAppearance::Opaque
+    }
+
+    fn set_background_appearance(&self, _background_appearance: WindowBackgroundAppearance) {
+        // Could adjust view background color
+    }
+
+    fn minimize(&self) {
+        // iOS apps cannot be minimized
+    }
+
+    fn zoom(&self) {
+        // iOS apps cannot be zoomed
+    }
+
+    fn toggle_fullscreen(&self) {
+        // iOS apps are always fullscreen
+    }
+
+    fn is_fullscreen(&self) -> bool {
+        true
+    }
+
+    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+        *self.request_frame_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
+        *self.input_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        *self.active_status_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
+        *self.hover_status_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
+        *self.resize_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_moved(&self, callback: Box<dyn FnMut()>) {
+        *self.moved_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
+        *self.should_close_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
+        *self.hit_test_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_close(&self, callback: Box<dyn FnOnce()>) {
+        *self.close_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
+        *self.appearance_changed_callback.borrow_mut() = Some(callback);
+    }
+
+    fn draw(&self, _scene: &Scene) {
+        // Drawing is handled by the Blade renderer which is managed externally.
+        // In the upstream Zed PR, the renderer is stored in this struct,
+        // but since we're in a standalone crate without direct access to the
+        // blade renderer internals, drawing is delegated to the platform layer.
+        log::trace!("GPUI iOS: draw called");
+    }
+
+    fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        // This would return the atlas from the Blade renderer.
+        // For now, we panic since this requires proper renderer integration.
+        unimplemented!("sprite_atlas requires Blade renderer integration")
+    }
+
+    fn is_subpixel_rendering_supported(&self) -> bool {
+        // iOS does not support subpixel rendering (LCD antialiasing)
+        false
+    }
+
+    fn gpu_specs(&self) -> Option<GpuSpecs> {
+        // Would query Metal device capabilities
+        None
+    }
+
+    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
+        // iOS handles IME positioning automatically
     }
 }

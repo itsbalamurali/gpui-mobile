@@ -2,18 +2,24 @@
 name = "gpui-android-example"
 version = "0.1.0"
 edition = "2021"
-description = "Android NativeActivity cdylib that links gpui-mobile with gpui_android_main"
+description = "Cross-platform GPUI example app for Android and iOS"
 publish = false
 
 [lib]
 name = "gpui_android_example"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 path = "src/lib.rs"
 
+[[bin]]
+name = "gpui-example"
+path = "src/main.rs"
+
 [dependencies]
-gpui-mobile = { path = "../.." }
+gpui-mobile = { path = ".." }
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", default-features = false }
 log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.13"
 android-activity = { version = "0.6", features = ["native-activity"] }
 

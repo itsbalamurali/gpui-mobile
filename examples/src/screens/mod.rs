@@ -86,20 +86,31 @@ impl Router {
         // Query safe area insets from the Android platform if available.
         let safe_area = Self::query_safe_area();
 
+        let user_name = if cfg!(target_os = "ios") {
+            "iOS"
+        } else if cfg!(target_os = "android") {
+            "Android"
+        } else {
+            "Mobile"
+        };
+
         Self {
             current_screen: Screen::Home,
             tap_count: 0,
-            user_name: "Android".into(),
+            user_name: user_name.into(),
             dark_mode: true,
             history: Vec::new(),
             safe_area,
         }
     }
 
-    /// Query the safe area insets from the global AndroidPlatform.
+    /// Query the safe area insets from the platform.
     ///
-    /// Returns logical-pixel insets if the platform and primary window are
-    /// available, otherwise returns zeros (no padding).
+    /// On Android, reads insets from the global `AndroidPlatform` via
+    /// `jni_entry`.  On iOS, safe area insets are managed by UIKit and
+    /// will be queried once the iOS platform integration exposes them.
+    ///
+    /// Returns logical-pixel insets if available, otherwise zeros (no padding).
     fn query_safe_area() -> SafeArea {
         #[cfg(target_os = "android")]
         {
@@ -120,6 +131,21 @@ impl Router {
                 }
             }
         }
+
+        #[cfg(target_os = "ios")]
+        {
+            // TODO: Query safe area insets from the iOS platform once
+            // IosWindow exposes them (status bar, home indicator, notch).
+            // For now, provide sensible defaults for modern iPhones.
+            return SafeArea {
+                top: 59.0,    // status bar + notch
+                bottom: 34.0, // home indicator
+                left: 0.0,
+                right: 0.0,
+            };
+        }
+
+        #[allow(unreachable_code)]
         SafeArea::default()
     }
 
