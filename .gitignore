@@ -1,0 +1,79 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# iOS
+*.xcodeproj
+*.xcworkspace
+build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Android
+*.apk
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+.gradle/
+local.properties
+*.iml
+.idea/
+
+# WebAssembly
+pkg/
+wasm-pack.log
+*.wasm
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Documentation
+target/doc/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/

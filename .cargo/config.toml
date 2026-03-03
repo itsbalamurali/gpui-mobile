@@ -1,0 +1,30 @@
+# Cargo configuration for gpui-mobile
+#
+# This file configures cross-compilation for Android targets.
+# The RUST_FONTCONFIG_DLOPEN=on env var prevents yeslogic-fontconfig-sys
+# from trying to link fontconfig at build time (which fails on Android).
+
+[env]
+# Enable dlopen-based fontconfig loading so the build doesn't fail
+# when cross-compiling for Android (fontconfig is not available).
+RUST_FONTCONFIG_DLOPEN = "on"
+
+# ── Android NDK linker configuration ─────────────────────────────────────────
+#
+# These use the NDK clang as the linker for each Android target.
+# Adjust the NDK path if yours differs from the default Android Studio location.
+#
+# If you use cargo-ndk, these are set automatically and can be left commented.
+# Uncomment and adjust if building without cargo-ndk.
+
+# [target.aarch64-linux-android]
+# linker = "/Users/pandranki/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
+
+# [target.armv7-linux-androideabi]
+# linker = "/Users/pandranki/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/armv7a-linux-androideabi26-clang"
+
+# [target.x86_64-linux-android]
+# linker = "/Users/pandranki/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang"
+
+# [target.i686-linux-android]
+# linker = "/Users/pandranki/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/i686-linux-android26-clang"

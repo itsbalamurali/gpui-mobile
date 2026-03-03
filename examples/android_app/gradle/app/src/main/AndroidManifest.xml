@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AndroidManifest.xml for the GPUI Mobile Android Example.
+
+  This manifest declares a NativeActivity that loads the Rust shared library
+  compiled from the `android_app` example.  The library name is injected via
+  the `nativeLibraryName` manifest placeholder defined in build.gradle.kts.
+
+  Key points:
+    - NativeActivity is used instead of a regular Activity so the entire
+      application lifecycle is driven from native (Rust) code.
+    - The `android.app.lib_name` meta-data tells NativeActivity which .so
+      to dlopen.  It must match the cdylib / example output name WITHOUT
+      the `lib` prefix or `.so` suffix.
+    - `configChanges` prevents the activity from being recreated on common
+      configuration changes (rotation, keyboard, screen size).  The Rust
+      code handles these via NDK callbacks instead.
+    - Hardware acceleration is enabled for Vulkan / GPU compositing.
+    - The theme hides the title bar and status bar for a fullscreen
+      immersive experience.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Vulkan feature declaration.
+         `required="false"` allows the app to fall back to OpenGL ES on
+         devices without Vulkan support. -->
+    <uses-feature
+        android:name="android.hardware.vulkan.level"
+        android:required="false"
+        android:version="0" />
+
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:required="false"
+        android:version="0x00401000" />
+
+    <!-- GPU hardware acceleration is required for wgpu rendering. -->
+    <uses-feature
+        android:glEsVersion="0x00030000"
+        android:required="true" />
+
+    <!-- Touchscreen support (virtually all Android devices). -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="GPUI Mobile Example"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <!--
+          NativeActivity — the Android framework loads the specified native
+          library and calls ANativeActivity_onCreate(), which is defined in
+          gpui_mobile::android::jni_entry.
+
+          The spawned Rust thread then calls gpui_android_main() (defined in
+          the android_app example) to start the application.
+        -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="unspecified"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+            <!-- The native library name WITHOUT the "lib" prefix and ".so" suffix.
+                 This is set via manifestPlaceholders in build.gradle.kts. -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="${nativeLibraryName}" />
+
+            <!-- Mark this activity as the main launcher entry point. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

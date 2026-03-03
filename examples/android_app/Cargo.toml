@@ -1,0 +1,31 @@
+[package]
+name = "gpui-android-example"
+version = "0.1.0"
+edition = "2021"
+description = "Android NativeActivity cdylib that links gpui-mobile with gpui_android_main"
+publish = false
+
+[lib]
+name = "gpui_android_example"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+gpui-mobile = { path = "../.." }
+gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", default-features = false }
+log = "0.4"
+android_logger = "0.13"
+android-activity = { version = "0.6", features = ["native-activity"] }
+
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
