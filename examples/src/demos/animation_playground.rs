@@ -1,6 +1,6 @@
 //! Animation Playground demo - bouncing balls with physics and particle effects.
 //!
-//! This demo showcases GPUI's animation and rendering capabilities on iOS:
+//! This demo showcases GPUI's animation and rendering capabilities on mobile:
 //! - Tap to spawn bouncing balls with physics simulation
 //! - Balls have trails and particle effects
 //! - Demonstrates smooth 60fps rendering

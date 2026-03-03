@@ -3,6 +3,14 @@
 //! This module exposes C-compatible functions that can be called from
 //! Objective-C code in the iOS app delegate to initialize and control
 //! the GPUI application lifecycle.
+//!
+//! ## Typical call sequence from Obj-C
+//!
+//! ```text
+//! gpui_ios_run_demo()          // sets up platform + invokes finish-launching
+//! gpui_ios_get_window()        // retrieve the GPUI window pointer
+//! gpui_ios_request_frame(ptr)  // called every CADisplayLink tick
+//! ```
 
 use gpui::{App, AppContext, Application, RequestFrameOptions, WindowOptions};
 use std::ffi::c_void;
@@ -377,21 +385,62 @@ pub extern "C" fn gpui_ios_handle_key_event(
     window.handle_key_event(key_code, modifiers, is_key_down);
 }
 
-// Import the demo module
-use super::demos::DemoApp;
+// ── App callback storage ─────────────────────────────────────────────────────
 
-/// Run a demo GPUI application with interactive demos.
+/// Wrapper around an `UnsafeCell<Option<Box<dyn FnOnce(&mut App)>>>`.
 ///
-/// This creates a GPUI Application with a menu to select between different demos:
-/// - Animation Playground: Bouncing balls with physics and particle effects
-/// - Shader Showcase: Dynamic gradients and visual effects
+/// # Safety
+/// On iOS all UI work happens on the main thread.  The FFI entry points
+/// (`set_app_callback`, `run_app`, `gpui_ios_run_demo`) are only ever
+/// called from the main thread, so interior-mutable access is safe.
+struct AppCallbackCell(std::cell::UnsafeCell<Option<Box<dyn FnOnce(&mut App)>>>);
+
+// Safety: only accessed from the iOS main thread.
+unsafe impl Send for AppCallbackCell {}
+unsafe impl Sync for AppCallbackCell {}
+
+static APP_CALLBACK: OnceLock<AppCallbackCell> = OnceLock::new();
+
+/// Register a callback that will be invoked inside `Application::run`.
 ///
-/// Call this from application:didFinishLaunchingWithOptions: to start the demo.
+/// This must be called **before** [`run_app`] so that the run-loop
+/// has something to do (open a window, create views, etc.).
+///
+/// # Safety
+/// Must be called from the main thread only.
+pub fn set_app_callback(cb: Box<dyn FnOnce(&mut App)>) {
+    let cell = APP_CALLBACK.get_or_init(|| AppCallbackCell(std::cell::UnsafeCell::new(None)));
+    unsafe {
+        *cell.0.get() = Some(cb);
+    }
+}
+
+fn take_app_callback() -> Option<Box<dyn FnOnce(&mut App)>> {
+    APP_CALLBACK
+        .get()
+        .and_then(|cell| unsafe { (*cell.0.get()).take() })
+}
+
+/// C entry point called from `main.m`'s app delegate.
+///
+/// Consumer crates should call [`set_app_callback`] **before** this function
+/// to register their root view.  If no callback is registered an empty
+/// window is opened as a fallback.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_run_demo() {
-    log::info!("GPUI iOS: Starting demo application with interactive demos");
+    run_app();
+}
 
-    // First initialize the FFI layer
+/// Run the GPUI iOS application.
+///
+/// This initialises the platform, creates the `Application`, and enters the
+/// GPUI run loop.  The actual UI is determined by a callback previously
+/// registered via [`set_app_callback`].  If no callback was registered a
+/// default empty window is opened so the app doesn't crash.
+pub fn run_app() {
+    log::info!("GPUI iOS: Starting application");
+
+    // Initialise the FFI layer if not already done.
     if IOS_APP_STATE.get().is_none() {
         let state = IosAppState {
             finish_launching: std::cell::UnsafeCell::new(None),
@@ -400,38 +449,28 @@ pub extern "C" fn gpui_ios_run_demo() {
         let _ = IOS_WINDOW_LIST.set(WindowListWrapper(std::cell::UnsafeCell::new(Vec::new())));
     }
 
-    // Create a boxed callback that will create our demo window
-    let callback: Box<dyn FnOnce()> = Box::new(|| {
-        log::info!("GPUI iOS: Demo callback executing, but Application context not available here");
-    });
-
-    // Store the callback
-    set_finish_launching_callback(callback);
-
-    // Now create and run the application
-    // On iOS, Application::run() stores our callback and immediately returns
     let platform = Rc::new(super::IosPlatform::new());
     Application::with_platform(platform).run(|cx: &mut App| {
-        log::info!("GPUI iOS: Creating demo window with DemoApp");
-
-        cx.open_window(
-            WindowOptions {
-                // On iOS, windows are always fullscreen, let the platform decide bounds
-                window_bounds: None,
-                ..Default::default()
-            },
-            |_, cx| cx.new(|_| DemoApp::new()),
-        )
-        .expect("Failed to open window");
-
-        cx.activate(true);
-        log::info!("GPUI iOS: Demo window created successfully");
+        if let Some(cb) = take_app_callback() {
+            log::info!("GPUI iOS: Invoking user-provided app callback");
+            cb(cx);
+        } else {
+            log::warn!("GPUI iOS: No app callback registered — opening default empty window");
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: None,
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| gpui::Empty),
+            )
+            .expect("Failed to open default window");
+            cx.activate(true);
+        }
     });
 
-    // The callback passed to Application::run() was stored by IosPlatform::run()
-    // and forwarded to set_finish_launching_callback. Now we need to invoke it.
-    // On a real iOS app, this would be called by gpui_ios_did_finish_launching()
-    // from the app delegate. Here we call it directly.
+    // On iOS, Application::run() stores the callback and returns immediately.
+    // The finish-launching callback is forwarded to set_finish_launching_callback
+    // and invoked here synchronously (in a real app the app delegate does this).
     if let Some(state) = IOS_APP_STATE.get() {
         let callback = unsafe { (*state.finish_launching.get()).take() };
         if let Some(callback) = callback {

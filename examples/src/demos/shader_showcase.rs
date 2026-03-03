@@ -1,6 +1,6 @@
 //! Shader Showcase demo - dynamic gradients and visual effects.
 //!
-//! This demo showcases GPUI's GPU rendering capabilities on iOS:
+//! This demo showcases GPUI's GPU rendering capabilities on mobile:
 //! - Dynamic gradient backgrounds that respond to touch
 //! - Floating orbs with parallax movement
 //! - Ripple effects on tap

@@ -7,7 +7,6 @@
 //! - Metal for GPU rendering
 //! - CoreFoundation for many utilities
 
-pub mod demos;
 mod dispatcher;
 mod display;
 mod events;

@@ -150,11 +150,14 @@
     NSLog(@"GPUI iOS Application Launching...");
 
 #ifdef USE_GPUI_RUST
-    // Run the GPUI demo application
-    // This initializes GPUI and creates a window with a test UI
-    NSLog(@"Starting GPUI demo...");
+    // Register the example app's root view (Router), then start GPUI.
+    // gpui_ios_register_app() is defined in the example crate and sets up
+    // the callback that creates the Router with all screens + demos.
+    // gpui_ios_run_demo() is defined in gpui-mobile and starts the run loop.
+    NSLog(@"Starting GPUI app...");
+    gpui_ios_register_app();
     gpui_ios_run_demo();
-    NSLog(@"GPUI demo initialized");
+    NSLog(@"GPUI app initialized");
 
     // Get the GPUI window pointer that was created
     self.gpuiWindow = gpui_ios_get_window();

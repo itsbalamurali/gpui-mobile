@@ -50,11 +50,10 @@ core-text           = "=21.0.0"
 foreign-types       = "0.5"
 uuid                = { version = "1", features = ["v5"] }
 
-# Metal GPU (via Blade — same as the upstream iOS PR)
-metal         = "0.33"
-blade-graphics = { git = "https://github.com/kvark/blade" }
-blade-macros   = { git = "https://github.com/kvark/blade" }
-blade-util     = { git = "https://github.com/kvark/blade" }
+# wgpu renderer (Metal backend on iOS) — same crate used for Android
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", package = "gpui_wgpu", features = ["font-kit"] }
+wgpu = { version = "28.0", default-features = false, features = ["wgsl", "metal"] }
+pollster = "0.4"
 
 # Text / font stack
 pathfinder_geometry = "0.5"

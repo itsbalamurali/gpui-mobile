@@ -1,7 +1,14 @@
-//! iOS Demo modules for showcasing GPUI capabilities.
+//! Interactive demo modules showcasing GPUI capabilities.
 //!
-//! This module contains interactive demos that demonstrate GPUI's
-//! rendering and input handling on iOS.
+//! These demos work on both iOS and Android and demonstrate GPUI's
+//! rendering, animation, and input handling on mobile devices.
+//!
+//! ## Demos
+//!
+//! - **Animation Playground** — Bouncing balls with physics, trails, and
+//!   particle effects. Tap to spawn, swipe to fling.
+//! - **Shader Showcase** — Dynamic gradient backgrounds, floating orbs with
+//!   parallax, and ripple effects on touch.
 
 mod animation_playground;
 mod menu;
@@ -11,7 +18,7 @@ pub use animation_playground::AnimationPlayground;
 pub use menu::{back_button, DemoApp};
 pub use shader_showcase::ShaderShowcase;
 
-// Color palette - Catppuccin Mocha theme
+// Color palette — Catppuccin Mocha theme (shared across demos)
 pub const BACKGROUND: u32 = 0x1e1e2e;
 pub const SURFACE: u32 = 0x313244;
 pub const OVERLAY: u32 = 0x45475a;
@@ -28,7 +35,7 @@ pub const TEAL: u32 = 0x94e2d5;
 pub const SKY: u32 = 0x89dceb;
 pub const LAVENDER: u32 = 0xb4befe;
 
-/// Get a random color from the vibrant palette
+/// Get a colour from the vibrant palette, cycling by `seed`.
 pub fn random_color(seed: usize) -> u32 {
     const COLORS: [u32; 10] = [
         RED, GREEN, BLUE, YELLOW, PINK, MAUVE, PEACH, TEAL, SKY, LAVENDER,

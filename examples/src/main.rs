@@ -1,7 +1,7 @@
 //! Binary entry point for the cross-platform GPUI example app.
 //!
 //! On **iOS** this provides the standard `fn main()` entry point which
-//! delegates to [`gpui_android_example::ios_main`].
+//! delegates to [`gpui_mobile_example::ios_main`].
 //!
 //! On **Android** the `android-activity` crate invokes `android_main` directly
 //! from the cdylib defined in `lib.rs` — so `main` is never called.  We still
@@ -11,18 +11,18 @@
 //!
 //! ```text
 //! # iOS simulator
-//! cargo build --target aarch64-apple-ios-sim -p gpui-android-example --features font-kit
+//! cargo build --target aarch64-apple-ios-sim -p gpui-mobile-example --features font-kit
 //!
 //! # iOS device
-//! cargo build --target aarch64-apple-ios -p gpui-android-example --features font-kit
+//! cargo build --target aarch64-apple-ios -p gpui-mobile-example --features font-kit
 //!
 //! # Android (uses lib.rs cdylib, not this binary)
-//! cargo ndk -t arm64-v8a build -p gpui-android-example
+//! cargo ndk -t arm64-v8a build -p gpui-mobile-example
 //! ```
 
 #[cfg(target_os = "ios")]
 fn main() {
-    gpui_android_example::ios_main();
+    gpui_mobile_example::ios_main();
 }
 
 #[cfg(target_os = "android")]

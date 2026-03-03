@@ -1,14 +1,27 @@
-//! Navigation router for the Android example app.
+//! Navigation router for the cross-platform GPUI example app.
 //!
 //! This module defines the available screens, a shared navigation model,
 //! and a top-level `Router` view that renders the currently active screen.
+//!
+//! ## Screens
+//!
+//! - **Home** — welcome message, colour swatches, stats, and quick-nav cards.
+//! - **Counter** — increment / decrement / reset a shared tap counter.
+//! - **Settings** — toggle dark mode, reset counter, change user name.
+//! - **About** — app info, technology stack, architecture, and credits.
+//! - **Animations** — bouncing balls with physics, trails, and particle effects.
+//! - **Shaders** — dynamic gradients, floating orbs, and ripple effects.
 
 pub mod about;
 pub mod counter;
 pub mod home;
 pub mod settings;
 
-use gpui::{div, prelude::*, px, rgb, Context, SharedString, Window};
+use crate::demos::{AnimationPlayground, ShaderShowcase};
+use gpui::{
+    div, hsla, point, prelude::*, px, rgb, size, Bounds, Context, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, SharedString, Window,
+};
 
 // ── Screen enum ──────────────────────────────────────────────────────────────
 
@@ -20,6 +33,8 @@ pub enum Screen {
     Counter,
     Settings,
     About,
+    Animations,
+    Shaders,
 }
 
 impl Screen {
@@ -30,6 +45,8 @@ impl Screen {
             Screen::Counter => "Counter",
             Screen::Settings => "Settings",
             Screen::About => "About",
+            Screen::Animations => "Animations",
+            Screen::Shaders => "Shaders",
         }
     }
 }
@@ -49,11 +66,11 @@ pub const YELLOW: u32 = 0xf9e2af;
 pub const PEACH: u32 = 0xfab387;
 pub const TEAL: u32 = 0x94e2d5;
 pub const MANTLE: u32 = 0x181825;
+pub const SKY: u32 = 0x89dceb;
+pub const LAVENDER: u32 = 0xb4befe;
 
-// ── Router ───────────────────────────────────────────────────────────────────
+// ── Safe area ────────────────────────────────────────────────────────────────
 
-/// Top-level view that owns navigation state and delegates rendering to the
-/// active screen.
 /// Safe area insets in logical pixels.
 ///
 /// These represent the areas occupied by system UI (status bar, navigation
@@ -67,6 +84,10 @@ pub struct SafeArea {
     pub right: f32,
 }
 
+// ── Router ───────────────────────────────────────────────────────────────────
+
+/// Top-level view that owns navigation state and delegates rendering to the
+/// active screen.
 pub struct Router {
     pub current_screen: Screen,
     /// Shared state: a global tap counter (carried across screens for demo).
@@ -79,11 +100,16 @@ pub struct Router {
     history: Vec<Screen>,
     /// Safe area insets (logical pixels) to pad around system chrome.
     pub safe_area: SafeArea,
+
+    // ── Demo view state ──────────────────────────────────────────────────
+    /// The animation playground demo (lazily created when the screen is visited).
+    animation_playground: Option<AnimationPlayground>,
+    /// The shader showcase demo (lazily created when the screen is visited).
+    shader_showcase: Option<ShaderShowcase>,
 }
 
 impl Router {
     pub fn new() -> Self {
-        // Query safe area insets from the Android platform if available.
         let safe_area = Self::query_safe_area();
 
         let user_name = if cfg!(target_os = "ios") {
@@ -101,6 +127,8 @@ impl Router {
             dark_mode: true,
             history: Vec::new(),
             safe_area,
+            animation_playground: None,
+            shader_showcase: None,
         }
     }
 
@@ -154,6 +182,17 @@ impl Router {
         if self.current_screen != screen {
             self.history.push(self.current_screen);
             self.current_screen = screen;
+
+            // Lazily initialise demo state when first visited.
+            match screen {
+                Screen::Animations if self.animation_playground.is_none() => {
+                    self.animation_playground = Some(AnimationPlayground::new());
+                }
+                Screen::Shaders if self.shader_showcase.is_none() => {
+                    self.shader_showcase = Some(ShaderShowcase::new());
+                }
+                _ => {}
+            }
         }
     }
 
@@ -173,8 +212,22 @@ impl Router {
     }
 }
 
+// ── Render ───────────────────────────────────────────────────────────────────
+
 impl Render for Router {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // For the fullscreen demo screens (Animations, Shaders) we skip the
+        // chrome (nav bar, tab bar, safe area spacers) and render edge-to-edge.
+        match self.current_screen {
+            Screen::Animations => {
+                return self.render_animations_screen(window, cx).into_any_element();
+            }
+            Screen::Shaders => {
+                return self.render_shaders_screen(window, cx).into_any_element();
+            }
+            _ => {}
+        }
+
         let bg_color = if self.dark_mode { BASE } else { 0xeff1f5 };
         let text_color = if self.dark_mode { TEXT } else { 0x4c4f69 };
         let safe_top = self.safe_area.top;
@@ -208,6 +261,7 @@ impl Render for Router {
                     0xdce0e8
                 })))
             })
+            .into_any_element()
     }
 }
 
@@ -270,6 +324,9 @@ impl Router {
             Screen::Counter => self.render_counter_screen(cx).into_any_element(),
             Screen::Settings => self.render_settings_screen(cx).into_any_element(),
             Screen::About => self.render_about_screen(cx).into_any_element(),
+            // Animations and Shaders are rendered fullscreen (handled above
+            // in Render::render) and should never reach here.
+            Screen::Animations | Screen::Shaders => div().into_any_element(),
         };
 
         div()
@@ -284,9 +341,11 @@ impl Router {
         let current = self.current_screen;
         let bar_bg = if self.dark_mode { MANTLE } else { 0xdce0e8 };
 
-        let tabs = [
+        let tabs: &[(&str, &str, Screen)] = &[
             ("[H]", "Home", Screen::Home),
             ("[#]", "Counter", Screen::Counter),
+            ("[▶]", "Anims", Screen::Animations),
+            ("[~]", "Shaders", Screen::Shaders),
             ("[S]", "Settings", Screen::Settings),
             ("[i]", "About", Screen::About),
         ];
@@ -300,7 +359,7 @@ impl Router {
             .justify_around()
             .items_center();
 
-        for (icon, label, screen) in tabs {
+        for &(icon, label, screen) in tabs {
             let is_active = current == screen;
             let label_color = if is_active { BLUE } else { SUBTEXT };
 
@@ -310,7 +369,7 @@ impl Router {
                     .flex_col()
                     .items_center()
                     .gap_1()
-                    .px_4()
+                    .px_2()
                     .py_1()
                     .rounded_lg()
                     .when(is_active, |d| d.bg(rgb(SURFACE0)))
@@ -330,9 +389,6 @@ impl Router {
     }
 
     // ── Per-screen render helpers ────────────────────────────────────────────
-    //
-    // Each of these delegates to the corresponding screen module's `render`
-    // function, passing any shared state the screen needs.
 
     fn render_home_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         home::render(self, cx)
@@ -349,4 +405,175 @@ impl Router {
     fn render_about_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         about::render(self)
     }
+
+    // ── Fullscreen demo screens ──────────────────────────────────────────────
+
+    /// Render the Animations screen — fullscreen, edge-to-edge.
+    fn render_animations_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // Request continuous animation frames so physics keeps ticking.
+        window.request_animation_frame();
+
+        // Ensure the playground exists.
+        if self.animation_playground.is_none() {
+            self.animation_playground = Some(AnimationPlayground::new());
+        }
+
+        // Update bounds from the current viewport.
+        let viewport = window.viewport_size();
+        if let Some(playground) = &mut self.animation_playground {
+            playground.set_bounds(Bounds {
+                origin: point(0.0, 0.0),
+                size: size(viewport.width.as_f32(), viewport.height.as_f32()),
+            });
+        }
+
+        div()
+            .size_full()
+            .bg(rgb(BASE))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                    if let Some(playground) = &mut this.animation_playground {
+                        let pos = point(event.position.x.as_f32(), event.position.y.as_f32());
+                        playground.touch_start = Some((pos, std::time::Instant::now()));
+                        playground.current_touch = Some(pos);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                    if let Some(playground) = &mut this.animation_playground {
+                        let position = point(event.position.x.as_f32(), event.position.y.as_f32());
+
+                        if let Some((start_pos, start_time)) = playground.touch_start.take() {
+                            let elapsed = start_time.elapsed();
+                            let dx = position.x - start_pos.x;
+                            let dy = position.y - start_pos.y;
+                            let distance = (dx * dx + dy * dy).sqrt();
+
+                            if elapsed < std::time::Duration::from_millis(200) && distance < 20.0 {
+                                // Short tap → spawn particles
+                                let color_rgb = crate::demos::random_color(playground.next_ball_id);
+                                playground.spawn_particles(position, rgb(color_rgb).into());
+                                playground.next_ball_id += 1;
+                            } else {
+                                // Swipe → fling a ball
+                                let dt = elapsed.as_secs_f32().max(0.01);
+                                let velocity = point(dx / dt * 0.5, dy / dt * 0.5);
+                                playground.spawn_ball(start_pos, velocity);
+                            }
+                        }
+                        playground.current_touch = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            // Render the playground content
+            .child(if let Some(playground) = &mut self.animation_playground {
+                playground
+                    .render_with_back_button(window, |_, _window, _cx| {})
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            // Overlay back button
+            .child(back_button(cx.listener(|this, _, _window, cx| {
+                this.go_back();
+                cx.notify();
+            })))
+    }
+
+    /// Render the Shaders screen — fullscreen, edge-to-edge.
+    fn render_shaders_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // Request continuous animation frames for the shader loop.
+        window.request_animation_frame();
+
+        // Ensure the showcase exists.
+        if self.shader_showcase.is_none() {
+            self.shader_showcase = Some(ShaderShowcase::new());
+        }
+
+        // Update screen center for parallax calculations.
+        if let Some(showcase) = &mut self.shader_showcase {
+            let viewport = window.viewport_size();
+            showcase.set_screen_center(point(
+                viewport.width.as_f32() / 2.0,
+                viewport.height.as_f32() / 2.0,
+            ));
+        }
+
+        div()
+            .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                    if let Some(showcase) = &mut this.shader_showcase {
+                        let pos = point(event.position.x.as_f32(), event.position.y.as_f32());
+                        showcase.touch_position = Some(pos);
+                        showcase.spawn_ripple(pos);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                if let Some(showcase) = &mut this.shader_showcase {
+                    let pos = point(event.position.x.as_f32(), event.position.y.as_f32());
+                    showcase.touch_position = Some(pos);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    if let Some(showcase) = &mut this.shader_showcase {
+                        showcase.touch_position = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            // Render the showcase content
+            .child(if let Some(showcase) = &mut self.shader_showcase {
+                showcase
+                    .render_with_back_button(window, |_, _window, _cx| {})
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            // Overlay back button
+            .child(back_button(cx.listener(|this, _, _window, cx| {
+                this.go_back();
+                cx.notify();
+            })))
+    }
+}
+
+// ── Back button (shared with demo screens) ───────────────────────────────────
+
+/// Floating back button overlaid on fullscreen demo screens.
+fn back_button<F>(on_click: F) -> impl IntoElement
+where
+    F: Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static,
+{
+    div()
+        .absolute()
+        .top(px(54.0))
+        .left(px(16.0))
+        .px_4()
+        .py_2()
+        .bg(hsla(0.0, 0.0, 0.2, 0.8))
+        .rounded_lg()
+        .text_color(rgb(TEXT))
+        .text_sm()
+        .child("← Back")
+        .on_mouse_down(MouseButton::Left, on_click)
 }

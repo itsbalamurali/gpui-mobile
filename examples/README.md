@@ -25,7 +25,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.gpui.mobile.example/android.app.NativeActivity
 
 # 5. Watch logs
-adb logcat -s gpui-android-example:V
+adb logcat -s gpui-mobile-example:V
 ```
 
 ## Architecture
@@ -38,7 +38,7 @@ The crate exports `ANativeActivity_onCreate` automatically and calls the
 user-defined `android_main(app: AndroidApp)` function on a dedicated native thread.
 
 ```
-Android OS loads libgpui_android_example.so via NativeActivity
+Android OS loads libgpui_mobile_example.so via NativeActivity
   │
   └─ ANativeActivity_onCreate()           (android-activity crate)
        └─ android_main(app)               (main.rs — YOUR CODE)
@@ -241,7 +241,7 @@ cd examples/android_app \
 
 | File | Purpose |
 |---|---|
-| `Cargo.toml` | cdylib output; depends on `gpui-mobile`, `gpui`, `android-activity` |
+| `Cargo.toml` | cdylib + staticlib output; depends on `gpui-mobile`, `gpui`, `android-activity` |
 | `src/lib.rs` | `android_main` entry point; links `gpui-mobile` via `extern crate`, opens window with `Router` |
 | `src/screens/mod.rs` | `Screen` enum, `Router` view (nav bar, tab bar, screen dispatch) |
 | `src/screens/home.rs` | Home screen layout (welcome, swatches, stats, nav cards) |
@@ -249,7 +249,7 @@ cd examples/android_app \
 | `src/screens/settings.rs` | Settings screen with toggles and actions |
 | `src/screens/about.rs` | About screen with tech stack and credits |
 | `.cargo/config.toml` | `RUST_FONTCONFIG_DLOPEN=on` (required for cross-compile) |
-| `gradle/app/build.gradle.kts` | `nativeLibraryName = "gpui_android_example"` |
+| `gradle/app/build.gradle.kts` | `nativeLibraryName = "gpui_mobile_example"` |
 | `gradle/app/src/main/AndroidManifest.xml` | NativeActivity, `lib_name` placeholder |
 
 ## Configuration Gotchas
@@ -270,8 +270,8 @@ fontconfig at build time, which fails on Android.  Configured in
 
 The chain of names must be consistent:
 
-1. `Cargo.toml` → `[lib] name = "gpui_android_example"` → produces `libgpui_android_example.so`
-2. `build.gradle.kts` → `manifestPlaceholders["nativeLibraryName"] = "gpui_android_example"`
+1. `Cargo.toml` → `[lib] name = "gpui_mobile_example"` → produces `libgpui_mobile_example.so`
+2. `build.gradle.kts` → `manifestPlaceholders["nativeLibraryName"] = "gpui_mobile_example"`
 3. `AndroidManifest.xml` → `android:value="${nativeLibraryName}"` (resolved at build time)
 
 If any of these mismatch, the app crashes with "ANativeActivity_onCreate not found".
@@ -303,7 +303,7 @@ provides it automatically.  Make sure you're building the cdylib target:
 cargo ndk -t arm64-v8a build   # from examples/android_app/
 ```
 
-Verify: `nm -D target/aarch64-linux-android/debug/libgpui_android_example.so | grep ANativeActivity`
+Verify: `nm -D target/aarch64-linux-android/debug/libgpui_mobile_example.so | grep ANativeActivity`
 
 ### Font panic (`.SystemUIFont` not found)
 

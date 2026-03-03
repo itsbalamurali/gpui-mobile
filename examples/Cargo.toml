@@ -1,5 +1,5 @@
 [package]
-name = "gpui-android-example"
+name = "gpui-mobile-example"
 version = "0.1.0"
 edition = "2021"
 description = "Cross-platform GPUI example app for Android and iOS"
@@ -11,8 +11,8 @@ font-kit = ["gpui-mobile/font-kit"]
 ios = ["gpui-mobile/ios"]
 
 [lib]
-name = "gpui_android_example"
-crate-type = ["cdylib", "lib"]
+name = "gpui_mobile_example"
+crate-type = ["cdylib", "staticlib", "lib"]
 path = "src/lib.rs"
 
 [[bin]]

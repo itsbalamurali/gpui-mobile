@@ -456,7 +456,7 @@ build_android() {
         $cargo_profile_flag \
         2>&1
 
-    local so_path="$jni_libs_dir/${ndk_abi}/libgpui_android_example.so"
+    local so_path="$jni_libs_dir/${ndk_abi}/libgpui_mobile_example.so"
     if [[ ! -f "$so_path" ]]; then
         error "Shared library not found at: $so_path"
         exit 1
@@ -541,7 +541,7 @@ _android_install_and_launch() {
     info "App launched on Android! 🚀"
 
     echo ""
-    info "View logs with:  adb logcat -s gpui-android-example:D"
+    info "View logs with:  adb logcat -s gpui-mobile-example:D"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════

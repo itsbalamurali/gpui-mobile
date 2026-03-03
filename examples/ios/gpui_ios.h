@@ -85,12 +85,21 @@ void gpui_ios_request_frame(void* window_ptr);
 /// window pointer needed for gpui_ios_request_frame().
 void* gpui_ios_get_window(void);
 
-/// Run a demo GPUI application.
+/// Register the example app's root view with the GPUI platform.
 ///
-/// This creates a GPUI Application and opens a test window.
-/// Call this from application:didFinishLaunchingWithOptions: to start the demo.
-/// This is an alternative to using gpui_ios_initialize/gpui_ios_did_finish_launching
-/// when you want a self-contained demo.
+/// This must be called BEFORE gpui_ios_run_demo() so that the GPUI run loop
+/// knows which view to create. Defined by the example crate (not gpui-mobile).
+void gpui_ios_register_app(void);
+
+/// Run the GPUI iOS application.
+///
+/// Initialises the platform, creates the Application, and enters the GPUI
+/// run loop.  The actual UI is determined by a callback previously registered
+/// via gpui_ios_register_app().  If no callback was registered a default
+/// empty window is opened as a fallback.
+///
+/// Call this from application:didFinishLaunchingWithOptions: after
+/// gpui_ios_register_app().
 void gpui_ios_run_demo(void);
 
 /// Show the software keyboard.

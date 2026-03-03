@@ -47,18 +47,19 @@
 //! ```text
 //! # Android
 //! rustup target add aarch64-linux-android
-//! cargo ndk -t arm64-v8a build -p gpui-android-example
+//! cargo ndk -t arm64-v8a build -p gpui-mobile-example
 //!
 //! # iOS simulator
-//! cargo build --target aarch64-apple-ios-sim -p gpui-android-example --features font-kit
+//! cargo build --target aarch64-apple-ios-sim -p gpui-mobile-example --features font-kit
 //!
 //! # iOS device
-//! cargo build --target aarch64-apple-ios -p gpui-android-example --features font-kit
+//! cargo build --target aarch64-apple-ios -p gpui-mobile-example --features font-kit
 //! ```
 
 // Link gpui-mobile so its symbols (jni helpers, platform, etc.) are available.
 extern crate gpui_mobile;
 
+pub mod demos;
 pub mod screens;
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
@@ -83,7 +84,7 @@ fn android_main(app: android_activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Debug)
-            .with_tag("gpui-android-example"),
+            .with_tag("gpui-mobile-example"),
     );
 
     // Panic hook — routes panics to logcat instead of silently aborting.
@@ -132,21 +133,26 @@ fn android_main(app: android_activity::AndroidApp) {
 // iOS entry point
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// iOS application entry point.
+/// Register the example app's root view with the GPUI iOS platform.
 ///
-/// Creates an `IosPlatform`, opens a fullscreen window containing the shared
-/// `Router` view, and enters the GPUI run loop.  This function does **not**
-/// return until the application exits.
+/// This is called from `main.m` **before** `gpui_ios_run_demo()` so that
+/// when the GPUI run loop starts it knows which view to create.
 ///
-/// Called from `main.rs` on iOS.
+/// The symbol lives in the example crate's static lib which is force-loaded
+/// alongside `libgpui_mobile.a` by the Xcode linker.
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_register_app() {
+    gpui_mobile::ios::ffi::set_app_callback(Box::new(|cx: &mut App| {
+        open_main_window(cx);
+    }));
+}
+
+/// Convenience entry point for the binary target (`main.rs`).
 #[cfg(target_os = "ios")]
 pub fn ios_main() {
-    use std::rc::Rc;
-
-    let platform = Rc::new(gpui_mobile::ios::IosPlatform::new());
-    Application::with_platform(platform).run(|cx: &mut App| {
-        open_main_window(cx);
-    });
+    gpui_ios_register_app();
+    gpui_mobile::ios::ffi::run_app();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

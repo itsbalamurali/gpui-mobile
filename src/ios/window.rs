@@ -7,17 +7,19 @@
 //! - Safe area insets for notch/home indicator
 //!
 //! The window is backed by a UIWindow containing a UIViewController
-//! whose view hosts the Metal rendering layer.
+//! whose view hosts a CAMetalLayer. Rendering is performed by
+//! `gpui_wgpu::WgpuRenderer` which drives wgpu over the Metal backend.
 
 use super::events::*;
 use super::IosDisplay;
 use gpui::{
-    point, AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds,
+    point, size, AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds,
     Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers, Pixels, PlatformAtlas,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
     PromptLevel, RequestFrameOptions, Scene, Size, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
+use gpui_wgpu::{WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use objc::{
     class,
     declare::ClassDecl,
@@ -194,8 +196,11 @@ pub(crate) struct IosWindow {
     modifiers: Cell<Modifiers>,
     /// Track if a touch is currently pressed
     touch_pressed: Cell<bool>,
-    /// Fallback sprite atlas (used until a real Blade/Metal renderer is wired up)
-    sprite_atlas: Arc<FallbackAtlas>,
+    /// The wgpu renderer (Metal backend on iOS).
+    /// Wrapped in a `Mutex<Option<…>>` so that `draw()` (called from the
+    /// `request_frame` callback) can acquire a mutable reference without
+    /// conflicting with the outer `&self` borrow.
+    renderer: Mutex<Option<WgpuRenderer>>,
 }
 
 // Required for raw_window_handle
@@ -225,27 +230,11 @@ impl IosWindow {
             let view: *mut Object = msg_send![metal_view_class, alloc];
             let view: *mut Object = msg_send![view, initWithFrame: screen_bounds_cg];
 
-            // Configure the Metal layer
+            // Configure the Metal layer — wgpu will use it for rendering but
+            // we still need to set contentsScale so the drawable size is correct.
             let layer: *mut Object = msg_send![view, layer];
-
-            // Get the Metal device using the Metal framework function
-            #[link(name = "Metal", kind = "framework")]
-            unsafe extern "C" {
-                fn MTLCreateSystemDefaultDevice() -> *mut Object;
-            }
-            let device = MTLCreateSystemDefaultDevice();
-            if !device.is_null() {
-                let _: () = msg_send![layer, setDevice: device];
-            }
-            let _: () = msg_send![layer, setPixelFormat: 80_u64]; // MTLPixelFormatBGRA8Unorm
-            let _: () = msg_send![layer, setFramebufferOnly: NO];
             let scale: core_graphics::base::CGFloat = msg_send![screen_obj, scale];
             let _: () = msg_send![layer, setContentsScale: scale];
-            let drawable_size = core_graphics::geometry::CGSize {
-                width: screen_bounds_cg.size.width * scale,
-                height: screen_bounds_cg.size.height * scale,
-            };
-            let _: () = msg_send![layer, setDrawableSize: drawable_size];
 
             // Enable user interaction on the Metal view for touch handling
             let _: () = msg_send![view, setUserInteractionEnabled: YES];
@@ -261,7 +250,6 @@ impl IosWindow {
             let _: () = msg_send![window, makeKeyAndVisible];
 
             // Create a hidden text input view for keyboard handling
-            // This view conforms to UIKeyInput and handles keyboard events
             let text_input_view: *mut Object = msg_send![class!(UIView), alloc];
             let text_input_frame = core_graphics::geometry::CGRect {
                 origin: core_graphics::geometry::CGPoint { x: 0.0, y: 0.0 },
@@ -272,10 +260,13 @@ impl IosWindow {
             };
             let text_input_view: *mut Object =
                 msg_send![text_input_view, initWithFrame: text_input_frame];
-            // Make it invisible but still able to become first responder
             let _: () = msg_send![text_input_view, setAlpha: 0.01_f64];
             let _: () = msg_send![text_input_view, setUserInteractionEnabled: YES];
             let _: () = msg_send![view, addSubview: text_input_view];
+
+            // --- Initialise the wgpu renderer (Metal backend) ---------------
+            let pixel_w = (screen_bounds_cg.size.width * scale) as i32;
+            let pixel_h = (screen_bounds_cg.size.height * scale) as i32;
 
             let ios_window = Self {
                 handle,
@@ -300,8 +291,61 @@ impl IosWindow {
                 mouse_position: Cell::new(Point::default()),
                 modifiers: Cell::new(Modifiers::default()),
                 touch_pressed: Cell::new(false),
-                sprite_atlas: Arc::new(FallbackAtlas::new()),
+                renderer: Mutex::new(None),
             };
+
+            // Create the wgpu renderer using the Metal backend.
+            //
+            // `gpui_wgpu::WgpuContext::instance()` only enables Vulkan+GL,
+            // so we create our own wgpu instance with Metal enabled, build
+            // a surface from the UIView's raw window handle, construct the
+            // WgpuContext with that instance, and finally create the renderer.
+            let config = WgpuSurfaceConfig {
+                size: size(DevicePixels(pixel_w), DevicePixels(pixel_h)),
+                transparent: false,
+            };
+
+            let metal_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::METAL,
+                flags: wgpu::InstanceFlags::default(),
+                ..Default::default()
+            });
+
+            // Build raw-window-handle types for the surface.
+            let window_handle = ios_window
+                .window_handle()
+                .expect("iOS window handle unavailable");
+            let display_handle = ios_window
+                .display_handle()
+                .expect("iOS display handle unavailable");
+
+            let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: display_handle.as_raw(),
+                raw_window_handle: window_handle.as_raw(),
+            };
+
+            let surface_result = metal_instance.create_surface_unsafe(target);
+            match surface_result {
+                Ok(surface) => match WgpuContext::new(metal_instance, &surface) {
+                    Ok(context) => {
+                        match WgpuRenderer::new_with_surface(&context, surface, config) {
+                            Ok(renderer) => {
+                                log::info!("iOS wgpu renderer created (Metal)");
+                                *ios_window.renderer.lock() = Some(renderer);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to create iOS wgpu renderer: {e:#}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create iOS WgpuContext: {e:#}");
+                    }
+                },
+                Err(e) => {
+                    log::error!("Failed to create iOS wgpu Metal surface: {e:#}");
+                }
+            }
 
             Ok(ios_window)
         }
@@ -712,26 +756,37 @@ impl PlatformWindow for IosWindow {
         *self.appearance_changed_callback.borrow_mut() = Some(callback);
     }
 
-    fn draw(&self, _scene: &Scene) {
-        // Drawing is handled by the Blade renderer which is managed externally.
-        // In the upstream Zed PR, the renderer is stored in this struct,
-        // but since we're in a standalone crate without direct access to the
-        // blade renderer internals, drawing is delegated to the platform layer.
-        log::trace!("GPUI iOS: draw called");
+    fn draw(&self, scene: &Scene) {
+        let mut guard = self.renderer.lock();
+        if let Some(renderer) = guard.as_mut() {
+            renderer.draw(scene);
+        } else {
+            log::trace!("GPUI iOS: draw called but no renderer available");
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.sprite_atlas.clone()
+        let guard = self.renderer.lock();
+        if let Some(renderer) = guard.as_ref() {
+            renderer.sprite_atlas().clone()
+        } else {
+            // Fallback: return a dummy atlas so GPUI doesn't panic before
+            // the renderer is initialised.
+            Arc::new(FallbackAtlas::new())
+        }
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
-        // iOS does not support subpixel rendering (LCD antialiasing)
-        false
+        let guard = self.renderer.lock();
+        guard
+            .as_ref()
+            .map(|r| r.supports_dual_source_blending())
+            .unwrap_or(false)
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        // Would query Metal device capabilities
-        None
+        let guard = self.renderer.lock();
+        guard.as_ref().map(|r| r.gpu_specs())
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
