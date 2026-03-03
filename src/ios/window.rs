@@ -354,11 +354,25 @@ impl IosWindow {
                 raw_window_handle: window_handle.as_raw(),
             };
 
+            // Create a temporary surface just for WgpuContext initialisation
+            // (adapter selection needs a surface to test compatibility).
+            // Then use WgpuRenderer::new() which creates its own surface
+            // from the window handles — it reuses the Metal instance from
+            // the pre-populated WgpuContext.
+            //
+            // `new_with_surface` is private in upstream gpui_wgpu, so we
+            // go through the public `WgpuRenderer::new()` path instead.
             let surface_result = metal_instance.create_surface_unsafe(target);
             match surface_result {
-                Ok(surface) => match WgpuContext::new(metal_instance, &surface) {
+                Ok(surface) => match WgpuContext::new(metal_instance, &surface, None) {
                     Ok(context) => {
-                        match WgpuRenderer::new_with_surface(&context, surface, config) {
+                        // Pre-populate gpu_context so WgpuRenderer::new()
+                        // reuses our Metal-backed context (and its instance)
+                        // instead of creating a Vulkan+GL one.
+                        let mut gpu_context: Option<WgpuContext> = Some(context);
+                        drop(surface); // no longer needed — new() creates its own
+
+                        match WgpuRenderer::new(&mut gpu_context, &ios_window, config, None) {
                             Ok(renderer) => {
                                 log::info!("iOS wgpu renderer created (Metal)");
                                 *ios_window.renderer.lock() = Some(renderer);

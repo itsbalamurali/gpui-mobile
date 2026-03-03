@@ -5,10 +5,11 @@ edition = "2021"
 authors = ["Balamurali Pandranki <balamurali@live.com>"]
 license = "GPL-3.0-or-later OR AGPL-3.0-or-later OR Apache-2.0"
 description = "Mobile platform support for GPUI — iOS (Metal/Blade) and Android (wgpu/Vulkan)"
-repository = "https://github.com/pandranki/gpui"
-homepage = "https://github.com/pandranki/gpui"
+repository = "https://github.com/itsbalamurali/gpui-mobile"
+homepage = "https://github.com/itsbalamurali/gpui-mobile"
 keywords = ["gui", "mobile", "ios", "android", "gpui"]
 categories = ["gui", "os"]
+readme = "README.md"
 
 [features]
 default = []

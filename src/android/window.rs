@@ -838,7 +838,9 @@ impl AndroidWindow {
         };
 
         // gpui_wgpu::WgpuRenderer::new takes &W where W: HasWindowHandle + HasDisplayHandle.
-        WgpuRenderer::new(gpu_context, &raw, config)
+        // The 4th argument is an optional CompositorGpuHint used by desktop compositors
+        // to prefer a specific GPU — not applicable on Android, so we pass None.
+        WgpuRenderer::new(gpu_context, &raw, config, None)
     }
 }
 

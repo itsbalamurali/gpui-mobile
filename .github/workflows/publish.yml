@@ -1,0 +1,81 @@
+name: Publish to crates.io
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Dry run (don't actually publish)"
+        required: false
+        default: "false"
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  publish:
+    name: Publish crate
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + git deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: publish-cargo-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: publish-cargo-
+
+      - name: Verify crate version matches release tag
+        if: github.event_name == 'release'
+        run: |
+          CRATE_VERSION="v$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "gpui-mobile") | .version')"
+          TAG="${{ github.event.release.tag_name }}"
+          echo "Crate version: $CRATE_VERSION"
+          echo "Release tag:   $TAG"
+          if [ "$CRATE_VERSION" != "$TAG" ]; then
+            echo "::error::Crate version ($CRATE_VERSION) does not match release tag ($TAG)"
+            exit 1
+          fi
+
+      - name: Run tests before publishing
+        run: cargo test --lib
+
+      - name: Dry-run publish
+        if: github.event_name == 'workflow_dispatch' && inputs.dry-run == 'true'
+        run: cargo publish --dry-run
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish to crates.io
+        if: >-
+          (github.event_name == 'release') ||
+          (github.event_name == 'workflow_dispatch' && inputs.dry-run != 'true')
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Summary
+        if: success()
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "gpui-mobile") | .version')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "### 🧪 Dry-run publish succeeded" >> "$GITHUB_STEP_SUMMARY"
+            echo "Version **$VERSION** is ready to publish." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### 📦 Published gpui-mobile v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+            echo "View on [crates.io](https://crates.io/crates/gpui-mobile)" >> "$GITHUB_STEP_SUMMARY"
+          fi
