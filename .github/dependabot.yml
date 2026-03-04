@@ -1,0 +1,71 @@
+# Dependabot configuration — https://docs.github.com/en/code-security/dependabot
+version: 2
+
+updates:
+  # ── Rust / Cargo dependencies ──────────────────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    # Group minor/patch updates into a single PR to reduce noise
+    groups:
+      rust-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Example app Cargo dependencies ─────────────────────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/examples"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(examples)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+      - "examples"
+    groups:
+      examples-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "ci"
+
+  # ── Android Gradle dependencies ────────────────────────────────────────────
+  - package-ecosystem: "gradle"
+    directory: "/examples/android/gradle"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(android)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "android"

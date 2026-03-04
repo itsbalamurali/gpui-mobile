@@ -23,6 +23,7 @@ use gpui::{
     div, hsla, point, prelude::*, px, rgb, size, Bounds, Context, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, SharedString, Window,
 };
+use gpui_mobile::components::material::{MaterialTheme, NavigationBarBuilder, TopAppBar};
 
 // ── Screen enum ──────────────────────────────────────────────────────────────
 
@@ -269,51 +270,29 @@ impl Render for Router {
 }
 
 impl Router {
-    /// Render the top navigation bar with title and optional back button.
+    /// Render the top navigation bar using the Material Design TopAppBar.
     fn render_nav_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let can_go_back = self.can_go_back();
         let title = self.current_screen.title();
-        let bar_bg = if self.dark_mode { MANTLE } else { 0xdce0e8 };
-        let text_col = if self.dark_mode { TEXT } else { 0x4c4f69 };
+        let theme = MaterialTheme::from_appearance(self.dark_mode);
 
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .px_4()
-            .py_3()
-            .bg(rgb(bar_bg))
-            .items_center()
-            .child(if can_go_back {
-                div()
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .bg(rgb(BLUE))
-                    .text_color(rgb(MANTLE))
-                    .text_sm()
-                    .child("← Back")
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.go_back();
-                            cx.notify();
-                        }),
-                    )
-            } else {
-                // Invisible spacer to keep the title centred.
-                div().px_3().py_1().child("      ")
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .text_center()
-                    .text_lg()
-                    .text_color(rgb(text_col))
-                    .child(title),
-            )
-            // Right spacer to balance the back button.
-            .child(div().px_3().py_1().child("      "))
+        let mut bar = if can_go_back {
+            TopAppBar::small(title, theme)
+        } else {
+            TopAppBar::center_aligned(title, theme)
+        };
+
+        if can_go_back {
+            bar = bar.leading_icon(
+                "←",
+                cx.listener(|this, _event, _window, cx| {
+                    this.go_back();
+                    cx.notify();
+                }),
+            );
+        }
+
+        bar
     }
 
     /// Render the content area for the currently active screen.
@@ -340,56 +319,61 @@ impl Router {
             .child(screen_content)
     }
 
-    /// Render the bottom tab bar.
+    /// Render the bottom tab bar using the Material Design navigation bar.
+    ///
+    /// Animations and Shaders are accessible from the Home screen nav cards
+    /// instead of occupying bottom bar slots.
     fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.current_screen;
-        let bar_bg = if self.dark_mode { MANTLE } else { 0xdce0e8 };
+        let dark = self.dark_mode;
 
-        let tabs: &[(&str, &str, Screen)] = &[
-            ("🏠", "Home", Screen::Home),
-            ("🔢", "Counter", Screen::Counter),
-            ("🎾", "Anims", Screen::Animations),
-            ("🧩", "UI Kit", Screen::Components),
-            ("⚙️", "Settings", Screen::Settings),
-            ("ℹ️", "About", Screen::About),
-        ];
-
-        let mut bar = div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .py_2()
-            .bg(rgb(bar_bg))
-            .justify_around()
-            .items_center();
-
-        for &(icon, label, screen) in tabs {
-            let is_active = current == screen;
-            let label_color = if is_active { BLUE } else { SUBTEXT };
-
-            bar = bar.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_1()
-                    .rounded_lg()
-                    .when(is_active, |d| d.bg(rgb(SURFACE0)))
-                    .child(div().text_lg().text_color(rgb(label_color)).child(icon))
-                    .child(div().text_xs().text_color(rgb(label_color)).child(label))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.navigate_to(screen);
-                            cx.notify();
-                        }),
-                    ),
-            );
-        }
-
-        bar
+        NavigationBarBuilder::new(dark)
+            .item(
+                "🏠",
+                "Home",
+                current == Screen::Home,
+                cx.listener(move |this, _, _, cx| {
+                    this.navigate_to(Screen::Home);
+                    cx.notify();
+                }),
+            )
+            .item(
+                "🔢",
+                "Counter",
+                current == Screen::Counter,
+                cx.listener(move |this, _, _, cx| {
+                    this.navigate_to(Screen::Counter);
+                    cx.notify();
+                }),
+            )
+            .item(
+                "🧩",
+                "UI Kit",
+                current == Screen::Components,
+                cx.listener(move |this, _, _, cx| {
+                    this.navigate_to(Screen::Components);
+                    cx.notify();
+                }),
+            )
+            .item(
+                "⚙️",
+                "Settings",
+                current == Screen::Settings,
+                cx.listener(move |this, _, _, cx| {
+                    this.navigate_to(Screen::Settings);
+                    cx.notify();
+                }),
+            )
+            .item(
+                "ℹ️",
+                "About",
+                current == Screen::About,
+                cx.listener(move |this, _, _, cx| {
+                    this.navigate_to(Screen::About);
+                    cx.notify();
+                }),
+            )
+            .build()
     }
 
     // ── Per-screen render helpers ────────────────────────────────────────────
@@ -588,6 +572,7 @@ impl Router {
 // ── Back button (shared with demo screens) ───────────────────────────────────
 
 /// Floating back button overlaid on fullscreen demo screens.
+#[allow(dead_code)]
 fn back_button<F>(on_click: F) -> impl IntoElement
 where
     F: Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static,

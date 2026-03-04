@@ -165,15 +165,18 @@ impl ShaderShowcase {
         self.ripples.push(Ripple::new(position, hue));
     }
 
+    #[allow(dead_code)]
     fn handle_touch_down(&mut self, position: Point<f32>) {
         self.touch_position = Some(position);
         self.spawn_ripple(position);
     }
 
+    #[allow(dead_code)]
     fn handle_touch_move(&mut self, position: Point<f32>) {
         self.touch_position = Some(position);
     }
 
+    #[allow(dead_code)]
     fn handle_touch_up(&mut self) {
         self.touch_position = None;
     }

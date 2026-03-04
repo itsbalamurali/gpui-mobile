@@ -8,7 +8,6 @@ publish = false
 [features]
 default = []
 font-kit = ["gpui-mobile/font-kit"]
-ios = ["gpui-mobile/ios"]
 
 [lib]
 name = "gpui_mobile_example"
@@ -21,7 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 gpui-mobile = { path = ".." }
-gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", default-features = false }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "4dd42a0f77b11d0bed2a072919bcd9180b9a577c", package = "gpui", default-features = false }
 log = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]

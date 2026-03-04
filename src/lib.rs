@@ -71,6 +71,7 @@ pub use gpui;
 
 // ── shared modules ───────────────────────────────────────────────────────────
 
+pub mod components;
 pub mod momentum;
 
 // ── platform modules ─────────────────────────────────────────────────────────
