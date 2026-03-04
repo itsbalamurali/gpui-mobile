@@ -2,7 +2,7 @@
 
 use gpui::{div, prelude::*, px, rgb};
 
-use super::{Router, Screen, BLUE, GREEN, MAUVE, PEACH, SURFACE0, TEAL, TEXT, YELLOW};
+use super::{Router, Screen, BLUE, GREEN, LAVENDER, MAUVE, PEACH, SKY, SURFACE0, TEAL, TEXT, YELLOW};
 
 /// Render the Home screen content area.
 ///
@@ -111,6 +111,45 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     }),
                 ))
                 .child(nav_card(
+                    "🍎",
+                    "Apple Liquid Glass",
+                    "Frosted panels, vibrancy & SF-style controls",
+                    TEAL,
+                    card_bg,
+                    text_color,
+                    sub_text,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.navigate_to(Screen::AppleGlass);
+                        cx.notify();
+                    }),
+                ))
+                .child(nav_card(
+                    "🎨",
+                    "Material Design 3",
+                    "Elevation, FABs, chips & outlined fields",
+                    GREEN,
+                    card_bg,
+                    text_color,
+                    sub_text,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.navigate_to(Screen::Material);
+                        cx.notify();
+                    }),
+                ))
+                .child(nav_card(
+                    "📝",
+                    "Material Form",
+                    "Text fields, controls, switches & sliders",
+                    LAVENDER,
+                    card_bg,
+                    text_color,
+                    sub_text,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.navigate_to(Screen::Form);
+                        cx.notify();
+                    }),
+                ))
+                .child(nav_card(
                     "⚙️",
                     "Settings",
                     "Toggle dark mode and configure options",
@@ -127,7 +166,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     "ℹ️",
                     "About",
                     "Learn about GPUI and this example app",
-                    TEAL,
+                    SKY,
                     card_bg,
                     text_color,
                     sub_text,
@@ -150,7 +189,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     }),
                 ))
                 .child(nav_card(
-                    "🎨",
+                    "🌊",
                     "Shaders",
                     "Dynamic gradients, orbs & ripple effects",
                     PEACH,
@@ -159,19 +198,6 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     sub_text,
                     cx.listener(|this, _event, _window, cx| {
                         this.navigate_to(Screen::Shaders);
-                        cx.notify();
-                    }),
-                ))
-                .child(nav_card(
-                    "🧩",
-                    "UI Kit",
-                    "Apple Glass & Material Design components",
-                    GREEN,
-                    card_bg,
-                    text_color,
-                    sub_text,
-                    cx.listener(|this, _event, _window, cx| {
-                        this.navigate_to(Screen::Components);
                         cx.notify();
                     }),
                 )),

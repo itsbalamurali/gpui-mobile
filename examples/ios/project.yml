@@ -114,7 +114,7 @@ targets:
           rustup target add "${RUST_TARGET}" 2>/dev/null || true
 
           # Build the Rust static library
-          cargo build --target "${RUST_TARGET}" --features "ios,font-kit" ${CARGO_FLAGS} 2>&1
+          cargo build --target "${RUST_TARGET}" ${CARGO_FLAGS} 2>&1
 
           echo "Rust build complete for ${RUST_TARGET}"
         shell: /bin/bash

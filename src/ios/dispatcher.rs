@@ -25,7 +25,6 @@ const DISPATCH_TIME_NOW: dispatch_time_t = 0;
 const DISPATCH_QUEUE_PRIORITY_HIGH: i64 = 2;
 const DISPATCH_QUEUE_PRIORITY_DEFAULT: i64 = 0;
 const DISPATCH_QUEUE_PRIORITY_LOW: i64 = -2;
-const DISPATCH_QUEUE_PRIORITY_BACKGROUND: i64 = -32768;
 
 // SAFETY: These are C functions from libdispatch
 unsafe extern "C" {

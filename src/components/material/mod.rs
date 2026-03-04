@@ -126,6 +126,7 @@ pub mod fab;
 // ── Form controls ────────────────────────────────────────────────────────────
 pub mod controls;
 pub mod text_fields;
+pub mod text_input;
 
 // ── Feedback & overlays ──────────────────────────────────────────────────────
 pub mod dialog;
@@ -207,6 +208,7 @@ pub use menu::{Menu, MenuAnchor};
 pub use progress_indicator::{CircularProgressIndicator, LinearProgressIndicator};
 pub use search_bar::{SearchBar, SearchView};
 pub use snackbar::snackbar;
+pub use text_input::TextInput;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Convenience re-exports — Legacy (deprecated)
@@ -249,7 +251,7 @@ pub mod demos {
     pub use super::menu::menu_demo;
     pub use super::navigation_drawer::navigation_drawer_demo;
     pub use super::navigation_rail::navigation_rail_demo;
-    pub use super::progress_indicator::progress_indicator_demo;
+    pub use super::progress_indicator::{progress_indicator_demo, progress_indicator_demo_animated};
     pub use super::scaffold::scaffold_demo;
     pub use super::search_bar::search_bar_demo;
     pub use super::tab_bar::tab_bar_demo;

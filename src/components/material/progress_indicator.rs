@@ -134,6 +134,8 @@ pub struct LinearProgressIndicator {
     rounded: bool,
     /// Custom element ID.
     id: Option<gpui::ElementId>,
+    /// Elapsed time in seconds — drives indeterminate animation.
+    time: f32,
 }
 
 impl LinearProgressIndicator {
@@ -150,6 +152,7 @@ impl LinearProgressIndicator {
             height: LINEAR_TRACK_HEIGHT,
             rounded: true,
             id: None,
+            time: 0.0,
         }
     }
 
@@ -196,6 +199,12 @@ impl LinearProgressIndicator {
         self.id = Some(id.into());
         self
     }
+
+    /// Set the elapsed time in seconds (drives indeterminate animation).
+    pub fn time(mut self, time: f32) -> Self {
+        self.time = time;
+        self
+    }
 }
 
 impl IntoElement for LinearProgressIndicator {
@@ -221,11 +230,15 @@ impl IntoElement for LinearProgressIndicator {
                 let count = (progress * total_segments as f32).round() as usize;
                 (0, count.min(total_segments))
             }
-            // Indeterminate: a partial fill offset from the left.
+            // Indeterminate: animated partial fill that sweeps back and forth.
             None => {
                 let count =
                     (INDETERMINATE_LINEAR_FRACTION * total_segments as f32).round() as usize;
-                let start = 20_usize; // ~20% offset from left
+                // Use a sine wave to sweep the fill position across the track.
+                // Period ~2 seconds, oscillates between 0 and (total - count).
+                let max_start = total_segments.saturating_sub(count);
+                let phase = (self.time * std::f32::consts::PI).sin() * 0.5 + 0.5; // 0..1
+                let start = (phase * max_start as f32).round() as usize;
                 (start, count.min(total_segments - start))
             }
         };
@@ -309,6 +322,8 @@ pub struct CircularProgressIndicator {
     stroke_width: f32,
     /// Custom element ID.
     id: Option<gpui::ElementId>,
+    /// Elapsed time in seconds — drives indeterminate animation.
+    time: f32,
 }
 
 impl CircularProgressIndicator {
@@ -325,6 +340,7 @@ impl CircularProgressIndicator {
             diameter: CIRCULAR_DIAMETER,
             stroke_width: CIRCULAR_STROKE_WIDTH,
             id: None,
+            time: 0.0,
         }
     }
 
@@ -375,6 +391,12 @@ impl CircularProgressIndicator {
         self.id = Some(id.into());
         self
     }
+
+    /// Set the elapsed time in seconds (drives indeterminate animation).
+    pub fn time(mut self, time: f32) -> Self {
+        self.time = time;
+        self
+    }
 }
 
 impl IntoElement for CircularProgressIndicator {
@@ -400,11 +422,11 @@ impl IntoElement for CircularProgressIndicator {
                 (0, count, true) // determinate: start at top, show inactive track
             }
             None => {
-                // Indeterminate: a partial arc starting from a default offset.
+                // Indeterminate: a partial arc that rotates continuously.
                 let count = (INDETERMINATE_CIRCULAR_FRACTION * total as f32).round() as usize;
-                // Start offset (simulates animation position; can be varied externally)
-                let start = total / 4; // ~90° offset for visual interest
-                (start, count, false) // indeterminate: no inactive track
+                // Rotate based on time — one full rotation per ~1.5 seconds.
+                let rotation = (self.time * 0.67 * total as f32) as usize % total;
+                (rotation, count, false) // indeterminate: no inactive track
             }
         };
 
@@ -467,7 +489,20 @@ impl IntoElement for CircularProgressIndicator {
 ///
 /// Used in the component showcase gallery to display both linear and
 /// circular indicators in determinate and indeterminate states.
+/// Render a demo of all progress indicator variants.
+///
+/// Pass a monotonically increasing `time` (in seconds) to animate
+/// indeterminate indicators. Use `0.0` for a static snapshot.
+pub fn progress_indicator_demo_animated(dark: bool, time: f32) -> impl IntoElement {
+    progress_indicator_demo_inner(dark, time)
+}
+
+/// Render a static demo of all progress indicator variants (backwards-compat).
 pub fn progress_indicator_demo(dark: bool) -> impl IntoElement {
+    progress_indicator_demo_inner(dark, 0.0)
+}
+
+fn progress_indicator_demo_inner(dark: bool, time: f32) -> impl IntoElement {
     let theme = MaterialTheme::from_appearance(dark);
     let label_color = color(theme.on_surface_variant);
     let heading_color = color(theme.on_surface);
@@ -572,7 +607,7 @@ pub fn progress_indicator_demo(dark: bool) -> impl IntoElement {
                                 .text_color(label_color)
                                 .child("Indeterminate"),
                         )
-                        .child(LinearProgressIndicator::new(theme).indeterminate()),
+                        .child(LinearProgressIndicator::new(theme).indeterminate().time(time)),
                 )
                 // Custom height
                 .child(
@@ -677,7 +712,7 @@ pub fn progress_indicator_demo(dark: bool) -> impl IntoElement {
                                 .flex_col()
                                 .items_center()
                                 .gap_2()
-                                .child(CircularProgressIndicator::new(theme).indeterminate())
+                                .child(CircularProgressIndicator::new(theme).indeterminate().time(time))
                                 .child(div().text_xs().text_color(label_color).child("Indet.")),
                         ),
                 )

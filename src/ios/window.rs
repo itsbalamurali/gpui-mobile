@@ -25,7 +25,7 @@ use objc::{
     class,
     declare::ClassDecl,
     msg_send,
-    runtime::{Class, Object, Sel, BOOL, NO, YES},
+    runtime::{Class, Object, Sel, BOOL, YES},
     sel, sel_impl,
 };
 use parking_lot::Mutex;
@@ -42,6 +42,75 @@ use std::{
 const GPUI_WINDOW_IVAR: &str = "gpui_window_ptr";
 
 static METAL_VIEW_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
+static VC_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
+
+/// Global storage for the current status bar style.
+/// 0 = default (dark content), 1 = light content.
+/// Accessed from the main thread only.
+static STATUS_BAR_STYLE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Register a custom UIViewController subclass that allows overriding
+/// `preferredStatusBarStyle` at runtime.
+fn register_view_controller_class() -> &'static Class {
+    VC_CLASS_REGISTERED.call_once(|| {
+        let superclass = class!(UIViewController);
+        let mut decl = ClassDecl::new("GPUIViewController", superclass).unwrap();
+
+        // Override preferredStatusBarStyle
+        extern "C" fn preferred_status_bar_style(
+            _this: &Object,
+            _sel: Sel,
+        ) -> isize {
+            let style = STATUS_BAR_STYLE.load(std::sync::atomic::Ordering::Relaxed);
+            if style == 1 {
+                1 // UIStatusBarStyleLightContent
+            } else {
+                3 // UIStatusBarStyleDarkContent (iOS 13+)
+            }
+        }
+
+        unsafe {
+            decl.add_method(
+                sel!(preferredStatusBarStyle),
+                preferred_status_bar_style as extern "C" fn(&Object, Sel) -> isize,
+            );
+        }
+
+        decl.register();
+    });
+
+    class!(GPUIViewController)
+}
+
+/// Set the iOS status bar content style (light or dark text/icons).
+///
+/// This updates the stored style and asks the root view controller
+/// to re-query `preferredStatusBarStyle`.
+pub fn set_status_bar_style(style: crate::StatusBarContentStyle) {
+    use crate::StatusBarContentStyle;
+
+    let value = match style {
+        StatusBarContentStyle::Light => 1,
+        StatusBarContentStyle::Dark => 0,
+    };
+    STATUS_BAR_STYLE.store(value, std::sync::atomic::Ordering::Relaxed);
+
+    // Ask UIKit to re-query the status bar style
+    unsafe {
+        if let Some(wrapper) = super::ffi::IOS_WINDOW_LIST.get() {
+            let windows = &*wrapper.0.get();
+            if let Some(&window_ptr) = windows.last() {
+                if !window_ptr.is_null() {
+                    let window = &*window_ptr;
+                    let vc = window.view_controller;
+                    if !vc.is_null() {
+                        let _: () = msg_send![vc, setNeedsStatusBarAppearanceUpdate];
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Register a custom UIView subclass that uses CAMetalLayer as its backing layer.
 /// This is required for Metal rendering on iOS.
@@ -170,8 +239,6 @@ enum TouchState {
 }
 
 pub(crate) struct IosWindow {
-    /// Handle used by GPUI to identify this window
-    handle: AnyWindowHandle,
     /// The UIWindow object
     window: *mut Object,
     /// The UIViewController
@@ -184,8 +251,6 @@ pub(crate) struct IosWindow {
     bounds: Cell<Bounds<Pixels>>,
     /// Scale factor
     scale_factor: Cell<f32>,
-    /// Appearance (light/dark mode)
-    appearance: Cell<WindowAppearance>,
     /// Input handler for text input
     input_handler: RefCell<Option<PlatformInputHandler>>,
     /// Callback for frame requests
@@ -248,8 +313,10 @@ impl IosWindow {
             let window: *mut Object = msg_send![class!(UIWindow), alloc];
             let window: *mut Object = msg_send![window, initWithFrame: screen_bounds_cg];
 
-            // Create UIViewController
-            let view_controller: *mut Object = msg_send![class!(UIViewController), alloc];
+            // Create our custom UIViewController subclass that supports
+            // dynamic `preferredStatusBarStyle` overrides.
+            let vc_class = register_view_controller_class();
+            let view_controller: *mut Object = msg_send![vc_class, alloc];
             let view_controller: *mut Object = msg_send![view_controller, init];
 
             // Create our custom Metal view using the registered class
@@ -295,15 +362,14 @@ impl IosWindow {
             let pixel_w = (screen_bounds_cg.size.width * scale) as i32;
             let pixel_h = (screen_bounds_cg.size.height * scale) as i32;
 
+            let _handle = handle; // consumed but not stored
             let ios_window = Self {
-                handle,
                 window,
                 view_controller,
                 view,
                 text_input_view,
                 bounds: Cell::new(screen_bounds),
                 scale_factor: Cell::new(scale_factor),
-                appearance: Cell::new(WindowAppearance::Light),
                 input_handler: RefCell::new(None),
                 request_frame_callback: RefCell::new(None),
                 input_callback: RefCell::new(None),
@@ -442,7 +508,7 @@ impl IosWindow {
 
         let mut ts = self.touch_state.get();
 
-        let mut emit = |input: PlatformInput| {
+        let emit = |input: PlatformInput| {
             if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
                 callback(input);
             }
@@ -654,28 +720,6 @@ impl IosWindow {
         }
     }
 
-    /// Get the safe area insets
-    pub fn safe_area_insets(&self) -> (f32, f32, f32, f32) {
-        unsafe {
-            // UIEdgeInsets struct
-            #[repr(C)]
-            struct UIEdgeInsets {
-                top: f64,
-                left: f64,
-                bottom: f64,
-                right: f64,
-            }
-
-            let insets: UIEdgeInsets = msg_send![self.view, safeAreaInsets];
-            (
-                insets.top as f32,
-                insets.left as f32,
-                insets.bottom as f32,
-                insets.right as f32,
-            )
-        }
-    }
-
     /// Show the software keyboard
     pub fn show_keyboard(&self) {
         log::info!("GPUI iOS: Showing keyboard");
@@ -713,7 +757,12 @@ impl IosWindow {
 
             log::info!("GPUI iOS: Text input: {:?}", text_str);
 
-            // First try the input handler (for text fields)
+            // First try the global text input callback (for our TextInput components)
+            if crate::dispatch_text_input(&text_str) {
+                return;
+            }
+
+            // Then try the input handler (for GPUI's built-in text fields)
             if let Some(handler) = self.input_handler.borrow_mut().as_mut() {
                 handler.replace_text_in_range(None, &text_str);
                 return;

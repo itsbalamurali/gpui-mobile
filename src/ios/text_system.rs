@@ -35,7 +35,7 @@ use font_kit::{
 };
 use gpui::{
     point, px, size, Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
-    FontRun, FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, Point,
+    FontRun, FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem,
     RenderGlyphParams, Result, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode,
     SUBPIXEL_VARIANTS_X,
 };
@@ -43,7 +43,7 @@ use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
     rect::{RectF, RectI},
     transform2d::Transform2F,
-    vector::{Vector2F, Vector2I},
+    vector::Vector2F,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -304,12 +304,6 @@ impl IosTextSystemState {
             self.fonts.push(font);
         }
         Ok(font_ids)
-    }
-
-    fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
-        Ok(vec2f_to_size_f32(
-            self.fonts[font_id.0].advance(glyph_id.0)?,
-        ))
     }
 
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
@@ -602,21 +596,6 @@ fn recti_to_bounds_device_pixels(rect: RectI) -> Bounds<DevicePixels> {
         origin: point(DevicePixels(rect.origin_x()), DevicePixels(rect.origin_y())),
         size: size(DevicePixels(rect.width()), DevicePixels(rect.height())),
     }
-}
-
-fn vec2i_to_size_device_pixels(value: Vector2I) -> Size<DevicePixels> {
-    size(DevicePixels(value.x()), DevicePixels(value.y()))
-}
-
-fn recti_to_bounds_i32(rect: RectI) -> Bounds<i32> {
-    Bounds {
-        origin: point(rect.origin_x(), rect.origin_y()),
-        size: size(rect.width(), rect.height()),
-    }
-}
-
-fn point_u32_to_vec2i(p: Point<u32>) -> Vector2I {
-    Vector2I::new(p.x as i32, p.y as i32)
 }
 
 fn vec2f_to_size_f32(vec: Vector2F) -> Size<f32> {

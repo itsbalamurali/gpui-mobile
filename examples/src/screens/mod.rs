@@ -15,15 +15,17 @@
 pub mod about;
 pub mod components;
 pub mod counter;
+pub mod form;
 pub mod home;
 pub mod settings;
 
 use crate::demos::{AnimationPlayground, ShaderShowcase};
 use gpui::{
-    div, hsla, point, prelude::*, px, rgb, size, Bounds, Context, MouseButton, MouseDownEvent,
+    div, point, prelude::*, px, rgb, size, Bounds, Context, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, SharedString, Window,
 };
 use gpui_mobile::components::material::{MaterialTheme, NavigationBarBuilder, TopAppBar};
+use gpui_mobile::{set_system_chrome, StatusBarContentStyle, SystemChromeStyle};
 
 // ── Screen enum ──────────────────────────────────────────────────────────────
 
@@ -35,7 +37,9 @@ pub enum Screen {
     Counter,
     Settings,
     About,
-    Components,
+    AppleGlass,
+    Material,
+    Form,
     Animations,
     Shaders,
 }
@@ -48,10 +52,24 @@ impl Screen {
             Screen::Counter => "Counter",
             Screen::Settings => "Settings",
             Screen::About => "About",
-            Screen::Components => "Components",
+            Screen::AppleGlass => "Apple Liquid Glass",
+            Screen::Material => "Material Design 3",
+            Screen::Form => "Material Form",
             Screen::Animations => "Animations",
             Screen::Shaders => "Shaders",
         }
+    }
+
+    /// Whether this screen is a primary tab-bar destination.
+    ///
+    /// Tab roots are the screens directly reachable from the bottom
+    /// navigation bar. Navigating between them clears the history
+    /// stack so the back button is never shown on these screens.
+    pub fn is_tab_root(&self) -> bool {
+        matches!(
+            self,
+            Screen::Home | Screen::Counter | Screen::Settings | Screen::About
+        )
     }
 }
 
@@ -80,7 +98,6 @@ pub const LAVENDER: u32 = 0xb4befe;
 /// These represent the areas occupied by system UI (status bar, navigation
 /// bar, camera notch) that the app content should pad around.
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(dead_code)]
 pub struct SafeArea {
     pub top: f32,
     pub bottom: f32,
@@ -110,6 +127,55 @@ pub struct Router {
     animation_playground: Option<AnimationPlayground>,
     /// The shader showcase demo (lazily created when the screen is visited).
     shader_showcase: Option<ShaderShowcase>,
+
+    // ── Form demo state ─────────────────────────────────────────────────
+    pub form: FormState,
+
+    // ── Pull-to-refresh state ────────────────────────────────────────
+    /// Y coordinate where the pull gesture started (None if not pulling).
+    pub pull_start_y: Option<f32>,
+    /// Current pull distance in pixels.
+    pub pull_distance: f32,
+    /// Whether the refresh is currently active (showing spinner).
+    pub refreshing: bool,
+}
+
+/// Mutable state backing the Material Form demo screen.
+#[derive(Debug, Clone)]
+pub struct FormState {
+    pub notifications: bool,
+    pub auto_update: bool,
+    pub account_type: u8, // 0=personal, 1=business, 2=education
+    pub interests: [bool; 4], // tech, design, science, music
+    pub skill_level: f32,
+    pub experience: f32,
+    pub terms_accepted: bool,
+    pub newsletter: bool,
+    // Text input fields
+    pub full_name: String,
+    pub email: String,
+    pub phone: String,
+    /// Which field is currently focused (None = no field focused).
+    pub focused_field: Option<u8>, // 0=name, 1=email, 2=phone
+}
+
+impl Default for FormState {
+    fn default() -> Self {
+        Self {
+            notifications: true,
+            auto_update: true,
+            account_type: 0,
+            interests: [true, false, true, false],
+            skill_level: 0.6,
+            experience: 0.3,
+            terms_accepted: false,
+            newsletter: false,
+            full_name: "Jane Doe".to_string(),
+            email: "jane@example.com".to_string(),
+            phone: "+1 (555) 123-4567".to_string(),
+            focused_field: None,
+        }
+    }
 }
 
 impl Router {
@@ -133,6 +199,10 @@ impl Router {
             safe_area,
             animation_playground: None,
             shader_showcase: None,
+            form: FormState::default(),
+            pull_start_y: None,
+            pull_distance: 0.0,
+            refreshing: false,
         }
     }
 
@@ -184,7 +254,13 @@ impl Router {
     /// Navigate to a new screen, pushing the current one onto the history stack.
     pub fn navigate_to(&mut self, screen: Screen) {
         if self.current_screen != screen {
-            self.history.push(self.current_screen);
+            if screen.is_tab_root() {
+                // Switching to a tab-bar root screen — clear history so
+                // the back button is not shown on primary destinations.
+                self.history.clear();
+            } else {
+                self.history.push(self.current_screen);
+            }
             self.current_screen = screen;
 
             // Lazily initialise demo state when first visited.
@@ -211,8 +287,12 @@ impl Router {
     }
 
     /// Whether the back button should be shown.
+    ///
+    /// Tab-bar root screens never show a back button, even if there
+    /// is history (e.g. the user navigated Home → Counter → Home —
+    /// history is cleared on tab switches so this is defensive).
     pub fn can_go_back(&self) -> bool {
-        !self.history.is_empty()
+        !self.current_screen.is_tab_root() && !self.history.is_empty()
     }
 }
 
@@ -220,22 +300,20 @@ impl Router {
 
 impl Render for Router {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // For the fullscreen demo screens (Animations, Shaders) we skip the
-        // chrome (nav bar, tab bar, safe area spacers) and render edge-to-edge.
-        match self.current_screen {
-            Screen::Animations => {
-                return self.render_animations_screen(window, cx).into_any_element();
-            }
-            Screen::Shaders => {
-                return self.render_shaders_screen(window, cx).into_any_element();
-            }
-            _ => {}
-        }
-
-        let bg_color = if self.dark_mode { BASE } else { 0xeff1f5 };
-        let text_color = if self.dark_mode { TEXT } else { 0x4c4f69 };
+        let show_tab_bar = self.current_screen.is_tab_root();
+        let theme = gpui_mobile::components::material::MaterialTheme::from_appearance(self.dark_mode);
+        let bg_color = theme.surface;
+        let text_color = theme.on_surface;
         let safe_top = self.safe_area.top;
         let safe_bottom = self.safe_area.bottom;
+
+        // ── Compute system chrome style ──────────────────────────────────
+        let chrome = self.system_chrome_style();
+        let top_color = chrome.status_bar_color.unwrap_or(bg_color);
+        let bottom_color = chrome.navigation_bar_color.unwrap_or(bg_color);
+
+        // Apply to the OS-level status bar / navigation bar.
+        set_system_chrome(&chrome);
 
         div()
             .flex()
@@ -245,31 +323,56 @@ impl Render for Router {
             .text_color(rgb(text_color))
             // ── Top safe-area spacer (status bar / notch) ────────────────
             .when(safe_top > 0.0, |d| {
-                d.child(div().w_full().h(px(safe_top)).bg(rgb(if self.dark_mode {
-                    MANTLE
-                } else {
-                    0xdce0e8
-                })))
+                d.child(div().w_full().h(px(safe_top)).bg(rgb(top_color)))
             })
             // ── Top navigation bar ───────────────────────────────────────
             .child(self.render_nav_bar(cx))
             // ── Screen content ───────────────────────────────────────────
-            .child(self.render_current_screen(cx))
-            // ── Bottom tab bar ───────────────────────────────────────────
-            .child(self.render_tab_bar(cx))
+            .child(self.render_current_screen(window, cx))
+            // ── Bottom tab bar (only for tab-root screens) ───────────────
+            .when(show_tab_bar, |d| {
+                d.child(self.render_tab_bar(cx))
+            })
             // ── Bottom safe-area spacer (nav bar / gesture indicator) ────
-            .when(safe_bottom > 0.0, |d| {
-                d.child(div().w_full().h(px(safe_bottom)).bg(rgb(if self.dark_mode {
-                    MANTLE
-                } else {
-                    0xdce0e8
-                })))
+            .when(safe_bottom > 0.0 && show_tab_bar, |d| {
+                d.child(div().w_full().h(px(safe_bottom)).bg(rgb(bottom_color)))
             })
             .into_any_element()
     }
 }
 
 impl Router {
+    /// Compute the system chrome style for the current screen and theme.
+    ///
+    /// Default: dark mode → dark status bar with light text; light mode → light
+    /// status bar with dark text. Fullscreen demo screens override to dark chrome.
+    fn system_chrome_style(&self) -> SystemChromeStyle {
+        let is_fullscreen_demo = matches!(self.current_screen, Screen::Animations | Screen::Shaders);
+        let theme = gpui_mobile::components::material::MaterialTheme::from_appearance(self.dark_mode);
+
+        if is_fullscreen_demo {
+            SystemChromeStyle {
+                status_bar_color: Some(BASE),
+                status_bar_style: StatusBarContentStyle::Light,
+                navigation_bar_color: Some(BASE),
+            }
+        } else {
+            SystemChromeStyle {
+                status_bar_color: Some(theme.surface),
+                status_bar_style: if self.dark_mode {
+                    StatusBarContentStyle::Light
+                } else {
+                    StatusBarContentStyle::Dark
+                },
+                navigation_bar_color: Some(if self.current_screen.is_tab_root() {
+                    theme.surface_container // matches NavigationBar
+                } else {
+                    theme.surface // no tab bar, match content bg
+                }),
+            }
+        }
+    }
+
     /// Render the top navigation bar using the Material Design TopAppBar.
     fn render_nav_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let can_go_back = self.can_go_back();
@@ -297,19 +400,33 @@ impl Router {
 
     /// Render the content area for the currently active screen.
     ///
-    /// The content is wrapped in a scrollable container so that screens
-    /// with more content than fits on screen (e.g. About) can be scrolled
-    /// vertically via touch drag gestures.
-    fn render_current_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Regular screens are wrapped in a scrollable container. Demo screens
+    /// (Animations, Shaders) fill the remaining space with their own content
+    /// and touch handlers.
+    fn render_current_screen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        match self.current_screen {
+            Screen::Animations => {
+                return self.render_animations_content(window, cx).into_any_element();
+            }
+            Screen::Shaders => {
+                return self.render_shaders_content(window, cx).into_any_element();
+            }
+            _ => {}
+        }
+
         let screen_content = match self.current_screen {
             Screen::Home => self.render_home_screen(cx).into_any_element(),
             Screen::Counter => self.render_counter_screen(cx).into_any_element(),
             Screen::Settings => self.render_settings_screen(cx).into_any_element(),
             Screen::About => self.render_about_screen(cx).into_any_element(),
-            Screen::Components => self.render_components_screen(cx).into_any_element(),
-            // Animations and Shaders are rendered fullscreen (handled above
-            // in Render::render) and should never reach here.
-            Screen::Animations | Screen::Shaders => div().into_any_element(),
+            Screen::AppleGlass => self.render_apple_glass_screen(cx).into_any_element(),
+            Screen::Material => self.render_material_screen(cx).into_any_element(),
+            Screen::Form => self.render_form_screen(cx).into_any_element(),
+            Screen::Animations | Screen::Shaders => unreachable!(),
         };
 
         div()
@@ -317,6 +434,7 @@ impl Router {
             .flex_1()
             .overflow_y_scroll()
             .child(screen_content)
+            .into_any_element()
     }
 
     /// Render the bottom tab bar using the Material Design navigation bar.
@@ -343,15 +461,6 @@ impl Router {
                 current == Screen::Counter,
                 cx.listener(move |this, _, _, cx| {
                     this.navigate_to(Screen::Counter);
-                    cx.notify();
-                }),
-            )
-            .item(
-                "🧩",
-                "UI Kit",
-                current == Screen::Components,
-                cx.listener(move |this, _, _, cx| {
-                    this.navigate_to(Screen::Components);
                     cx.notify();
                 }),
             )
@@ -394,14 +503,22 @@ impl Router {
         about::render(self)
     }
 
-    fn render_components_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        components::render(self)
+    fn render_apple_glass_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        components::render_apple_glass(self)
     }
 
-    // ── Fullscreen demo screens ──────────────────────────────────────────────
+    fn render_material_screen(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        components::render_material(self)
+    }
 
-    /// Render the Animations screen — fullscreen, edge-to-edge.
-    fn render_animations_screen(
+    fn render_form_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        form::render(self, cx)
+    }
+
+    // ── Demo screen content (rendered below the TopAppBar) ────────────────────
+
+    /// Render the Animations content area with touch handlers.
+    fn render_animations_content(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -424,13 +541,10 @@ impl Router {
         }
 
         div()
-            .size_full()
-            .bg(rgb(BASE))
+            .flex_1()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                    // MouseDown only fires for taps (deferred by the platform).
-                    // Set touch_start here so tap-to-burst works.
                     if let Some(playground) = &mut this.animation_playground {
                         let pos = point(event.position.x.as_f32(), event.position.y.as_f32());
                         playground.touch_start = Some((pos, std::time::Instant::now()));
@@ -440,11 +554,7 @@ impl Router {
                 }),
             )
             .on_mouse_move(
-                cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
-                    // MouseMove fires for every finger movement (including
-                    // drags that don't emit MouseDown).  If touch_start is
-                    // not yet set, this is the beginning of a drag gesture —
-                    // record it so drag-to-throw knows where the drag began.
+                cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
                     if let Some(playground) = &mut this.animation_playground {
                         let pos = point(event.position.x.as_f32(), event.position.y.as_f32());
                         if playground.touch_start.is_none() {
@@ -468,12 +578,10 @@ impl Router {
                             let distance = (dx * dx + dy * dy).sqrt();
 
                             if elapsed < std::time::Duration::from_millis(200) && distance < 20.0 {
-                                // Short tap → spawn particles
                                 let color_rgb = crate::demos::random_color(playground.next_ball_id);
                                 playground.spawn_particles(position, rgb(color_rgb).into());
                                 playground.next_ball_id += 1;
                             } else {
-                                // Swipe → fling a ball
                                 let dt = elapsed.as_secs_f32().max(0.01);
                                 let velocity = point(dx / dt * 0.5, dy / dt * 0.5);
                                 playground.spawn_ball(start_pos, velocity);
@@ -484,24 +592,15 @@ impl Router {
                     }
                 }),
             )
-            // Render the playground content with a single back button
             .child(if let Some(playground) = &mut self.animation_playground {
-                playground
-                    .render_with_back_button(
-                        window,
-                        cx.listener(|this, _, _window, cx| {
-                            this.go_back();
-                            cx.notify();
-                        }),
-                    )
-                    .into_any_element()
+                playground.render_content(window).into_any_element()
             } else {
                 div().into_any_element()
             })
     }
 
-    /// Render the Shaders screen — fullscreen, edge-to-edge.
-    fn render_shaders_screen(
+    /// Render the Shaders content area with touch handlers.
+    fn render_shaders_content(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -524,7 +623,7 @@ impl Router {
         }
 
         div()
-            .size_full()
+            .flex_1()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _window, cx| {
@@ -552,41 +651,11 @@ impl Router {
                     }
                 }),
             )
-            // Render the showcase content with a single back button
             .child(if let Some(showcase) = &mut self.shader_showcase {
-                showcase
-                    .render_with_back_button(
-                        window,
-                        cx.listener(|this, _, _window, cx| {
-                            this.go_back();
-                            cx.notify();
-                        }),
-                    )
-                    .into_any_element()
+                showcase.render_content(window).into_any_element()
             } else {
                 div().into_any_element()
             })
     }
 }
 
-// ── Back button (shared with demo screens) ───────────────────────────────────
-
-/// Floating back button overlaid on fullscreen demo screens.
-#[allow(dead_code)]
-fn back_button<F>(on_click: F) -> impl IntoElement
-where
-    F: Fn(&gpui::MouseDownEvent, &mut Window, &mut gpui::App) + 'static,
-{
-    div()
-        .absolute()
-        .top(px(54.0))
-        .left(px(16.0))
-        .px_4()
-        .py_2()
-        .bg(hsla(0.0, 0.0, 0.2, 0.8))
-        .rounded_lg()
-        .text_color(rgb(TEXT))
-        .text_sm()
-        .child("← Back")
-        .on_mouse_down(MouseButton::Left, on_click)
-}

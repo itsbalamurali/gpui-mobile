@@ -47,15 +47,7 @@ impl IosPlatform {
     pub fn new() -> Self {
         let dispatcher = Arc::new(IosDispatcher);
 
-        #[cfg(feature = "font-kit")]
-        let text_system = Arc::new(super::IosTextSystem::new());
-
-        #[cfg(not(feature = "font-kit"))]
-        let text_system: Arc<dyn PlatformTextSystem> = {
-            // Without font-kit, we need a stub text system.
-            // This will panic if text rendering is attempted.
-            panic!("iOS platform requires the 'font-kit' feature for text rendering");
-        };
+        let text_system: Arc<dyn PlatformTextSystem> = Arc::new(super::IosTextSystem::new());
 
         Self(Mutex::new(IosPlatformState {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),

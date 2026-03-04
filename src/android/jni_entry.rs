@@ -1157,6 +1157,250 @@ pub fn init_platform(app: &AndroidApp) -> &'static Arc<AndroidPlatform> {
     PLATFORM.get().unwrap()
 }
 
+// ── system chrome (status bar / navigation bar) ───────────────────────────────
+
+/// Apply system chrome styling on Android.
+///
+/// Sets the status bar color, navigation bar color, and light/dark
+/// status bar icons via JNI calls to `Window` and `WindowInsetsController`.
+///
+/// Must be called from the main (native) thread that has JNI access.
+pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
+    let vm = java_vm();
+    if vm.is_null() {
+        log::warn!("set_system_chrome: no JavaVM");
+        return;
+    }
+
+    let env = unsafe { jni_fns::get_env_from_vm(vm) };
+    if env.is_null() {
+        log::warn!("set_system_chrome: cannot get JNIEnv");
+        return;
+    }
+
+    let activity_obj = activity_as_ptr();
+    if activity_obj.is_null() {
+        log::warn!("set_system_chrome: no activity");
+        return;
+    }
+
+    unsafe { set_system_chrome_impl(env, activity_obj, style) };
+}
+
+/// Internal implementation of system chrome styling via raw JNI.
+///
+/// # Safety
+///
+/// `env` must be a valid `JNIEnv *` and `activity_obj` must be a valid
+/// Activity jobject.
+unsafe fn set_system_chrome_impl(
+    env: *mut c_void,
+    activity_obj: *mut c_void,
+    style: &crate::SystemChromeStyle,
+) {
+    let fn_table = *(env as *const *const *const c_void);
+
+    macro_rules! jni_fn {
+        ($idx:expr, $ty:ty) => {
+            std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
+        };
+    }
+
+    type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
+    type GetMethodIDFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
+    type CallObjectMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> *mut c_void;
+    type CallVoidMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64);
+    type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
+    type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
+    type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
+
+    let find_class: FindClassFn = jni_fn!(6, FindClassFn);
+    let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
+    let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
+    let call_void_method_a: CallVoidMethodAFn = jni_fn!(61, CallVoidMethodAFn);
+    let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
+    let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
+    let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
+
+    let no_args: [i64; 0] = [];
+
+    // 1. Get the Window: activity.getWindow()
+    let activity_cls = find_class(env, b"android/app/Activity\0".as_ptr() as *const i8);
+    if activity_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    let get_window = get_method_id(
+        env,
+        activity_cls,
+        b"getWindow\0".as_ptr() as *const i8,
+        b"()Landroid/view/Window;\0".as_ptr() as *const i8,
+    );
+    if get_window.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, activity_cls);
+        return;
+    }
+
+    let window_obj = call_object_method_a(env, activity_obj, get_window, no_args.as_ptr());
+    delete_local_ref(env, activity_cls);
+    if window_obj.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    let window_cls = find_class(env, b"android/view/Window\0".as_ptr() as *const i8);
+    if window_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_obj);
+        return;
+    }
+
+    // 2. Set status bar color if provided
+    if let Some(color) = style.status_bar_color {
+        let set_status_bar_color = get_method_id(
+            env,
+            window_cls,
+            b"setStatusBarColor\0".as_ptr() as *const i8,
+            b"(I)V\0".as_ptr() as *const i8,
+        );
+        if !set_status_bar_color.is_null() {
+            // Android expects ARGB — add full alpha
+            let argb = (0xFF000000_u32 | color) as i64;
+            let args: [i64; 1] = [argb];
+            call_void_method_a(env, window_obj, set_status_bar_color, args.as_ptr());
+            if exception_check(env) != 0 { exception_clear(env); }
+        } else if exception_check(env) != 0 {
+            exception_clear(env);
+        }
+    }
+
+    // 3. Set navigation bar color if provided
+    if let Some(color) = style.navigation_bar_color {
+        let set_nav_bar_color = get_method_id(
+            env,
+            window_cls,
+            b"setNavigationBarColor\0".as_ptr() as *const i8,
+            b"(I)V\0".as_ptr() as *const i8,
+        );
+        if !set_nav_bar_color.is_null() {
+            let argb = (0xFF000000_u32 | color) as i64;
+            let args: [i64; 1] = [argb];
+            call_void_method_a(env, window_obj, set_nav_bar_color, args.as_ptr());
+            if exception_check(env) != 0 { exception_clear(env); }
+        } else if exception_check(env) != 0 {
+            exception_clear(env);
+        }
+    }
+
+    // 4. Set light/dark status bar icons via WindowInsetsController (API 30+)
+    //    Fallback: use View.setSystemUiVisibility with SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+    {
+        // Try the modern WindowInsetsController API first
+        let get_insetsctl = get_method_id(
+            env,
+            window_cls,
+            b"getInsetsController\0".as_ptr() as *const i8,
+            b"()Landroid/view/WindowInsetsController;\0".as_ptr() as *const i8,
+        );
+
+        if !get_insetsctl.is_null() {
+            let insetsctl = call_object_method_a(env, window_obj, get_insetsctl, no_args.as_ptr());
+            if !insetsctl.is_null() {
+                let insetsctl_cls = find_class(
+                    env,
+                    b"android/view/WindowInsetsController\0".as_ptr() as *const i8,
+                );
+                if !insetsctl_cls.is_null() {
+                    let set_appearance = get_method_id(
+                        env,
+                        insetsctl_cls,
+                        b"setSystemBarsAppearance\0".as_ptr() as *const i8,
+                        b"(II)V\0".as_ptr() as *const i8,
+                    );
+                    if !set_appearance.is_null() {
+                        // APPEARANCE_LIGHT_STATUS_BARS = 0x00000008
+                        let mask: i64 = 0x00000008;
+                        let appearance: i64 = match style.status_bar_style {
+                            crate::StatusBarContentStyle::Dark => 0x00000008, // light status bar = dark icons
+                            crate::StatusBarContentStyle::Light => 0,         // no flag = light icons
+                        };
+                        let args: [i64; 2] = [appearance, mask];
+                        call_void_method_a(env, insetsctl, set_appearance, args.as_ptr());
+                        if exception_check(env) != 0 { exception_clear(env); }
+                    } else if exception_check(env) != 0 {
+                        exception_clear(env);
+                    }
+                    delete_local_ref(env, insetsctl_cls);
+                }
+                delete_local_ref(env, insetsctl);
+            } else if exception_check(env) != 0 {
+                exception_clear(env);
+            }
+        } else {
+            // Fallback for API < 30: use decorView.setSystemUiVisibility
+            if exception_check(env) != 0 { exception_clear(env); }
+
+            let get_decor_view = get_method_id(
+                env,
+                window_cls,
+                b"getDecorView\0".as_ptr() as *const i8,
+                b"()Landroid/view/View;\0".as_ptr() as *const i8,
+            );
+            if !get_decor_view.is_null() {
+                let decor_view = call_object_method_a(env, window_obj, get_decor_view, no_args.as_ptr());
+                if !decor_view.is_null() {
+                    let view_cls = find_class(env, b"android/view/View\0".as_ptr() as *const i8);
+                    if !view_cls.is_null() {
+                        // Get current flags
+                        let get_vis = get_method_id(
+                            env, view_cls,
+                            b"getSystemUiVisibility\0".as_ptr() as *const i8,
+                            b"()I\0".as_ptr() as *const i8,
+                        );
+                        let set_vis = get_method_id(
+                            env, view_cls,
+                            b"setSystemUiVisibility\0".as_ptr() as *const i8,
+                            b"(I)V\0".as_ptr() as *const i8,
+                        );
+                        if !get_vis.is_null() && !set_vis.is_null() {
+                            type CallIntMethodAFn = unsafe extern "C" fn(
+                                *mut c_void, *mut c_void, *mut c_void, *const i64
+                            ) -> i32;
+                            let call_int_method_a: CallIntMethodAFn = jni_fn!(49, CallIntMethodAFn);
+                            let current = call_int_method_a(env, decor_view, get_vis, no_args.as_ptr());
+                            // SYSTEM_UI_FLAG_LIGHT_STATUS_BAR = 0x00002000
+                            let new_flags = match style.status_bar_style {
+                                crate::StatusBarContentStyle::Dark => current | 0x00002000,
+                                crate::StatusBarContentStyle::Light => current & !0x00002000,
+                            };
+                            let args: [i64; 1] = [new_flags as i64];
+                            call_void_method_a(env, decor_view, set_vis, args.as_ptr());
+                            if exception_check(env) != 0 { exception_clear(env); }
+                        }
+                        delete_local_ref(env, view_cls);
+                    }
+                    delete_local_ref(env, decor_view);
+                }
+            } else if exception_check(env) != 0 {
+                exception_clear(env);
+            }
+        }
+    }
+
+    delete_local_ref(env, window_cls);
+    delete_local_ref(env, window_obj);
+
+    log::info!(
+        "set_system_chrome: status_bar_color={:?}, nav_bar_color={:?}, style={:?}",
+        style.status_bar_color, style.navigation_bar_color, style.status_bar_style
+    );
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

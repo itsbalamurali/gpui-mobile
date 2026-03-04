@@ -138,8 +138,6 @@ pub struct AnimationPlayground {
     pub touch_start: Option<(Point<f32>, Instant)>,
     pub current_touch: Option<Point<f32>>,
     bounds: Bounds<f32>,
-    #[allow(dead_code)]
-    on_back: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
 
 impl AnimationPlayground {
@@ -155,17 +153,7 @@ impl AnimationPlayground {
                 origin: point(0.0, 0.0),
                 size: size(400.0, 800.0),
             },
-            on_back: None,
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_on_back<F>(mut self, on_back: F) -> Self
-    where
-        F: Fn(&mut Window, &mut App) + 'static,
-    {
-        self.on_back = Some(Box::new(on_back));
-        self
     }
 
     pub fn spawn_ball(&mut self, position: Point<f32>, velocity: Point<f32>) {
@@ -241,14 +229,11 @@ impl AnimationPlayground {
         cx.notify();
     }
 
-    pub fn render_with_back_button<F>(
-        &mut self,
-        window: &mut Window,
-        on_back: F,
-    ) -> impl IntoElement
-    where
-        F: Fn(&(), &mut Window, &mut App) + 'static,
-    {
+    /// Render just the animation content (canvas + instructions overlay).
+    ///
+    /// This is the core rendering used by both the standalone `Render` impl
+    /// and the Router (which provides its own TopAppBar chrome).
+    pub fn render_content(&mut self, window: &mut Window) -> impl IntoElement {
         // Request continuous animation frame
         window.request_animation_frame();
 
@@ -267,7 +252,6 @@ impl AnimationPlayground {
             .child(
                 canvas(
                     move |bounds, _window, _cx| {
-                        // Convert bounds to f32 for physics
                         let bounds_f32 = Bounds {
                             origin: point(bounds.origin.x.as_f32(), bounds.origin.y.as_f32()),
                             size: size(bounds.size.width.as_f32(), bounds.size.height.as_f32()),
@@ -323,7 +307,6 @@ impl AnimationPlayground {
                                 px(ball.radius),
                                 ball.color,
                             );
-                            // Inner highlight
                             let highlight = hsla(ball.color.h, ball.color.s * 0.5, 0.9, 0.5);
                             paint_circle(
                                 window,
@@ -338,7 +321,6 @@ impl AnimationPlayground {
 
                         // Draw drag line if dragging
                         if let (Some(start), Some(current)) = (touch_start, current_touch) {
-                            // Draw a line from start to current (using dots)
                             let dx = current.x - start.x;
                             let dy = current.y - start.y;
                             let dist = (dx * dx + dy * dy).sqrt();
@@ -379,7 +361,19 @@ impl AnimationPlayground {
                             .child("Tap to burst, drag to throw balls"),
                     ),
             )
-            // Back button
+    }
+
+    pub fn render_with_back_button<F>(
+        &mut self,
+        window: &mut Window,
+        on_back: F,
+    ) -> impl IntoElement
+    where
+        F: Fn(&(), &mut Window, &mut App) + 'static,
+    {
+        div()
+            .size_full()
+            .child(self.render_content(window))
             .child(back_button(on_back))
     }
 

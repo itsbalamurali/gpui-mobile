@@ -13,9 +13,6 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-// Number of orbs in the demo (for reference, orbs are created manually)
-#[allow(dead_code)]
-const ORB_COUNT: usize = 8;
 const RIPPLE_DURATION_MS: u64 = 1000;
 const MAX_RIPPLES: usize = 5;
 
@@ -165,30 +162,11 @@ impl ShaderShowcase {
         self.ripples.push(Ripple::new(position, hue));
     }
 
-    #[allow(dead_code)]
-    fn handle_touch_down(&mut self, position: Point<f32>) {
-        self.touch_position = Some(position);
-        self.spawn_ripple(position);
-    }
-
-    #[allow(dead_code)]
-    fn handle_touch_move(&mut self, position: Point<f32>) {
-        self.touch_position = Some(position);
-    }
-
-    #[allow(dead_code)]
-    fn handle_touch_up(&mut self) {
-        self.touch_position = None;
-    }
-
-    pub fn render_with_back_button<F>(
-        &mut self,
-        window: &mut Window,
-        on_back: F,
-    ) -> impl IntoElement
-    where
-        F: Fn(&(), &mut Window, &mut App) + 'static,
-    {
+    /// Render just the shader content (gradient + canvas + overlays).
+    ///
+    /// This is the core rendering used by both the standalone `DemoApp`
+    /// and the Router (which provides its own TopAppBar chrome).
+    pub fn render_content(&mut self, window: &mut Window) -> impl IntoElement {
         // Request continuous animation frame
         window.request_animation_frame();
 
@@ -236,7 +214,6 @@ impl ShaderShowcase {
                           (_bounds_f32, max_ripple_radius, time, touch_offset, orbs, ripples),
                           window,
                           _cx| {
-                        // Draw orbs (back to front by parallax factor)
                         let mut sorted_orbs: Vec<_> = orbs.iter().collect();
                         sorted_orbs.sort_by(|a, b| {
                             a.parallax_factor.partial_cmp(&b.parallax_factor).unwrap()
@@ -246,7 +223,6 @@ impl ShaderShowcase {
                             let pos = orb.current_position(touch_offset, time);
                             let radius = orb.current_radius(time);
 
-                            // Draw glow layers (outer to inner)
                             for i in (0..4).rev() {
                                 let glow_radius = radius * (1.0 + i as f32 * 0.5);
                                 let glow_alpha = orb.color.a * (0.1 / (i as f32 + 1.0));
@@ -260,7 +236,6 @@ impl ShaderShowcase {
                                 );
                             }
 
-                            // Draw core
                             paint_circle(
                                 window,
                                 point(px(pos.x), px(pos.y)),
@@ -268,7 +243,6 @@ impl ShaderShowcase {
                                 orb.color,
                             );
 
-                            // Draw highlight
                             let highlight = hsla(orb.color.h, orb.color.s * 0.5, 0.9, 0.3);
                             paint_circle(
                                 window,
@@ -278,13 +252,11 @@ impl ShaderShowcase {
                             );
                         }
 
-                        // Draw ripples
                         for ripple in ripples.iter() {
                             let radius = ripple.current_radius(max_ripple_radius);
                             let alpha = ripple.current_alpha() * 0.5;
                             let color = hsla(ripple.color.h, ripple.color.s, ripple.color.l, alpha);
 
-                            // Draw expanding ring
                             paint_ring(
                                 window,
                                 point(px(ripple.center.x), px(ripple.center.y)),
@@ -296,22 +268,6 @@ impl ShaderShowcase {
                     },
                 )
                 .size_full(),
-            )
-            // Title overlay
-            .child(
-                div()
-                    .absolute()
-                    .top(px(100.0))
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_2xl()
-                            .text_color(hsla(0.0, 0.0, 1.0, 0.8))
-                            .child("Shader Showcase"),
-                    ),
             )
             // Instructions
             .child(
@@ -333,7 +289,19 @@ impl ShaderShowcase {
                             .child("Touch to control gradients & create ripples"),
                     ),
             )
-            // Back button
+    }
+
+    pub fn render_with_back_button<F>(
+        &mut self,
+        window: &mut Window,
+        on_back: F,
+    ) -> impl IntoElement
+    where
+        F: Fn(&(), &mut Window, &mut App) + 'static,
+    {
+        div()
+            .size_full()
+            .child(self.render_content(window))
             .child(back_button(on_back))
     }
 

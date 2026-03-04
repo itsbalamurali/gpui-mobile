@@ -63,7 +63,10 @@ pub mod demos;
 pub mod screens;
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
-use gpui::{prelude::*, App, Application, WindowOptions};
+use gpui::{prelude::*, App, WindowOptions};
+
+#[cfg(target_os = "android")]
+use gpui::Application;
 
 #[cfg(any(target_os = "ios", target_os = "android"))]
 use screens::Router;

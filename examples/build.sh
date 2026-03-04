@@ -190,7 +190,6 @@ build_ios() {
     cd "$EXAMPLES_DIR"
     cargo build \
         --target "$rust_target" \
-        --features "font-kit" \
         $cargo_profile_flag \
         2>&1
 

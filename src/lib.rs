@@ -74,6 +74,144 @@ pub use gpui;
 pub mod components;
 pub mod momentum;
 
+// ── System chrome (status bar / navigation bar) styling ──────────────────────
+
+/// Controls the appearance of the device status bar text and icons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusBarContentStyle {
+    /// White text/icons — use on dark backgrounds.
+    Light,
+    /// Dark text/icons — use on light backgrounds.
+    #[default]
+    Dark,
+}
+
+/// Configures the system chrome (status bar and navigation bar) appearance.
+///
+/// Use [`set_system_chrome`] to apply a style. Colors are specified as
+/// 0xRRGGBB values (no alpha). Pass `None` for a color field to leave it
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SystemChromeStyle {
+    /// Background color for the top safe area (behind the status bar).
+    pub status_bar_color: Option<u32>,
+    /// Whether the status bar content (text/icons) should be light or dark.
+    pub status_bar_style: StatusBarContentStyle,
+    /// Background color for the bottom safe area (behind the home indicator / nav bar).
+    pub navigation_bar_color: Option<u32>,
+}
+
+impl Default for SystemChromeStyle {
+    fn default() -> Self {
+        Self {
+            status_bar_color: None,
+            status_bar_style: StatusBarContentStyle::Dark,
+            navigation_bar_color: None,
+        }
+    }
+}
+
+/// Apply system chrome styling (status bar style, navigation bar color).
+///
+/// On iOS this updates `preferredStatusBarStyle` on the root view controller.
+/// On Android this calls `Window.setStatusBarColor()`,
+/// `Window.setNavigationBarColor()`, and configures light/dark status bar icons.
+///
+/// On unsupported platforms this is a no-op.
+pub fn set_system_chrome(style: &SystemChromeStyle) {
+    #[cfg(target_os = "ios")]
+    {
+        ios::set_status_bar_style(style.status_bar_style);
+    }
+    #[cfg(target_os = "android")]
+    {
+        android::jni_entry::set_system_chrome(style);
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = style;
+    }
+}
+
+// ── Text input callback ──────────────────────────────────────────────────────
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// Global text input callback — set by the active text input component.
+    /// When the software keyboard sends text, this callback is invoked.
+    static TEXT_INPUT_CALLBACK: RefCell<Option<Box<dyn FnMut(&str)>>> = RefCell::new(None);
+}
+
+/// Register a callback that receives text from the software keyboard.
+///
+/// Only one callback can be active at a time. Call with `None` to clear it.
+/// This is typically called by the text input component when it gains focus.
+pub fn set_text_input_callback(callback: Option<Box<dyn FnMut(&str)>>) {
+    TEXT_INPUT_CALLBACK.with(|cb| {
+        *cb.borrow_mut() = callback;
+    });
+}
+
+/// Dispatch text input to the registered callback.
+///
+/// Called internally by the platform layer when keyboard text is received.
+/// Returns true if a callback handled the text.
+pub fn dispatch_text_input(text: &str) -> bool {
+    TEXT_INPUT_CALLBACK.with(|cb| {
+        if let Some(callback) = cb.borrow_mut().as_mut() {
+            callback(text);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+// ── Software keyboard control ────────────────────────────────────────────────
+
+/// Show the software keyboard.
+///
+/// On iOS this makes the hidden text input view the first responder.
+/// On Android this opens the input method editor.
+/// On unsupported platforms this is a no-op.
+pub fn show_keyboard() {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(wrapper) = ios::ffi::IOS_WINDOW_LIST.get() {
+            unsafe {
+                let windows = &*wrapper.0.get();
+                if let Some(&window) = windows.last() {
+                    (*window).show_keyboard();
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {}
+}
+
+/// Hide the software keyboard.
+///
+/// On iOS this resigns first responder from the text input view.
+/// On Android this closes the input method editor.
+/// On unsupported platforms this is a no-op.
+pub fn hide_keyboard() {
+    #[cfg(target_os = "ios")]
+    {
+        if let Some(wrapper) = ios::ffi::IOS_WINDOW_LIST.get() {
+            unsafe {
+                let windows = &*wrapper.0.get();
+                if let Some(&window) = windows.last() {
+                    (*window).hide_keyboard();
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {}
+}
+
 // ── platform modules ─────────────────────────────────────────────────────────
 
 #[cfg(target_os = "ios")]

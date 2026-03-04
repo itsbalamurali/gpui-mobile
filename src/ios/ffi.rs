@@ -39,11 +39,11 @@ unsafe impl Send for IosAppState {}
 unsafe impl Sync for IosAppState {}
 
 // Safety wrapper for window list - only accessed from main thread
-struct WindowListWrapper(std::cell::UnsafeCell<Vec<*const super::window::IosWindow>>);
+pub(crate) struct WindowListWrapper(pub(crate) std::cell::UnsafeCell<Vec<*const super::window::IosWindow>>);
 unsafe impl Send for WindowListWrapper {}
 unsafe impl Sync for WindowListWrapper {}
 
-static IOS_WINDOW_LIST: OnceLock<WindowListWrapper> = OnceLock::new();
+pub(crate) static IOS_WINDOW_LIST: OnceLock<WindowListWrapper> = OnceLock::new();
 
 /// Initialize the GPUI iOS application.
 ///
@@ -54,14 +54,6 @@ static IOS_WINDOW_LIST: OnceLock<WindowListWrapper> = OnceLock::new();
 /// Returns null if initialization fails.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpui_ios_initialize() -> *mut c_void {
-    // Initialize logging - iOS logging is typically handled via os_log
-    // or NSLog, but for debug builds we can try to use env_logger if available
-    #[cfg(all(debug_assertions, feature = "test-support"))]
-    {
-        // Try to initialize logging, ignore if already initialized
-        let _ = env_logger::try_init();
-    }
-
     log::info!("GPUI iOS: Initializing");
 
     // Initialize the app state

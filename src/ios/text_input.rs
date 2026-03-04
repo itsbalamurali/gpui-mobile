@@ -9,6 +9,7 @@
 
 use gpui::{KeyDownEvent, Keystroke, Modifiers, PlatformInput};
 
+
 /// Convert a key code from UIKeyboardHIDUsage to a GPUI key string.
 ///
 /// UIKeyboardHIDUsage values are based on the USB HID specification.
@@ -94,36 +95,6 @@ pub fn modifier_flags_to_modifiers(flags: u32) -> Modifiers {
         platform: flags & COMMAND != 0,
         function: false,
     }
-}
-
-/// Create a key down event from a character.
-pub fn character_to_key_down(c: char) -> PlatformInput {
-    let keystroke = Keystroke {
-        modifiers: Modifiers::default(),
-        key: c.to_string(),
-        key_char: Some(c.to_string()),
-    };
-
-    PlatformInput::KeyDown(KeyDownEvent {
-        keystroke,
-        is_held: false,
-        prefer_character_input: true,
-    })
-}
-
-/// Create a backspace key down event.
-pub fn backspace_key_down() -> PlatformInput {
-    let keystroke = Keystroke {
-        modifiers: Modifiers::default(),
-        key: "backspace".to_string(),
-        key_char: None,
-    };
-
-    PlatformInput::KeyDown(KeyDownEvent {
-        keystroke,
-        is_held: false,
-        prefer_character_input: false,
-    })
 }
 
 /// Create a key down event from a key code and modifiers.
