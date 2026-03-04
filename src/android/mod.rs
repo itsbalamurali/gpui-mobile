@@ -13,13 +13,13 @@
 //!   │     └── gpui_wgpu::WgpuRenderer
 //!   ├── AndroidDisplay        (display.rs)
 //!   ├── gpui_wgpu::CosmicTextSystem
-//!   └── jni_entry             (jni_entry.rs) — event loop + lifecycle
+//!   └── jni                   (jni.rs) — event loop + lifecycle
 //! ```
 //!
 //! GPU rendering and text shaping are delegated to the upstream `gpui_wgpu`
 //! crate which provides `WgpuRenderer`, `WgpuContext`, and `CosmicTextSystem`.
 //!
-//! The JNI / ANativeActivity entry-points live in `jni_entry.rs` and are the
+//! The JNI / ANativeActivity entry-points live in `jni.rs` and are the
 //! first Rust code that executes when the Android runtime loads the `.so`.
 //!
 //! ## Threading model
@@ -151,7 +151,7 @@ pub fn size<T>(width: T, height: T) -> Size<T> {
 
 pub mod dispatcher;
 pub mod display;
-pub mod jni_entry;
+pub mod jni;
 pub mod keyboard;
 pub mod platform;
 pub mod window;
