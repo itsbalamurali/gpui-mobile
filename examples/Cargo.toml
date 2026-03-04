@@ -23,7 +23,7 @@ log = "0.4"
 objc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.13"
+android_logger = "0.15"
 android-activity = { version = "0.6", features = ["native-activity"] }
 
 [patch.crates-io]
