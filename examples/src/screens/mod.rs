@@ -209,15 +209,15 @@ impl Router {
     /// Query the safe area insets from the platform.
     ///
     /// On Android, reads insets from the global `AndroidPlatform` via
-    /// `jni_entry`.  On iOS, safe area insets are managed by UIKit and
+    /// `jni`.  On iOS, safe area insets are managed by UIKit and
     /// will be queried once the iOS platform integration exposes them.
     ///
     /// Returns logical-pixel insets if available, otherwise zeros (no padding).
     fn query_safe_area() -> SafeArea {
         #[cfg(target_os = "android")]
         {
-            use gpui_mobile::android::jni_entry;
-            if let Some(platform) = jni_entry::platform() {
+            use gpui_mobile::android::jni;
+            if let Some(platform) = jni::platform() {
                 if let Some(win) = platform.primary_window() {
                     let insets = win.safe_area_insets_logical();
                     log::info!(

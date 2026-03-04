@@ -76,7 +76,7 @@ use screens::Router;
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(target_os = "android")]
-use gpui_mobile::android::jni_entry;
+use gpui_mobile::android::jni;
 
 /// Called by the `android-activity` crate on a dedicated native thread.
 /// Does NOT return until the app is ready to exit.
@@ -91,17 +91,17 @@ fn android_main(app: android_activity::AndroidApp) {
     );
 
     // Panic hook — routes panics to logcat instead of silently aborting.
-    jni_entry::install_panic_hook();
+    jni::install_panic_hook();
 
     log::info!("android_main: entered");
 
     // Initialise the global AndroidApp + AndroidPlatform.
-    let _platform = jni_entry::init_platform(&app);
+    let _platform = jni::init_platform(&app);
     log::info!("android_main: platform initialised");
 
     // Get a SharedPlatform (Rc-compatible wrapper around the global
     // Arc<AndroidPlatform>) so we can hand it to GPUI.
-    let shared = match jni_entry::shared_platform() {
+    let shared = match jni::shared_platform() {
         Some(s) => s,
         None => {
             log::error!("android_main: shared_platform() returned None — aborting");
