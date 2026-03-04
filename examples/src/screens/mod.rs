@@ -254,6 +254,12 @@ impl Router {
     /// Navigate to a new screen, pushing the current one onto the history stack.
     pub fn navigate_to(&mut self, screen: Screen) {
         if self.current_screen != screen {
+            // Dismiss keyboard when leaving the form screen
+            if self.form.focused_field.is_some() {
+                self.form.focused_field = None;
+                gpui_mobile::hide_keyboard();
+                gpui_mobile::set_text_input_callback(None);
+            }
             if screen.is_tab_root() {
                 // Switching to a tab-bar root screen — clear history so
                 // the back button is not shown on primary destinations.
@@ -433,6 +439,17 @@ impl Router {
             .id("screen-scroll-container")
             .flex_1()
             .overflow_y_scroll()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.form.focused_field.is_some() {
+                        this.form.focused_field = None;
+                        gpui_mobile::hide_keyboard();
+                        gpui_mobile::set_text_input_callback(None);
+                        cx.notify();
+                    }
+                }),
+            )
             .child(screen_content)
             .into_any_element()
     }

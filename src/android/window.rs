@@ -31,7 +31,6 @@
 //! can be returned from `Platform::open_window`.
 
 #![allow(unsafe_code)]
-#![allow(dead_code)]
 
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot;
@@ -607,7 +606,7 @@ impl AndroidWindow {
 
     /// Update the active (foreground/background) status of the window.
     ///
-    /// Called by `on_window_focus_changed` in `jni_entry.rs`.
+    /// Called by `on_window_focus_changed` in `jni.rs`.
     pub fn set_active(&self, active: bool) {
         let mut state = self.state.lock();
         if state.is_active == active {
@@ -1640,21 +1639,21 @@ impl PlatformWindow for AndroidPlatformWindow {
         //
         // This requires API level 21+ (Lollipop).
 
-        use crate::android::jni_entry;
+        use crate::android::jni;
         use std::ffi::c_void;
 
-        let vm = jni_entry::java_vm();
+        let vm = jni::java_vm();
         if vm.is_null() {
             return;
         }
 
-        let activity_obj = jni_entry::activity_as_ptr();
+        let activity_obj = jni::activity_as_ptr();
         if activity_obj.is_null() {
             return;
         }
 
         unsafe {
-            let env = jni_entry::jni_fns::get_env_from_vm(vm);
+            let env = jni::jni_fns::get_env_from_vm(vm);
             if env.is_null() {
                 return;
             }

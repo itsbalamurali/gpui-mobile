@@ -318,7 +318,7 @@ pub extern "C" fn gpui_ios_show_keyboard(window_ptr: *mut c_void) {
     log::info!("GPUI iOS: Show keyboard requested");
 
     let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
-    window.show_keyboard();
+    window.show_keyboard_with_type(crate::KeyboardType::Default);
 }
 
 /// Hide the software keyboard.

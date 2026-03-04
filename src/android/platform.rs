@@ -32,8 +32,6 @@
 //! compiles in isolation.  Replace the stub section with `use gpui::*` when
 //! building inside the full workspace.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
@@ -348,7 +346,7 @@ impl AndroidPlatform {
 
             if !emoji_loaded {
                 // Try loading the bundled CBDT NotoColorEmoji from APK assets.
-                if let Some(app) = crate::android::jni_entry::android_app() {
+                if let Some(app) = crate::android::jni::android_app() {
                     match load_asset_bytes(&app, "fonts/NotoColorEmoji.ttf") {
                         Ok(bytes) => {
                             log::info!(
@@ -481,8 +479,8 @@ impl AndroidPlatform {
         // Drive the event loop.  This blocks until quit() is called or
         // the activity is destroyed.  The finish_launching callback will
         // be invoked from inside the event loop when the window is ready.
-        if let Some(app) = super::jni_entry::android_app() {
-            super::jni_entry::run_event_loop(&app);
+        if let Some(app) = super::jni::android_app() {
+            super::jni::run_event_loop(&app);
         } else {
             // Headless / test mode — just invoke the callback immediately.
             let cb = self.state.lock().finish_launching.take();
@@ -730,21 +728,21 @@ impl AndroidPlatform {
     ///
     /// Returns `None` if the JNI environment is unavailable or the call fails.
     fn query_keyboard_layout_id_via_jni(&self) -> Option<String> {
-        use crate::android::jni_entry;
+        use crate::android::jni;
         use std::ffi::c_void;
 
-        let vm = jni_entry::java_vm();
+        let vm = jni::java_vm();
         if vm.is_null() {
             return None;
         }
 
-        let activity_obj = jni_entry::activity_as_ptr();
+        let activity_obj = jni::activity_as_ptr();
         if activity_obj.is_null() {
             return None;
         }
 
         unsafe {
-            let env = jni_entry::jni_fns::get_env_from_vm(vm);
+            let env = jni::jni_fns::get_env_from_vm(vm);
             if env.is_null() {
                 return None;
             }
@@ -988,21 +986,21 @@ impl AndroidPlatform {
     /// Returns -1 on failure (JNI unavailable, API < 29, etc.).
     #[allow(dead_code)]
     fn query_thermal_status_via_jni(&self) -> i32 {
-        use crate::android::jni_entry;
+        use crate::android::jni;
         use std::ffi::c_void;
 
-        let vm = jni_entry::java_vm();
+        let vm = jni::java_vm();
         if vm.is_null() {
             return -1;
         }
 
-        let activity_obj = jni_entry::activity_as_ptr();
+        let activity_obj = jni::activity_as_ptr();
         if activity_obj.is_null() {
             return -1;
         }
 
         unsafe {
-            let env = jni_entry::jni_fns::get_env_from_vm(vm);
+            let env = jni::jni_fns::get_env_from_vm(vm);
             if env.is_null() {
                 return -1;
             }
@@ -1521,7 +1519,7 @@ impl PlatformKeyboardMapper for AndroidKeyboardMapper {
 // ── SharedPlatform — Rc-friendly wrapper around Arc<AndroidPlatform> ─────────
 //
 // GPUI's `Application::with_platform` requires `Rc<dyn Platform>`.
-// The global `PLATFORM` in `jni_entry` stores `Arc<AndroidPlatform>`.
+// The global `PLATFORM` in `jni` stores `Arc<AndroidPlatform>`.
 // `SharedPlatform` bridges the two: it holds `Arc<AndroidPlatform>` and
 // implements `Platform` by delegating every call, so it can be wrapped
 // in `Rc` and handed to GPUI while sharing the same underlying state.

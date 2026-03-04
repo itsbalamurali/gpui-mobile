@@ -42,7 +42,7 @@
 //! - `display`    — `AndroidDisplay` wrapping NDK display info
 //! - `dispatcher` — `AndroidDispatcher` using `ALooper` + thread pool
 //! - `keyboard`   — Android NDK key code → GPUI `Keystroke` mapping
-//! - `jni_entry`  — `ANativeActivity_onCreate` / JNI entry points + event loop
+//! - `jni`        — `ANativeActivity_onCreate` / JNI entry points + event loop
 //!
 //! ## Example — iOS
 //!
@@ -125,7 +125,7 @@ pub fn set_system_chrome(style: &SystemChromeStyle) {
     }
     #[cfg(target_os = "android")]
     {
-        android::jni_entry::set_system_chrome(style);
+        android::jni::set_system_chrome(style);
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
@@ -170,25 +170,61 @@ pub fn dispatch_text_input(text: &str) -> bool {
 
 // ── Software keyboard control ────────────────────────────────────────────────
 
-/// Show the software keyboard.
+/// The type of software keyboard to present.
+///
+/// Maps to `UIKeyboardType` on iOS and `InputType` on Android.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyboardType {
+    /// Standard text keyboard.
+    #[default]
+    Default,
+    /// Keyboard optimized for email addresses (includes @ and .).
+    EmailAddress,
+    /// Phone number pad.
+    Phone,
+    /// Numeric keypad (digits only).
+    NumberPad,
+    /// Keyboard optimized for URL entry.
+    URL,
+    /// Decimal number pad (digits and decimal point).
+    Decimal,
+}
+
+/// Show the software keyboard with the default keyboard type.
 ///
 /// On iOS this makes the hidden text input view the first responder.
 /// On Android this opens the input method editor.
 /// On unsupported platforms this is a no-op.
 pub fn show_keyboard() {
+    show_keyboard_with_type(KeyboardType::Default);
+}
+
+/// Show the software keyboard with a specific keyboard type.
+///
+/// On iOS this sets the keyboard type on the text input view before
+/// making it first responder. On Android this opens the IME with the
+/// appropriate input type.
+/// On unsupported platforms this is a no-op.
+pub fn show_keyboard_with_type(keyboard_type: KeyboardType) {
     #[cfg(target_os = "ios")]
     {
         if let Some(wrapper) = ios::ffi::IOS_WINDOW_LIST.get() {
             unsafe {
                 let windows = &*wrapper.0.get();
                 if let Some(&window) = windows.last() {
-                    (*window).show_keyboard();
+                    (*window).show_keyboard_with_type(keyboard_type);
                 }
             }
         }
     }
-    #[cfg(not(target_os = "ios"))]
-    {}
+    #[cfg(target_os = "android")]
+    {
+        android::jni::show_keyboard_android(keyboard_type);
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = keyboard_type;
+    }
 }
 
 /// Hide the software keyboard.
@@ -208,7 +244,11 @@ pub fn hide_keyboard() {
             }
         }
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(target_os = "android")]
+    {
+        android::jni::hide_keyboard_android();
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {}
 }
 

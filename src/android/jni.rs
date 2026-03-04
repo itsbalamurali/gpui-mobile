@@ -37,7 +37,6 @@
 
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
-#![allow(dead_code)]
 
 use std::{
     ffi::c_void,
@@ -1399,6 +1398,399 @@ unsafe fn set_system_chrome_impl(
         "set_system_chrome: status_bar_color={:?}, nav_bar_color={:?}, style={:?}",
         style.status_bar_color, style.navigation_bar_color, style.status_bar_style
     );
+}
+
+// ── software keyboard (IME) control ───────────────────────────────────────────
+
+/// Show the software keyboard on Android with a specific keyboard type.
+///
+/// Uses `InputMethodManager.showSoftInput()` via JNI.
+pub fn show_keyboard_android(keyboard_type: crate::KeyboardType) {
+    let vm = java_vm();
+    if vm.is_null() {
+        log::warn!("show_keyboard_android: no JavaVM");
+        return;
+    }
+
+    let env = unsafe { jni_fns::get_env_from_vm(vm) };
+    if env.is_null() {
+        log::warn!("show_keyboard_android: cannot get JNIEnv");
+        return;
+    }
+
+    let activity_obj = activity_as_ptr();
+    if activity_obj.is_null() {
+        log::warn!("show_keyboard_android: no activity");
+        return;
+    }
+
+    unsafe { show_keyboard_impl(env, activity_obj, keyboard_type) };
+}
+
+/// Hide the software keyboard on Android.
+///
+/// Uses `InputMethodManager.hideSoftInputFromWindow()` via JNI.
+pub fn hide_keyboard_android() {
+    let vm = java_vm();
+    if vm.is_null() {
+        log::warn!("hide_keyboard_android: no JavaVM");
+        return;
+    }
+
+    let env = unsafe { jni_fns::get_env_from_vm(vm) };
+    if env.is_null() {
+        log::warn!("hide_keyboard_android: cannot get JNIEnv");
+        return;
+    }
+
+    let activity_obj = activity_as_ptr();
+    if activity_obj.is_null() {
+        log::warn!("hide_keyboard_android: no activity");
+        return;
+    }
+
+    unsafe { hide_keyboard_impl(env, activity_obj) };
+}
+
+/// Internal: show the soft keyboard via InputMethodManager JNI calls.
+///
+/// # Safety
+///
+/// `env` must be a valid `JNIEnv *` and `activity_obj` must be a valid
+/// Activity jobject.
+unsafe fn show_keyboard_impl(
+    env: *mut c_void,
+    activity_obj: *mut c_void,
+    _keyboard_type: crate::KeyboardType,
+) {
+    let fn_table = *(env as *const *const *const c_void);
+
+    macro_rules! jni_fn {
+        ($idx:expr, $ty:ty) => {
+            std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
+        };
+    }
+
+    type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
+    type GetMethodIDFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
+    type CallObjectMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> *mut c_void;
+    type CallBoolMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> u8;
+    type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
+    type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
+    type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
+    type NewStringUTFFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
+
+    let find_class: FindClassFn = jni_fn!(6, FindClassFn);
+    let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
+    let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
+    let call_bool_method_a: CallBoolMethodAFn = jni_fn!(39, CallBoolMethodAFn);
+    let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
+    let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
+    let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
+    let new_string_utf: NewStringUTFFn = jni_fn!(167, NewStringUTFFn);
+
+    let no_args: [i64; 0] = [];
+
+    // 1. Get the Window: activity.getWindow()
+    let activity_cls = find_class(env, b"android/app/Activity\0".as_ptr() as *const i8);
+    if activity_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    let get_window = get_method_id(
+        env, activity_cls,
+        b"getWindow\0".as_ptr() as *const i8,
+        b"()Landroid/view/Window;\0".as_ptr() as *const i8,
+    );
+    if get_window.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, activity_cls);
+        return;
+    }
+
+    let window_obj = call_object_method_a(env, activity_obj, get_window, no_args.as_ptr());
+    delete_local_ref(env, activity_cls);
+    if window_obj.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    // 2. Get DecorView: window.getDecorView()
+    let window_cls = find_class(env, b"android/view/Window\0".as_ptr() as *const i8);
+    if window_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_obj);
+        return;
+    }
+
+    let get_decor_view = get_method_id(
+        env, window_cls,
+        b"getDecorView\0".as_ptr() as *const i8,
+        b"()Landroid/view/View;\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, window_cls);
+    if get_decor_view.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_obj);
+        return;
+    }
+
+    let decor_view = call_object_method_a(env, window_obj, get_decor_view, no_args.as_ptr());
+    delete_local_ref(env, window_obj);
+    if decor_view.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    // 3. Get InputMethodManager: activity.getSystemService("input_method")
+    let get_system_service = get_method_id(
+        env,
+        find_class(env, b"android/content/Context\0".as_ptr() as *const i8),
+        b"getSystemService\0".as_ptr() as *const i8,
+        b"(Ljava/lang/String;)Ljava/lang/Object;\0".as_ptr() as *const i8,
+    );
+    if get_system_service.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    let service_name = new_string_utf(env, b"input_method\0".as_ptr() as *const i8);
+    if service_name.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    let args: [i64; 1] = [service_name as i64];
+    let imm = call_object_method_a(env, activity_obj, get_system_service, args.as_ptr());
+    delete_local_ref(env, service_name);
+    if imm.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    // 4. imm.showSoftInput(decorView, InputMethodManager.SHOW_IMPLICIT)
+    let imm_cls = find_class(
+        env,
+        b"android/view/inputmethod/InputMethodManager\0".as_ptr() as *const i8,
+    );
+    if imm_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, imm);
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    let show_soft_input = get_method_id(
+        env, imm_cls,
+        b"showSoftInput\0".as_ptr() as *const i8,
+        b"(Landroid/view/View;I)Z\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, imm_cls);
+    if !show_soft_input.is_null() {
+        // SHOW_IMPLICIT = 1
+        let args: [i64; 2] = [decor_view as i64, 1];
+        let _: u8 = call_bool_method_a(env, imm, show_soft_input, args.as_ptr());
+        if exception_check(env) != 0 { exception_clear(env); }
+    } else if exception_check(env) != 0 {
+        exception_clear(env);
+    }
+
+    delete_local_ref(env, imm);
+    delete_local_ref(env, decor_view);
+
+    log::info!("show_keyboard_android: keyboard shown");
+}
+
+/// Internal: hide the soft keyboard via InputMethodManager JNI calls.
+///
+/// # Safety
+///
+/// `env` must be a valid `JNIEnv *` and `activity_obj` must be a valid
+/// Activity jobject.
+unsafe fn hide_keyboard_impl(env: *mut c_void, activity_obj: *mut c_void) {
+    let fn_table = *(env as *const *const *const c_void);
+
+    macro_rules! jni_fn {
+        ($idx:expr, $ty:ty) => {
+            std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
+        };
+    }
+
+    type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
+    type GetMethodIDFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
+    type CallObjectMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> *mut c_void;
+    type CallBoolMethodAFn =
+        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> u8;
+    type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
+    type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
+    type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
+    type NewStringUTFFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
+
+    let find_class: FindClassFn = jni_fn!(6, FindClassFn);
+    let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
+    let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
+    let call_bool_method_a: CallBoolMethodAFn = jni_fn!(39, CallBoolMethodAFn);
+    let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
+    let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
+    let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
+    let new_string_utf: NewStringUTFFn = jni_fn!(167, NewStringUTFFn);
+
+    let no_args: [i64; 0] = [];
+
+    // 1. Get the Window: activity.getWindow()
+    let activity_cls = find_class(env, b"android/app/Activity\0".as_ptr() as *const i8);
+    if activity_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    let get_window = get_method_id(
+        env, activity_cls,
+        b"getWindow\0".as_ptr() as *const i8,
+        b"()Landroid/view/Window;\0".as_ptr() as *const i8,
+    );
+    if get_window.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, activity_cls);
+        return;
+    }
+
+    let window_obj = call_object_method_a(env, activity_obj, get_window, no_args.as_ptr());
+    delete_local_ref(env, activity_cls);
+    if window_obj.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    // 2. Get DecorView and its window token
+    let window_cls = find_class(env, b"android/view/Window\0".as_ptr() as *const i8);
+    if window_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_obj);
+        return;
+    }
+
+    let get_decor_view = get_method_id(
+        env, window_cls,
+        b"getDecorView\0".as_ptr() as *const i8,
+        b"()Landroid/view/View;\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, window_cls);
+    if get_decor_view.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_obj);
+        return;
+    }
+
+    let decor_view = call_object_method_a(env, window_obj, get_decor_view, no_args.as_ptr());
+    delete_local_ref(env, window_obj);
+    if decor_view.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    // 3. Get window token: decorView.getWindowToken()
+    let view_cls = find_class(env, b"android/view/View\0".as_ptr() as *const i8);
+    if view_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    let get_window_token = get_method_id(
+        env, view_cls,
+        b"getWindowToken\0".as_ptr() as *const i8,
+        b"()Landroid/os/IBinder;\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, view_cls);
+    if get_window_token.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, decor_view);
+        return;
+    }
+
+    let window_token = call_object_method_a(env, decor_view, get_window_token, no_args.as_ptr());
+    delete_local_ref(env, decor_view);
+    if window_token.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        return;
+    }
+
+    // 4. Get InputMethodManager: activity.getSystemService("input_method")
+    let ctx_cls = find_class(env, b"android/content/Context\0".as_ptr() as *const i8);
+    if ctx_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_token);
+        return;
+    }
+
+    let get_system_service = get_method_id(
+        env, ctx_cls,
+        b"getSystemService\0".as_ptr() as *const i8,
+        b"(Ljava/lang/String;)Ljava/lang/Object;\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, ctx_cls);
+    if get_system_service.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_token);
+        return;
+    }
+
+    let service_name = new_string_utf(env, b"input_method\0".as_ptr() as *const i8);
+    if service_name.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_token);
+        return;
+    }
+
+    let args: [i64; 1] = [service_name as i64];
+    let imm = call_object_method_a(env, activity_obj, get_system_service, args.as_ptr());
+    delete_local_ref(env, service_name);
+    if imm.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, window_token);
+        return;
+    }
+
+    // 5. imm.hideSoftInputFromWindow(windowToken, 0)
+    let imm_cls = find_class(
+        env,
+        b"android/view/inputmethod/InputMethodManager\0".as_ptr() as *const i8,
+    );
+    if imm_cls.is_null() {
+        if exception_check(env) != 0 { exception_clear(env); }
+        delete_local_ref(env, imm);
+        delete_local_ref(env, window_token);
+        return;
+    }
+
+    let hide_soft_input = get_method_id(
+        env, imm_cls,
+        b"hideSoftInputFromWindow\0".as_ptr() as *const i8,
+        b"(Landroid/os/IBinder;I)Z\0".as_ptr() as *const i8,
+    );
+    delete_local_ref(env, imm_cls);
+    if !hide_soft_input.is_null() {
+        let args: [i64; 2] = [window_token as i64, 0];
+        let _: u8 = call_bool_method_a(env, imm, hide_soft_input, args.as_ptr());
+        if exception_check(env) != 0 { exception_clear(env); }
+    } else if exception_check(env) != 0 {
+        exception_clear(env);
+    }
+
+    delete_local_ref(env, imm);
+    delete_local_ref(env, window_token);
+
+    log::info!("hide_keyboard_android: keyboard hidden");
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -1,16 +1,57 @@
 //! Form example screen — demonstrates Material Design 3 input components
 //! composed into a realistic form layout with interactive state.
 
-use gpui::{div, prelude::*, px, rgb, Context, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+use gpui::{div, prelude::*, px, rgb, Context, MouseButton, MouseMoveEvent, MouseUpEvent};
 use gpui_mobile::components::material::{
     Card, Checkbox, CircularProgressIndicator, FilledButton, MaterialTheme, OutlinedButton, Radio,
     RadioGroup, Slider, Switch, TextButton, TextInput,
 };
+use gpui_mobile::KeyboardType;
+use std::cell::RefCell;
 
 use super::Router;
 
+thread_local! {
+    /// Pending text from the software keyboard, accumulated between frames.
+    /// Each entry is a string fragment (or "\x08" for backspace).
+    static PENDING_TEXT: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+/// Install the keyboard callback that pushes typed text into PENDING_TEXT.
+fn install_keyboard_callback() {
+    gpui_mobile::set_text_input_callback(Some(Box::new(|text: &str| {
+        PENDING_TEXT.with(|pending| {
+            pending.borrow_mut().push(text.to_string());
+        });
+    })));
+}
+
+/// Drain pending keyboard text and apply it to the Router's focused field.
+pub fn drain_pending_text(router: &mut Router) {
+    PENDING_TEXT.with(|pending| {
+        let texts: Vec<String> = pending.borrow_mut().drain(..).collect();
+        for text in texts {
+            let field = match router.form.focused_field {
+                Some(0) => &mut router.form.full_name,
+                Some(1) => &mut router.form.email,
+                Some(2) => &mut router.form.phone,
+                _ => continue,
+            };
+            if text == "\x08" {
+                // Backspace
+                field.pop();
+            } else {
+                field.push_str(&text);
+            }
+        }
+    });
+}
+
 /// Render the Material Form example screen with interactive controls.
-pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
+pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement {
+    // Drain any pending keyboard input into the focused field.
+    drain_pending_text(router);
+
     let dark = router.dark_mode;
     let theme = MaterialTheme::from_appearance(dark);
     let sub_text: u32 = if dark { 0xa6adc8 } else { 0x6c6f85 };
@@ -26,24 +67,24 @@ pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
         .gap_4()
         .px_4()
         .py_6()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                if this.current_screen == super::Screen::Form && !this.refreshing {
-                    this.pull_start_y = Some(event.position.y.as_f32());
-                    this.pull_distance = 0.0;
-                    cx.notify();
-                }
-            }),
-        )
         .on_mouse_move(
             cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                if let Some(start_y) = this.pull_start_y {
-                    let delta = event.position.y.as_f32() - start_y;
-                    if delta > 0.0 {
-                        // Apply resistance (square root dampening)
-                        this.pull_distance = (delta * 0.5).min(120.0);
-                        cx.notify();
+                // Pull-to-refresh: track downward finger movement.
+                // on_mouse_move fires during drag gestures with pressed_button set.
+                if event.pressed_button.is_some()
+                    && this.current_screen == super::Screen::Form
+                    && !this.refreshing
+                {
+                    let y = event.position.y.as_f32();
+                    if let Some(start_y) = this.pull_start_y {
+                        let delta = y - start_y;
+                        if delta > 0.0 {
+                            this.pull_distance = (delta * 0.4).min(120.0);
+                            cx.notify();
+                        }
+                    } else {
+                        // First move of a new drag — record start position
+                        this.pull_start_y = Some(y);
                     }
                 }
             }),
@@ -51,17 +92,14 @@ pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                if this.pull_distance > 80.0 {
+                if this.pull_distance > 60.0 {
                     // Trigger refresh
                     this.refreshing = true;
                     this.form = super::FormState::default();
-                    // Reset after a brief visual pause
-                    this.pull_distance = 60.0;
-                    cx.notify();
-                    // Use a short timer to clear the refreshing state
-                    // For now, just clear it immediately since we don't have timers
-                    this.refreshing = false;
                     this.pull_distance = 0.0;
+                    cx.notify();
+                    // Clear refreshing state (no timer — immediate for now)
+                    this.refreshing = false;
                 }
                 this.pull_start_y = None;
                 this.pull_distance = 0.0;
@@ -113,10 +151,12 @@ pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
                                 .label("Full Name")
                                 .value(&form.full_name)
                                 .placeholder("Enter your name")
+                                .keyboard_type(KeyboardType::Default)
                                 .focused(form.focused_field == Some(0))
                                 .on_tap(|this, _, _, cx| {
                                     this.form.focused_field = Some(0);
-                                    gpui_mobile::show_keyboard();
+                                    install_keyboard_callback();
+                                    gpui_mobile::show_keyboard_with_type(KeyboardType::Default);
                                     cx.notify();
                                 })
                                 .render(cx),
@@ -126,10 +166,12 @@ pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
                                 .label("Email")
                                 .value(&form.email)
                                 .placeholder("user@example.com")
+                                .keyboard_type(KeyboardType::EmailAddress)
                                 .focused(form.focused_field == Some(1))
                                 .on_tap(|this, _, _, cx| {
                                     this.form.focused_field = Some(1);
-                                    gpui_mobile::show_keyboard();
+                                    install_keyboard_callback();
+                                    gpui_mobile::show_keyboard_with_type(KeyboardType::EmailAddress);
                                     cx.notify();
                                 })
                                 .render(cx),
@@ -139,10 +181,12 @@ pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
                                 .label("Phone")
                                 .value(&form.phone)
                                 .placeholder("+1 (555) 000-0000")
+                                .keyboard_type(KeyboardType::Phone)
                                 .focused(form.focused_field == Some(2))
                                 .on_tap(|this, _, _, cx| {
                                     this.form.focused_field = Some(2);
-                                    gpui_mobile::show_keyboard();
+                                    install_keyboard_callback();
+                                    gpui_mobile::show_keyboard_with_type(KeyboardType::Phone);
                                     cx.notify();
                                 })
                                 .render(cx),

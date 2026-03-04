@@ -34,6 +34,7 @@ pub struct TextInput<V: 'static> {
     error: bool,
     error_text: Option<&'static str>,
     focused: bool,
+    keyboard_type: crate::KeyboardType,
     on_tap: Option<Box<dyn Fn(&mut V, &MouseDownEvent, &mut gpui::Window, &mut gpui::Context<V>)>>,
 }
 
@@ -49,6 +50,7 @@ impl<V: 'static> TextInput<V> {
             error: false,
             error_text: None,
             focused: false,
+            keyboard_type: crate::KeyboardType::Default,
             on_tap: None,
         }
     }
@@ -86,6 +88,12 @@ impl<V: 'static> TextInput<V> {
     /// Mark the field as focused (shows active border color).
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    /// Set the keyboard type to present when this field is focused.
+    pub fn keyboard_type(mut self, kt: crate::KeyboardType) -> Self {
+        self.keyboard_type = kt;
         self
     }
 
