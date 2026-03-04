@@ -57,7 +57,7 @@ font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "11052312
 
 [target.'cfg(target_os = "android")'.dependencies]
 # JNI / NDK bindings
-jni         = "0.21"
+jni         = "0.22"
 ndk         = "0.9"
 ndk-context = "0.1"
 ndk-sys     = "0.6"
