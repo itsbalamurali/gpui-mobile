@@ -56,8 +56,8 @@ core-graphics       = "0.24"
 core-text           = "=21.0.0"
 uuid                = { version = "1", features = ["v5"] }
 
-# wgpu renderer (Metal backend on iOS)
-gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "4dd42a0f77b11d0bed2a072919bcd9180b9a577c", package = "gpui_wgpu", features = ["font-kit"] }
+# wgpu renderer (Metal backend on iOS) — local fork from Zed with Android surface replacement
+gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
 wgpu = "28.0"
 
 # Text / font stack
@@ -82,8 +82,8 @@ android-activity = { version = "0.6", features = ["native-activity"] }
 # Logging to logcat
 android_logger = "0.13"
 
-# gpui_wgpu — wgpu renderer + cosmic-text system from the Zed repo
-gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "4dd42a0f77b11d0bed2a072919bcd9180b9a577c", package = "gpui_wgpu", features = ["font-kit"] }
+# gpui_wgpu — local fork from Zed repo with Android surface replacement support
+gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
 
 # rustc-hash is required by the PlatformKeyboardMapper trait signature
 rustc-hash = "2"

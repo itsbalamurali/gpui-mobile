@@ -50,6 +50,23 @@ use std::{
 /// recreated on resume the init callbacks run again.
 static INIT_WINDOW_DONE: AtomicBool = AtomicBool::new(false);
 
+/// Deferred lifecycle flags.
+///
+/// We must NOT call `win.set_active()` or `platform.did_enter_background()`
+/// inside `handle_main_event` (which runs within `poll_events`).
+/// The android-activity crate's Java-side callbacks block on a condvar
+/// waiting for the native thread to finish processing the command.
+/// If our handler tries to acquire the window `state` lock (a
+/// `parking_lot::Mutex`), and a background thread is holding it (e.g.
+/// during a render pass), we deadlock: native waits on the lock,
+/// the lock holder waits for native rendering to complete, but native
+/// is stuck.
+///
+/// Instead, the handlers set these flags and the main loop body
+/// processes them AFTER `poll_events` returns.
+static PAUSE_PENDING: AtomicBool = AtomicBool::new(false);
+static RESUME_PENDING: AtomicBool = AtomicBool::new(false);
+
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use super::platform::{AndroidPlatform, SharedPlatform};
@@ -142,6 +159,57 @@ impl<T> JniExt<T> for jni::errors::Result<T> {
     fn e(self) -> Result<T, String> {
         self.map_err(|e| e.to_string())
     }
+}
+
+/// Find an application class by name using the Activity's classloader.
+///
+/// From native threads, `JNIEnv::FindClass` uses the system classloader
+/// which doesn't know about application classes.  This helper uses the
+/// Activity's classloader via `activity.getClass().getClassLoader().loadClass(name)`.
+///
+/// `class_name` uses Java dot notation (e.g. `"dev.gpui.mobile.GpuiHelper"`).
+pub fn find_app_class<'local>(
+    env: &mut jni::Env<'local>,
+    class_name: &str,
+) -> Result<jni::objects::JClass<'local>, String> {
+    let act = activity(env)?;
+
+    // activity.getClass()
+    let act_class = env
+        .get_object_class(&act)
+        .map_err(|e| format!("getClass failed: {e}"))?;
+
+    // activityClass.getClassLoader()
+    let class_loader = env
+        .call_method(
+            &act_class,
+            jni::jni_str!("getClassLoader"),
+            jni::jni_sig!("()Ljava/lang/ClassLoader;"),
+            &[],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| {
+            let _ = env.exception_clear();
+            format!("getClassLoader failed: {e}")
+        })?;
+
+    // classLoader.loadClass("dev.gpui.mobile.GpuiHelper")
+    let jname = env.new_string(class_name).e()?;
+    let loaded = env
+        .call_method(
+            &class_loader,
+            jni::jni_str!("loadClass"),
+            jni::jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
+            &[JValue::Object(&jname)],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| {
+            let _ = env.exception_clear();
+            format!("loadClass({class_name}) failed: {e}")
+        })?;
+
+    std::mem::forget(act);
+    Ok(unsafe { jni::objects::JClass::from_raw(env, loaded.as_raw()) })
 }
 
 // ── global state ─────────────────────────────────────────────────────────────
@@ -442,16 +510,28 @@ pub fn run_event_loop(app: &AndroidApp) {
     let mut last_heartbeat = std::time::Instant::now();
     let mut app_is_active = false;
 
+    let mut bg_diag_count: u32 = 0; // how many iterations since going to background
     loop {
         iteration += 1;
+
+        // When backgrounded, log the first few iterations to diagnose blocking.
+        if !app_is_active {
+            bg_diag_count += 1;
+            if bg_diag_count <= 20 || bg_diag_count % 250 == 0 {
+                log::info!("run_event_loop: bg diag #{} (iter={})", bg_diag_count, iteration);
+            }
+        } else {
+            bg_diag_count = 0;
+        }
 
         // Log a heartbeat every 5 seconds so we can tell if the loop is alive.
         let now = std::time::Instant::now();
         if now.duration_since(last_heartbeat) >= Duration::from_secs(5) {
             log::info!(
-                "run_event_loop: heartbeat — iteration={}, init_done={}",
+                "run_event_loop: heartbeat — iteration={}, init_done={}, active={}",
                 iteration,
                 INIT_WINDOW_DONE.load(Ordering::Relaxed),
+                app_is_active,
             );
             last_heartbeat = now;
         }
@@ -465,34 +545,64 @@ pub fn run_event_loop(app: &AndroidApp) {
             platform.tick();
         }
 
-        // Poll for events with a short timeout.
-        //
-        // IMPORTANT: Always use a short (16ms) timeout.  On some devices
-        // `ALooper_pollAll` blocks indefinitely when the app loses focus
-        // even with a `Some(timeout)`, which starves the input queue and
-        // triggers an ANR ("Waited 10001ms for MotionEvent").  A short
-        // fixed timeout ensures we regain control quickly so we can drain
-        // input events and avoid the ANR.
+        // Poll for events — non-blocking (Duration::ZERO) to guarantee
+        // the loop never gets stuck in ALooper_pollAll, which can block
+        // indefinitely on some devices during lifecycle transitions.
+        // We do our own sleeping at the bottom of the loop instead.
         let poll_start = std::time::Instant::now();
-        app.poll_events(Some(Duration::from_millis(16)), |event| {
+        let pause_was_pending = PAUSE_PENDING.load(Ordering::Relaxed);
+        app.poll_events(Some(Duration::ZERO), |event| {
             match event {
                 PollEvent::Main(main_event) => {
                     handle_main_event(app, main_event);
                 }
-                PollEvent::Wake => {
-                    // Wakeup — process pending tasks.
-                }
+                PollEvent::Wake => {}
+                PollEvent::Timeout => {}
                 _ => {}
             }
         });
         let poll_elapsed = poll_start.elapsed();
-        if poll_elapsed > Duration::from_secs(1) {
-            log::warn!(
-                "run_event_loop: poll_events blocked for {:.1}s (iteration={}, active={})",
-                poll_elapsed.as_secs_f64(),
+        // Log detailed diagnostics around Pause transition.
+        if PAUSE_PENDING.load(Ordering::Relaxed) && !pause_was_pending {
+            log::info!(
+                "run_event_loop: poll_events returned after Pause set (iter={}, took={:.0}ms)",
                 iteration,
-                app_is_active,
+                poll_elapsed.as_secs_f64() * 1000.0,
             );
+        }
+        if poll_elapsed > Duration::from_millis(100) {
+            log::warn!("run_event_loop: poll_events took {:.0}ms (iter={})", poll_elapsed.as_secs_f64() * 1000.0, iteration);
+        }
+
+        // Process deferred lifecycle state changes.
+        //
+        // These flags were set inside handle_main_event (within
+        // poll_events).  Now that poll_events has returned and the
+        // android-activity condvar synchronisation is released, it is
+        // safe to acquire the window state lock.
+        if PAUSE_PENDING.swap(false, Ordering::Relaxed) {
+            log::info!("run_event_loop: processing deferred PAUSE (iter={})", iteration);
+            if let Some(platform) = PLATFORM.get() {
+                log::info!("run_event_loop: calling did_enter_background");
+                platform.did_enter_background();
+                log::info!("run_event_loop: did_enter_background done");
+                if let Some(win) = platform.primary_window() {
+                    log::info!("run_event_loop: got window, calling set_active(false)");
+                    win.set_active(false);
+                    log::info!("run_event_loop: set_active(false) returned");
+                }
+            }
+            log::info!("run_event_loop: deferred PAUSE done (iter={})", iteration);
+        }
+        if RESUME_PENDING.swap(false, Ordering::Relaxed) {
+            log::info!("run_event_loop: processing deferred RESUME (iter={})", iteration);
+            if let Some(platform) = PLATFORM.get() {
+                platform.did_become_active();
+                if let Some(win) = platform.primary_window() {
+                    win.set_active(true);
+                }
+            }
+            log::info!("run_event_loop: deferred RESUME done (iter={})", iteration);
         }
 
         // Track active/focused state so we can skip heavy work when backgrounded.
@@ -610,15 +720,20 @@ pub fn run_event_loop(app: &AndroidApp) {
         // AndroidWindow::draw() skips empty scenes to avoid clearing
         // the surface prematurely.
         if let Some(platform) = PLATFORM.get() {
-            // Flush pending main-thread tasks first so that any
-            // state changes (e.g. model updates, layout
-            // invalidations) are applied before we paint.
-            platform.flush_main_thread_tasks();
-
-            // Only drive rendering when:
+            // Only drive rendering and flush tasks when:
             // 1. INIT_WINDOW_DONE — GPUI callbacks are wired up
             // 2. app_is_active — surface is valid (not backgrounded)
+            //
+            // IMPORTANT: flush_main_thread_tasks MUST be guarded by
+            // app_is_active.  Queued tasks may make JNI calls that
+            // require the Java UI thread (e.g. set_system_chrome).
+            // During lifecycle transitions the Java thread blocks in
+            // set_activity_state() / set_window() waiting for the
+            // native thread to process the corresponding command.
+            // If we flush tasks here that call into the Java thread,
+            // we deadlock: native waits on Java, Java waits on native.
             if INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active {
+                platform.flush_main_thread_tasks();
                 if let Some(win) = platform.primary_window() {
                     let frame_start = std::time::Instant::now();
                     win.request_frame();
@@ -638,6 +753,13 @@ pub fn run_event_loop(app: &AndroidApp) {
                 process_input_events(app);
             }
         }
+
+        // Sleep to yield CPU.
+        if !app_is_active && bg_diag_count <= 5 {
+            log::info!("run_event_loop: end of iteration {} (bg#{}), about to sleep", iteration, bg_diag_count);
+        }
+        std::thread::sleep(Duration::from_millis(4));
+
     }
 
     log::info!("run_event_loop: exiting main loop");
@@ -753,6 +875,9 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
             // fires again when the window surface is recreated on resume.
             INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
 
+            // Reset cached chrome style so it re-applies after resume.
+            *LAST_CHROME_STYLE.lock().unwrap() = None;
+
             if let Some(platform) = PLATFORM.get() {
                 if let Some(win) = platform.primary_window() {
                     // Only tear down the surface — do NOT call
@@ -788,41 +913,24 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
         }
 
         MainEvent::GainedFocus => {
-            log::debug!("MainEvent::GainedFocus");
-
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_become_active();
-                if let Some(win) = platform.primary_window() {
-                    win.set_active(true);
-                }
-            }
+            log::info!("MainEvent::GainedFocus");
+            RESUME_PENDING.store(true, Ordering::Relaxed);
         }
 
         MainEvent::LostFocus => {
-            log::debug!("MainEvent::LostFocus");
-
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_enter_background();
-                if let Some(win) = platform.primary_window() {
-                    win.set_active(false);
-                }
-            }
+            log::info!("MainEvent::LostFocus");
+            PAUSE_PENDING.store(true, Ordering::Relaxed);
         }
 
         MainEvent::Resume { .. } => {
-            log::debug!("MainEvent::Resume");
-
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_become_active();
-            }
+            log::info!("MainEvent::Resume");
+            RESUME_PENDING.store(true, Ordering::Relaxed);
         }
 
         MainEvent::Pause => {
-            log::debug!("MainEvent::Pause");
-
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_enter_background();
-            }
+            log::info!("MainEvent::Pause");
+            // set_active uses AtomicBool so it never blocks.
+            PAUSE_PENDING.store(true, Ordering::Relaxed);
         }
 
         MainEvent::ConfigChanged { .. } => {
@@ -844,6 +952,18 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
             }
         }
 
+        MainEvent::Start => {
+            log::info!("MainEvent::Start");
+        }
+
+        MainEvent::Stop => {
+            log::info!("MainEvent::Stop");
+        }
+
+        MainEvent::SaveState { .. } => {
+            log::info!("MainEvent::SaveState");
+        }
+
         MainEvent::LowMemory => {
             log::warn!("MainEvent::LowMemory — consider releasing cached resources");
         }
@@ -856,8 +976,12 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
             }
         }
 
+        MainEvent::InsetsChanged { .. } => {
+            log::info!("MainEvent::InsetsChanged");
+        }
+
         _ => {
-            // Other events we don't handle.
+            log::info!("MainEvent: unhandled variant");
         }
     }
 }
@@ -966,6 +1090,16 @@ pub fn init_platform(app: &AndroidApp) -> &'static Arc<AndroidPlatform> {
 
 // ── system chrome (status bar / navigation bar) ───────────────────────────────
 
+/// Cached last-applied system chrome style.
+///
+/// `set_system_chrome` is called on every frame render.  The JNI calls it
+/// makes (getWindow, setStatusBarColor, etc.) are View operations that can
+/// contend with the Android UI thread and intermittently deadlock.
+/// By caching the last applied style we skip the JNI calls entirely when
+/// nothing changed — which is the common case.
+static LAST_CHROME_STYLE: std::sync::Mutex<Option<(Option<u32>, Option<u32>, crate::StatusBarContentStyle)>> =
+    std::sync::Mutex::new(None);
+
 /// Apply system chrome styling on Android.
 ///
 /// Sets the status bar color, navigation bar color, and light/dark
@@ -976,6 +1110,16 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
     let status_bar_color = style.status_bar_color;
     let navigation_bar_color = style.navigation_bar_color;
     let status_bar_style = style.status_bar_style;
+
+    // Skip the (expensive, potentially deadlocking) JNI calls when nothing changed.
+    {
+        let key = (status_bar_color, navigation_bar_color, status_bar_style);
+        let mut last = LAST_CHROME_STYLE.lock().unwrap();
+        if *last == Some(key) {
+            return;
+        }
+        *last = Some(key);
+    }
 
     let result = with_env(|env| {
         let activity_obj = activity(env)?;

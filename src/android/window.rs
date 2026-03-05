@@ -225,6 +225,12 @@ pub struct AndroidWindow {
     state: Arc<Mutex<WindowState>>,
     /// A stable numeric ID derived from the initial native-window pointer.
     id: u64,
+    /// Whether the window is currently active (foregrounded).
+    ///
+    /// This is an `AtomicBool` separate from `WindowState` so that
+    /// lifecycle handlers can set it without acquiring the state lock
+    /// (which may be held by a background render thread).
+    active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // SAFETY: `WindowState` is protected by a `Mutex`.
@@ -301,7 +307,11 @@ impl AndroidWindow {
             active_status_callback: None,
         }));
 
-        Ok(Arc::new(Self { state, id }))
+        Ok(Arc::new(Self {
+            state,
+            id,
+            active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }))
     }
 
     /// Create a headless `AndroidWindow` for testing.
@@ -331,6 +341,7 @@ impl AndroidWindow {
         Arc::new(Self {
             state,
             id: ((width as u64) << 32) | (height as u64),
+            active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -364,29 +375,50 @@ impl AndroidWindow {
         state.width = width;
         state.height = height;
 
-        // Reuse existing gpu_context if available, otherwise use the provided one.
         let transparent = state.transparent;
-        let renderer = if state.gpu_context.is_some() {
-            unsafe {
-                Self::create_renderer(
-                    native_window,
-                    &mut state.gpu_context,
-                    width,
-                    height,
-                    transparent,
-                )
-            }?
-        } else {
-            let r = unsafe {
-                Self::create_renderer(native_window, gpu_context, width, height, transparent)
-            }?;
-            state.gpu_context = gpu_context.take();
-            r
-        };
-        state.renderer = Some(renderer);
-        state.is_active = true;
 
-        log::info!("AndroidWindow::init_window — {}×{}", width, height);
+        // If a renderer already exists (kept alive across term_window), just
+        // replace its surface.  This preserves the atlas and all cached
+        // AtlasTextureIds so GPUI's scene cache remains valid.
+        if state.renderer.is_some() {
+            let raw = unsafe { Self::raw_window(native_window) };
+            let config = WgpuSurfaceConfig {
+                size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+                transparent,
+            };
+            // Clone the instance Arc so we can borrow renderer mutably.
+            let instance = state.gpu_context.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("gpu_context missing during surface replacement"))?
+                .instance.clone();
+            state.renderer.as_mut().unwrap()
+                .replace_surface(&raw, config, &instance)?;
+            log::info!("AndroidWindow::init_window — replaced surface {}×{}", width, height);
+        } else {
+            // First init or after a full destroy — create a fresh renderer.
+            let renderer = if state.gpu_context.is_some() {
+                unsafe {
+                    Self::create_renderer(
+                        native_window,
+                        &mut state.gpu_context,
+                        width,
+                        height,
+                        transparent,
+                    )
+                }?
+            } else {
+                let r = unsafe {
+                    Self::create_renderer(native_window, gpu_context, width, height, transparent)
+                }?;
+                state.gpu_context = gpu_context.take();
+                r
+            };
+            state.renderer = Some(renderer);
+            log::info!("AndroidWindow::init_window — created new renderer {}×{}", width, height);
+        }
+
+        state.is_active = true;
+        self.active.store(true, std::sync::atomic::Ordering::Relaxed);
+
         Ok(())
     }
 
@@ -398,12 +430,13 @@ impl AndroidWindow {
     pub fn term_window(&self) {
         let mut state = self.state.lock();
 
-        // Drop the renderer first — it holds the wgpu surface.
-        if let Some(mut renderer) = state.renderer.take() {
-            renderer.destroy();
-            log::info!("AndroidWindow::term_window — renderer destroyed");
+        // Unconfigure the surface so the renderer stops trying to present,
+        // but keep the renderer alive so the atlas (with all cached
+        // texture IDs) survives across the background/foreground cycle.
+        if let Some(ref mut renderer) = state.renderer {
+            renderer.unconfigure_surface();
+            log::info!("AndroidWindow::term_window — surface unconfigured (renderer kept alive)");
         }
-        // Keep gpu_context alive for re-init.
 
         // Release our reference on the native window.
         if !state.native_window.is_null() {
@@ -412,6 +445,7 @@ impl AndroidWindow {
         }
 
         state.is_active = false;
+        self.active.store(false, std::sync::atomic::Ordering::Relaxed);
 
         // NOTE: We intentionally do NOT fire the close callback here.
         // On Android, term_window means the surface is being destroyed
@@ -610,13 +644,30 @@ impl AndroidWindow {
     ///
     /// Called by `on_window_focus_changed` in `jni.rs`.
     pub fn set_active(&self, active: bool) {
-        let mut state = self.state.lock();
-        if state.is_active == active {
-            return;
-        }
-        state.is_active = active;
-        if let Some(cb) = state.active_status_callback.as_mut() {
-            cb(active);
+        use std::sync::atomic::Ordering;
+        let prev = self.active.swap(active, Ordering::Relaxed);
+        if prev != active {
+            log::info!("AndroidWindow::set_active({}) — changed from {}", active, prev);
+            // Take the callback out of the state so we can invoke it WITHOUT
+            // holding the window state lock.  The callback wraps a GPUI
+            // closure that acquires its own Mutex (and may call back into
+            // GPUI), so calling it under the state lock deadlocks.
+            let mut taken_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
+            if let Some(mut state) = self.state.try_lock() {
+                state.is_active = active;
+                taken_cb = state.active_status_callback.take();
+            } else {
+                log::info!("AndroidWindow::set_active({}) — lock busy, skipping", active);
+            }
+            // Fire callback outside the lock.
+            if let Some(mut cb) = taken_cb {
+                cb(active);
+                // Put it back so future calls still fire.
+                if let Some(mut state) = self.state.try_lock() {
+                    state.active_status_callback = Some(cb);
+                }
+            }
+            log::info!("AndroidWindow::set_active({}) — done", active);
         }
     }
 
@@ -734,7 +785,7 @@ impl AndroidWindow {
 
     /// Whether the window is currently active / visible.
     pub fn is_active(&self) -> bool {
-        self.state.lock().is_active
+        self.active.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// A stable numeric identifier for this window.
@@ -814,21 +865,11 @@ impl AndroidWindow {
 
     // ── private helpers ───────────────────────────────────────────────────────
 
-    /// Create a `WgpuRenderer` for the given `ANativeWindow`.
+    /// Build a raw-window-handle wrapper for the given `ANativeWindow`.
     ///
     /// # Safety
-    ///
-    /// `native_window` must be a valid non-null `ANativeWindow *` for the
-    /// lifetime of the returned renderer.
-    unsafe fn create_renderer(
-        native_window: *mut ANativeWindow,
-        gpu_context: &mut Option<WgpuContext>,
-        width: i32,
-        height: i32,
-        transparent: bool,
-    ) -> Result<WgpuRenderer> {
-        // Construct a raw-window-handle wrapper that implements
-        // HasWindowHandle + HasDisplayHandle for gpui_wgpu::WgpuRenderer::new.
+    /// `native_window` must be a valid non-null pointer.
+    unsafe fn raw_window(native_window: *mut ANativeWindow) -> impl HasWindowHandle + HasDisplayHandle {
         struct RawWindow {
             window: RawWindowHandle,
             display: RawDisplayHandle,
@@ -852,13 +893,29 @@ impl AndroidWindow {
             }
         }
 
-        let raw = RawWindow {
+        RawWindow {
             window: RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(
                 std::ptr::NonNull::new(native_window as *mut std::ffi::c_void)
                     .expect("native_window is non-null"),
             )),
             display: RawDisplayHandle::Android(AndroidDisplayHandle::new()),
-        };
+        }
+    }
+
+    /// Create a `WgpuRenderer` for the given `ANativeWindow`.
+    ///
+    /// # Safety
+    ///
+    /// `native_window` must be a valid non-null `ANativeWindow *` for the
+    /// lifetime of the returned renderer.
+    unsafe fn create_renderer(
+        native_window: *mut ANativeWindow,
+        gpu_context: &mut Option<WgpuContext>,
+        width: i32,
+        height: i32,
+        transparent: bool,
+    ) -> Result<WgpuRenderer> {
+        let raw = unsafe { Self::raw_window(native_window) };
 
         let config = WgpuSurfaceConfig {
             size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),

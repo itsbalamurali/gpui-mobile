@@ -2,17 +2,17 @@ use super::{WebViewHandle, WebViewSettings};
 use crate::android::jni::{self as jni_helpers, JniExt};
 use jni::objects::JValue;
 
-/// The JNI class name for the Java helper that manages WebView on the UI thread.
-const HELPER_CLASS: &jni::JNIStr = jni::jni_str!("dev/gpui/mobile/GpuiHelper");
+const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiHelper";
 
 pub fn load_url(url: &str, settings: &WebViewSettings) -> Result<WebViewHandle, String> {
     jni_helpers::with_env(|env| {
         let activity = jni_helpers::activity(env)?;
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
         let jurl = env.new_string(url).e()?;
 
         let handle_id = env
             .call_static_method(
-                HELPER_CLASS,
+                &cls,
                 jni::jni_str!("loadUrl"),
                 jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;ZZZ)I"),
                 &[
@@ -43,11 +43,12 @@ pub fn load_url(url: &str, settings: &WebViewSettings) -> Result<WebViewHandle, 
 pub fn load_html(html: &str, settings: &WebViewSettings) -> Result<WebViewHandle, String> {
     jni_helpers::with_env(|env| {
         let activity = jni_helpers::activity(env)?;
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
         let jhtml = env.new_string(html).e()?;
 
         let handle_id = env
             .call_static_method(
-                HELPER_CLASS,
+                &cls,
                 jni::jni_str!("loadHtml"),
                 jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;ZZZ)I"),
                 &[
@@ -80,9 +81,10 @@ pub fn evaluate_javascript(handle: &WebViewHandle, script: &str) -> Result<(), S
         return Err("No active WebView".into());
     }
     jni_helpers::with_env(|env| {
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
         let jscript = env.new_string(script).e()?;
         env.call_static_method(
-            HELPER_CLASS,
+            &cls,
             jni::jni_str!("evaluateJavascript"),
             jni::jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&jscript)],
@@ -101,8 +103,9 @@ pub fn dismiss(handle: WebViewHandle) -> Result<(), String> {
     }
     jni_helpers::with_env(|env| {
         let activity = jni_helpers::activity(env)?;
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
         env.call_static_method(
-            HELPER_CLASS,
+            &cls,
             jni::jni_str!("dismissWebView"),
             jni::jni_sig!("(Landroid/app/Activity;)V"),
             &[JValue::Object(&activity)],
