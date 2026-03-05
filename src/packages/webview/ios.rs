@@ -112,13 +112,21 @@ unsafe fn create_webview(settings: &WebViewSettings) -> Result<*mut Object, Stri
         let _: () = msg_send![prefs, setJavaScriptEnabled: settings.javascript_enabled];
     }
 
-    // Get the screen bounds for the frame
+    // Get the screen bounds and offset by top_offset to leave room for the app bar
     let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
     let bounds: CGRect = msg_send![screen, bounds];
+    let top = settings.top_offset as f64;
+    let frame = CGRect {
+        origin: CGPoint { x: 0.0, y: top },
+        size: CGSize {
+            width: bounds.size.width,
+            height: bounds.size.height - top,
+        },
+    };
 
-    // WKWebView *webview = [[WKWebView alloc] initWithFrame:bounds configuration:config];
+    // WKWebView *webview = [[WKWebView alloc] initWithFrame:frame configuration:config];
     let webview: *mut Object = msg_send![class!(WKWebView), alloc];
-    let webview: *mut Object = msg_send![webview, initWithFrame: bounds configuration: config];
+    let webview: *mut Object = msg_send![webview, initWithFrame: frame configuration: config];
     if webview.is_null() {
         return Err("Failed to create WKWebView".into());
     }

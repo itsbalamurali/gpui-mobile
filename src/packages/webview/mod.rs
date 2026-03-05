@@ -25,6 +25,10 @@ pub struct WebViewSettings {
     pub zoom_enabled: bool,
     /// Enable DOM storage / localStorage (default: true).
     pub dom_storage_enabled: bool,
+    /// Top offset in logical points — the WebView starts this many points
+    /// below the top of the screen, leaving room for a GPUI-rendered app bar.
+    /// Default: 0.0 (fullscreen).
+    pub top_offset: f32,
 }
 
 impl Default for WebViewSettings {
@@ -34,6 +38,7 @@ impl Default for WebViewSettings {
             user_agent: None,
             zoom_enabled: true,
             dom_storage_enabled: true,
+            top_offset: 0.0,
         }
     }
 }
