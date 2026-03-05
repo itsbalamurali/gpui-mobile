@@ -1,8 +1,8 @@
-//! Packages demo screen — showcases all 8 gpui-mobile utility packages.
+//! Packages demo screen — showcases all 12 gpui-mobile utility packages.
 
 use gpui::{div, prelude::*, px, rgb};
 
-use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_DIVIDER, LIGHT_SUBTEXT, LIGHT_TEXT, MAUVE, PEACH, SURFACE0, SURFACE1, TEAL, TEXT, YELLOW};
+use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_DIVIDER, LIGHT_SUBTEXT, LIGHT_TEXT, MAUVE, PEACH, RED, SURFACE0, SURFACE1, TEAL, TEXT, YELLOW};
 
 /// Render the Packages demo screen.
 pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
@@ -230,6 +230,194 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                                         let _ = gpui_mobile::packages::url_launcher::launch_url(
                                             "https://zed.dev",
                                         );
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+        });
+
+    // ── Battery ───────────────────────────────────────────────────────────────
+    root = root
+        .child(section_header("Battery", sub_text))
+        .child({
+            let bi = gpui_mobile::packages::battery::battery_info();
+            info_card(card_bg)
+                .child(kv_row("Level", &format!("{}%", bi.level), GREEN, text_color, sub_text))
+                .child(divider_line(divider_color))
+                .child(kv_row("State", &format!("{:?}", bi.state), GREEN, text_color, sub_text))
+                .child(divider_line(divider_color))
+                .child(kv_row(
+                    "Battery Saver",
+                    if bi.is_battery_save_mode { "On" } else { "Off" },
+                    GREEN,
+                    text_color,
+                    sub_text,
+                ))
+        });
+
+    // ── Sensors ───────────────────────────────────────────────────────────────
+    root = root
+        .child(section_header("Sensors", sub_text))
+        .child({
+            let avail = gpui_mobile::packages::sensors::available_sensors();
+            let mut card = info_card(card_bg)
+                .child(kv_row(
+                    "Accelerometer",
+                    if avail.accelerometer { "Available" } else { "N/A" },
+                    YELLOW,
+                    text_color,
+                    sub_text,
+                ))
+                .child(divider_line(divider_color))
+                .child(kv_row(
+                    "Gyroscope",
+                    if avail.gyroscope { "Available" } else { "N/A" },
+                    YELLOW,
+                    text_color,
+                    sub_text,
+                ))
+                .child(divider_line(divider_color))
+                .child(kv_row(
+                    "Magnetometer",
+                    if avail.magnetometer { "Available" } else { "N/A" },
+                    YELLOW,
+                    text_color,
+                    sub_text,
+                ))
+                .child(divider_line(divider_color))
+                .child(kv_row(
+                    "Barometer",
+                    if avail.barometer { "Available" } else { "N/A" },
+                    YELLOW,
+                    text_color,
+                    sub_text,
+                ));
+
+            // Show live accelerometer reading if available
+            if let Some(accel) = gpui_mobile::packages::sensors::accelerometer() {
+                card = card
+                    .child(divider_line(divider_color))
+                    .child(kv_row(
+                        "Accel (m/s²)",
+                        &format!("x={:.1} y={:.1} z={:.1}", accel.x, accel.y, accel.z),
+                        YELLOW,
+                        text_color,
+                        sub_text,
+                    ));
+            }
+            card
+        });
+
+    // ── Share ─────────────────────────────────────────────────────────────────
+    root = root
+        .child(section_header("Share", sub_text))
+        .child({
+            info_card(card_bg)
+                .child(
+                    div()
+                        .p_3()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .px_4()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(rgb(TEAL))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("Share \"Hello from GPUI!\""),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_this, _, _, cx| {
+                                        let _ = gpui_mobile::packages::share::share_text(
+                                            "Hello from GPUI!",
+                                            Some("GPUI Demo"),
+                                        );
+                                        cx.notify();
+                                    }),
+                                ),
+                        ),
+                )
+        });
+
+    // ── WebView ───────────────────────────────────────────────────────────────
+    root = root
+        .child(section_header("WebView", sub_text))
+        .child({
+            info_card(card_bg)
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .p_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .px_4()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(rgb(RED))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("Load HTML"),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_this, _, _, cx| {
+                                        let settings = gpui_mobile::packages::webview::WebViewSettings::default();
+                                        let html = "<html><body style='background:#121318;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui'><h1>Hello from GPUI WebView!</h1></body></html>";
+                                        match gpui_mobile::packages::webview::load_html(html, &settings) {
+                                            Ok(handle) => {
+                                                log::info!("WebView loaded successfully");
+                                            }
+                                            Err(e) => {
+                                                log::error!("WebView error: {e}");
+                                            }
+                                        }
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .px_4()
+                                .py_2()
+                                .rounded_lg()
+                                .bg(rgb(MAUVE))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child("Open Google"),
+                                )
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_this, _, _, cx| {
+                                        let settings = gpui_mobile::packages::webview::WebViewSettings::default();
+                                        match gpui_mobile::packages::webview::load_url("https://google.com", &settings) {
+                                            Ok(handle) => {
+                                                log::info!("WebView loaded URL successfully");
+                                            }
+                                            Err(e) => {
+                                                log::error!("WebView URL error: {e}");
+                                            }
+                                        }
                                         cx.notify();
                                     }),
                                 ),

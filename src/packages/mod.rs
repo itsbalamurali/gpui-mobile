@@ -26,3 +26,15 @@ pub mod connectivity;
 
 #[cfg(feature = "network_info")]
 pub mod network_info;
+
+#[cfg(feature = "battery")]
+pub mod battery;
+
+#[cfg(feature = "share")]
+pub mod share;
+
+#[cfg(feature = "sensors")]
+pub mod sensors;
+
+#[cfg(feature = "webview")]
+pub mod webview;
