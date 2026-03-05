@@ -57,7 +57,7 @@ objc = "0.2"
 # Apple frameworks
 core-foundation     = "0.10"
 core-foundation-sys = "0.8"
-core-graphics       = "0.24"
+core-graphics       = "0.25"
 core-text           = "=21.0.0"
 uuid                = { version = "1", features = ["v4", "v5"] }
 block               = "0.1"
