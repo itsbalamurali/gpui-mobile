@@ -14,26 +14,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
 
     let mut root = div().flex().flex_col().flex_1().gap_4().px_4().py_6();
 
-    // ── Package Info ────────────────────────────────────────────────────────
-    root = root
-        .child(section_header("Package Info", sub_text))
-        .child({
-            let info = gpui_mobile::packages::package_info::get_package_info();
-            match info {
-                Ok(pi) => info_card(card_bg)
-                    .child(kv_row("App Name", &pi.app_name, BLUE, text_color, sub_text))
-                    .child(divider_line(divider_color))
-                    .child(kv_row("Package", &pi.package_name, BLUE, text_color, sub_text))
-                    .child(divider_line(divider_color))
-                    .child(kv_row("Version", &pi.version, BLUE, text_color, sub_text))
-                    .child(divider_line(divider_color))
-                    .child(kv_row("Build", &pi.build_number, BLUE, text_color, sub_text))
-                    .into_any_element(),
-                Err(e) => error_card(&e, card_bg, text_color).into_any_element(),
-            }
-        });
-
-    // ── Device Info ─────────────────────────────────────────────────────────
+    // ── Device Info (native API, no JNI) ────────────────────────────────────
     root = root
         .child(section_header("Device Info", sub_text))
         .child({
@@ -60,7 +41,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             }
         });
 
-    // ── Path Provider ───────────────────────────────────────────────────────
+    // ── Path Provider (native API, no JNI) ──────────────────────────────────
     root = root
         .child(section_header("Path Provider", sub_text))
         .child({
@@ -70,40 +51,35 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             let support = gpui_mobile::packages::path_provider::support_directory();
 
             info_card(card_bg)
-                .child(kv_row(
-                    "Temp",
-                    &path_or_err(&tmp),
-                    MAUVE,
-                    text_color,
-                    sub_text,
-                ))
+                .child(kv_row("Temp", &path_or_err(&tmp), MAUVE, text_color, sub_text))
                 .child(divider_line(divider_color))
-                .child(kv_row(
-                    "Documents",
-                    &path_or_err(&docs),
-                    MAUVE,
-                    text_color,
-                    sub_text,
-                ))
+                .child(kv_row("Documents", &path_or_err(&docs), MAUVE, text_color, sub_text))
                 .child(divider_line(divider_color))
-                .child(kv_row(
-                    "Cache",
-                    &path_or_err(&cache),
-                    MAUVE,
-                    text_color,
-                    sub_text,
-                ))
+                .child(kv_row("Cache", &path_or_err(&cache), MAUVE, text_color, sub_text))
                 .child(divider_line(divider_color))
-                .child(kv_row(
-                    "Support",
-                    &path_or_err(&support),
-                    MAUVE,
-                    text_color,
-                    sub_text,
-                ))
+                .child(kv_row("Support", &path_or_err(&support), MAUVE, text_color, sub_text))
         });
 
-    // ── Connectivity ────────────────────────────────────────────────────────
+    // ── Package Info (JNI) ──────────────────────────────────────────────────
+    root = root
+        .child(section_header("Package Info", sub_text))
+        .child({
+            let info = gpui_mobile::packages::package_info::get_package_info();
+            match info {
+                Ok(pi) => info_card(card_bg)
+                    .child(kv_row("App Name", &pi.app_name, BLUE, text_color, sub_text))
+                    .child(divider_line(divider_color))
+                    .child(kv_row("Package", &pi.package_name, BLUE, text_color, sub_text))
+                    .child(divider_line(divider_color))
+                    .child(kv_row("Version", &pi.version, BLUE, text_color, sub_text))
+                    .child(divider_line(divider_color))
+                    .child(kv_row("Build", &pi.build_number, BLUE, text_color, sub_text))
+                    .into_any_element(),
+                Err(e) => error_card(&e, card_bg, text_color).into_any_element(),
+            }
+        });
+
+    // ── Connectivity (JNI) ──────────────────────────────────────────────────
     root = root
         .child(section_header("Connectivity", sub_text))
         .child({
@@ -112,7 +88,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             info_card(card_bg).child(kv_row("Status", &label, TEAL, text_color, sub_text))
         });
 
-    // ── Network Info ────────────────────────────────────────────────────────
+    // ── Network Info (JNI) ──────────────────────────────────────────────────
     root = root
         .child(section_header("Network Info", sub_text))
         .child({
@@ -147,7 +123,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             }
         });
 
-    // ── Shared Preferences ──────────────────────────────────────────────────
+    // ── Shared Preferences (JNI) ────────────────────────────────────────────
     root = root
         .child(section_header("Shared Preferences", sub_text))
         .child({
@@ -156,13 +132,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             let current = prefs.get_int(key).unwrap_or(0);
             let _ = prefs.set_int(key, current + 1);
             info_card(card_bg)
-                .child(kv_row(
-                    "Demo Key",
-                    key,
-                    PEACH,
-                    text_color,
-                    sub_text,
-                ))
+                .child(kv_row("Demo Key", key, PEACH, text_color, sub_text))
                 .child(divider_line(divider_color))
                 .child(kv_row(
                     "Value (increments each visit)",
@@ -173,7 +143,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                 ))
         });
 
-    // ── Vibration ───────────────────────────────────────────────────────────
+    // ── Vibration (JNI) ─────────────────────────────────────────────────────
     root = root
         .child(section_header("Vibration", sub_text))
         .child({
@@ -222,7 +192,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
             card
         });
 
-    // ── URL Launcher ────────────────────────────────────────────────────────
+    // ── URL Launcher (JNI) ──────────────────────────────────────────────────
     root = root
         .child(section_header("URL Launcher", sub_text))
         .child({

@@ -248,7 +248,7 @@ pub fn init_logger() {
     INIT.get_or_init(|| {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Debug)
+                .with_max_level(log::LevelFilter::Info)
                 .with_tag("gpui-android"),
         );
         log::info!("gpui-android logger initialised");

@@ -48,12 +48,8 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use super::platform::{AndroidPlatform, SharedPlatform};
 
-// ── JNI types for unicode character extraction ────────────────────────────────
-
-/// Raw JNI environment pointer (`JNIEnv *`).
-type JNIEnvPtr = *mut c_void;
-/// Raw JNI JavaVM pointer.
-type JavaVMPtr = *mut c_void;
+use jni::objects::JValue;
+use super::jni_helpers;
 
 // ── global state ─────────────────────────────────────────────────────────────
 
@@ -67,191 +63,36 @@ static ANDROID_APP: OnceLock<AndroidApp> = OnceLock::new();
 /// Initialised once during `android_main`; read-only thereafter.
 static PLATFORM: OnceLock<Arc<AndroidPlatform>> = OnceLock::new();
 
-// ── JNI function table offsets (from `JNINativeInterface`) ────────────────────
-
-/// Raw JNI helper functions used by `platform.rs` and `window.rs` for
-/// JNI calls that aren't covered by the `jni` crate.
-pub mod jni_fns {
-    use std::ffi::c_void;
-
-    /// Attach the current thread to the JVM and return a `JNIEnv *`.
-    ///
-    /// JNIEnv is a pointer to a pointer to a function table.
-    pub unsafe fn get_env_from_vm(vm: *mut c_void) -> *mut c_void {
-        // JavaVM is `*const *const JNIInvokeInterface`
-        #[repr(C)]
-        struct JNIInvokeInterface {
-            reserved0: *mut c_void,
-            reserved1: *mut c_void,
-            reserved2: *mut c_void,
-            destroy_java_vm: *mut c_void,
-            attach_current_thread:
-                unsafe extern "C" fn(*mut c_void, *mut *mut c_void, *mut c_void) -> i32,
-            detach_current_thread: *mut c_void,
-            get_env: unsafe extern "C" fn(*mut c_void, *mut *mut c_void, i32) -> i32,
-        }
-
-        let vm_table = *(vm as *const *const JNIInvokeInterface);
-
-        // First try GetEnv (JNI_VERSION_1_6 = 0x00010006)
-        let mut env: *mut c_void = std::ptr::null_mut();
-        let result = unsafe { ((*vm_table).get_env)(vm, &mut env, 0x00010006) };
-        if result == 0 && !env.is_null() {
-            return env;
-        }
-
-        // Thread not attached — attach it
-        let result =
-            unsafe { ((*vm_table).attach_current_thread)(vm, &mut env, std::ptr::null_mut()) };
-        if result == 0 && !env.is_null() {
-            env
-        } else {
-            std::ptr::null_mut()
-        }
-    }
-
-    /// Get the unicode character from an Android KeyEvent via JNI.
-    ///
-    /// Calls `android.view.KeyEvent(action, code).getUnicodeChar(metaState)`.
-    ///
-    /// Returns 0 if the JNI call fails or the key produces no character.
-    pub unsafe fn get_unicode_char(
-        env: *mut c_void,
-        key_code: i32,
-        action: i32,
-        meta_state: i32,
-    ) -> u32 {
-        // The env pointer is `JNIEnv **` → dereference once to get the fn table.
-        let fn_table = *(env as *const *const *const c_void);
-
-        macro_rules! jni_fn {
-            ($idx:expr, $ty:ty) => {
-                std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
-            };
-        }
-
-        type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-        type GetMethodIDFn =
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
-        type NewObjectAFn =
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> *mut c_void;
-        type CallIntMethodAFn =
-            unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> i32;
-        type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
-        type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
-        type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
-
-        let find_class: FindClassFn = jni_fn!(6, FindClassFn);
-        let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
-        let new_object_a: NewObjectAFn = jni_fn!(30, NewObjectAFn);
-        let call_int_method_a: CallIntMethodAFn = jni_fn!(49, CallIntMethodAFn);
-        let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
-        let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
-        let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
-
-        // Step 1: FindClass
-        let class_name = b"android/view/KeyEvent\0";
-        let cls = find_class(env, class_name.as_ptr() as *const i8);
-        if cls.is_null() {
-            if exception_check(env) != 0 {
-                exception_clear(env);
-            }
-            return 0;
-        }
-
-        // Step 2: Get constructor <init>(int action, int code)
-        let init_name = b"<init>\0";
-        let init_sig = b"(II)V\0";
-        let ctor = get_method_id(
-            env,
-            cls,
-            init_name.as_ptr() as *const i8,
-            init_sig.as_ptr() as *const i8,
-        );
-        if ctor.is_null() {
-            if exception_check(env) != 0 {
-                exception_clear(env);
-            }
-            delete_local_ref(env, cls);
-            return 0;
-        }
-
-        // Step 3: NewObject — jvalue args are 8 bytes each
-        let ctor_args: [i64; 2] = [action as i64, key_code as i64];
-        let key_event_obj = new_object_a(env, cls, ctor, ctor_args.as_ptr());
-        if key_event_obj.is_null() {
-            if exception_check(env) != 0 {
-                exception_clear(env);
-            }
-            delete_local_ref(env, cls);
-            return 0;
-        }
-
-        // Step 4: Get getUnicodeChar(int metaState) method
-        let method_name = b"getUnicodeChar\0";
-        let method_sig = b"(I)I\0";
-        let get_unicode_method = get_method_id(
-            env,
-            cls,
-            method_name.as_ptr() as *const i8,
-            method_sig.as_ptr() as *const i8,
-        );
-        if get_unicode_method.is_null() {
-            if exception_check(env) != 0 {
-                exception_clear(env);
-            }
-            delete_local_ref(env, key_event_obj);
-            delete_local_ref(env, cls);
-            return 0;
-        }
-
-        // Step 5: Call getUnicodeChar(metaState)
-        let call_args: [i64; 1] = [meta_state as i64];
-        let unicode = call_int_method_a(env, key_event_obj, get_unicode_method, call_args.as_ptr());
-
-        if exception_check(env) != 0 {
-            exception_clear(env);
-            delete_local_ref(env, key_event_obj);
-            delete_local_ref(env, cls);
-            return 0;
-        }
-
-        // Cleanup local references
-        delete_local_ref(env, key_event_obj);
-        delete_local_ref(env, cls);
-
-        if unicode > 0 {
-            unicode as u32
-        } else {
-            0
-        }
-    }
-}
-
-// ── JNI helper accessors ──────────────────────────────────────────────────────
-
-/// Obtain a JNI environment for the current thread.
-///
-/// Attaches the current thread to the JVM if not already attached.
-/// Returns null if no `AndroidApp` has been stored yet.
-fn get_jni_env() -> JNIEnvPtr {
-    let vm = java_vm();
-    if vm.is_null() {
-        return std::ptr::null_mut();
-    }
-    unsafe { jni_fns::get_env_from_vm(vm) }
-}
-
 /// Get the unicode character produced by an Android key event via JNI.
 ///
 /// This creates a `android.view.KeyEvent` Java object and calls
 /// `getUnicodeChar(metaState)` on it.  Returns 0 on failure.
 pub fn unicode_char_for_key_event(key_code: i32, action: i32, meta_state: i32) -> u32 {
-    let env = get_jni_env();
-    if env.is_null() {
-        return 0;
+    let mut env = match jni_helpers::obtain_env() {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let key_event = match env.new_object(
+        "android/view/KeyEvent",
+        "(II)V",
+        &[JValue::Int(action), JValue::Int(key_code)],
+    ) {
+        Ok(o) => o,
+        Err(_) => {
+            let _ = env.exception_clear();
+            return 0;
+        }
+    };
+    match env.call_method(&key_event, "getUnicodeChar", "(I)I", &[JValue::Int(meta_state)]) {
+        Ok(v) => {
+            let c = v.i().unwrap_or(0);
+            if c > 0 { c as u32 } else { 0 }
+        }
+        Err(_) => {
+            let _ = env.exception_clear();
+            0
+        }
     }
-    unsafe { jni_fns::get_unicode_char(env, key_code, action, meta_state) }
 }
 
 // ── public accessors ──────────────────────────────────────────────────────────
@@ -1001,234 +842,100 @@ pub fn init_platform(app: &AndroidApp) -> &'static Arc<AndroidPlatform> {
 ///
 /// Must be called from the main (native) thread that has JNI access.
 pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
-    let vm = java_vm();
-    if vm.is_null() {
-        log::warn!("set_system_chrome: no JavaVM");
-        return;
-    }
-
-    let env = unsafe { jni_fns::get_env_from_vm(vm) };
-    if env.is_null() {
-        log::warn!("set_system_chrome: cannot get JNIEnv");
-        return;
-    }
-
-    let activity_obj = activity_as_ptr();
-    if activity_obj.is_null() {
-        log::warn!("set_system_chrome: no activity");
-        return;
-    }
-
-    unsafe { set_system_chrome_impl(env, activity_obj, style) };
-}
-
-/// Internal implementation of system chrome styling via raw JNI.
-///
-/// # Safety
-///
-/// `env` must be a valid `JNIEnv *` and `activity_obj` must be a valid
-/// Activity jobject.
-unsafe fn set_system_chrome_impl(
-    env: *mut c_void,
-    activity_obj: *mut c_void,
-    style: &crate::SystemChromeStyle,
-) {
-    let fn_table = *(env as *const *const *const c_void);
-
-    macro_rules! jni_fn {
-        ($idx:expr, $ty:ty) => {
-            std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
-        };
-    }
-
-    type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-    type GetMethodIDFn =
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
-    type CallObjectMethodAFn =
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> *mut c_void;
-    type CallVoidMethodAFn =
-        unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64);
-    type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
-    type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
-    type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
-
-    let find_class: FindClassFn = jni_fn!(6, FindClassFn);
-    let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
-    let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
-    let call_void_method_a: CallVoidMethodAFn = jni_fn!(61, CallVoidMethodAFn);
-    let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
-    let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
-    let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
-
-    let no_args: [i64; 0] = [];
+    let mut env = match jni_helpers::obtain_env() {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("set_system_chrome: {e}");
+            return;
+        }
+    };
+    let activity_obj = match jni_helpers::activity() {
+        Ok(a) => a,
+        Err(e) => {
+            log::warn!("set_system_chrome: {e}");
+            return;
+        }
+    };
 
     // 1. Get the Window: activity.getWindow()
-    let activity_cls = find_class(env, b"android/app/Activity\0".as_ptr() as *const i8);
-    if activity_cls.is_null() {
-        if exception_check(env) != 0 { exception_clear(env); }
-        return;
-    }
-
-    let get_window = get_method_id(
-        env,
-        activity_cls,
-        b"getWindow\0".as_ptr() as *const i8,
-        b"()Landroid/view/Window;\0".as_ptr() as *const i8,
-    );
-    if get_window.is_null() {
-        if exception_check(env) != 0 { exception_clear(env); }
-        delete_local_ref(env, activity_cls);
-        return;
-    }
-
-    let window_obj = call_object_method_a(env, activity_obj, get_window, no_args.as_ptr());
-    delete_local_ref(env, activity_cls);
-    if window_obj.is_null() {
-        if exception_check(env) != 0 { exception_clear(env); }
-        return;
-    }
-
-    let window_cls = find_class(env, b"android/view/Window\0".as_ptr() as *const i8);
-    if window_cls.is_null() {
-        if exception_check(env) != 0 { exception_clear(env); }
-        delete_local_ref(env, window_obj);
-        return;
-    }
+    let window = match env.call_method(&activity_obj, "getWindow", "()Landroid/view/Window;", &[]) {
+        Ok(v) => match v.l() {
+            Ok(o) if !o.is_null() => o,
+            _ => return,
+        },
+        Err(_) => { let _ = env.exception_clear(); return; }
+    };
 
     // 2. Set status bar color if provided
     if let Some(color) = style.status_bar_color {
-        let set_status_bar_color = get_method_id(
-            env,
-            window_cls,
-            b"setStatusBarColor\0".as_ptr() as *const i8,
-            b"(I)V\0".as_ptr() as *const i8,
-        );
-        if !set_status_bar_color.is_null() {
-            // Android expects ARGB — add full alpha
-            let argb = (0xFF000000_u32 | color) as i64;
-            let args: [i64; 1] = [argb];
-            call_void_method_a(env, window_obj, set_status_bar_color, args.as_ptr());
-            if exception_check(env) != 0 { exception_clear(env); }
-        } else if exception_check(env) != 0 {
-            exception_clear(env);
-        }
+        let argb = (0xFF000000_u32 | color) as i32;
+        let _ = env.call_method(&window, "setStatusBarColor", "(I)V", &[JValue::Int(argb)]);
+        let _ = env.exception_clear();
     }
 
     // 3. Set navigation bar color if provided
     if let Some(color) = style.navigation_bar_color {
-        let set_nav_bar_color = get_method_id(
-            env,
-            window_cls,
-            b"setNavigationBarColor\0".as_ptr() as *const i8,
-            b"(I)V\0".as_ptr() as *const i8,
-        );
-        if !set_nav_bar_color.is_null() {
-            let argb = (0xFF000000_u32 | color) as i64;
-            let args: [i64; 1] = [argb];
-            call_void_method_a(env, window_obj, set_nav_bar_color, args.as_ptr());
-            if exception_check(env) != 0 { exception_clear(env); }
-        } else if exception_check(env) != 0 {
-            exception_clear(env);
-        }
+        let argb = (0xFF000000_u32 | color) as i32;
+        let _ = env.call_method(&window, "setNavigationBarColor", "(I)V", &[JValue::Int(argb)]);
+        let _ = env.exception_clear();
     }
 
     // 4. Set light/dark status bar icons via WindowInsetsController (API 30+)
     //    Fallback: use View.setSystemUiVisibility with SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-    {
-        // Try the modern WindowInsetsController API first
-        let get_insetsctl = get_method_id(
-            env,
-            window_cls,
-            b"getInsetsController\0".as_ptr() as *const i8,
-            b"()Landroid/view/WindowInsetsController;\0".as_ptr() as *const i8,
-        );
+    let insetsctl = env.call_method(
+        &window,
+        "getInsetsController",
+        "()Landroid/view/WindowInsetsController;",
+        &[],
+    );
 
-        if !get_insetsctl.is_null() {
-            let insetsctl = call_object_method_a(env, window_obj, get_insetsctl, no_args.as_ptr());
-            if !insetsctl.is_null() {
-                let insetsctl_cls = find_class(
-                    env,
-                    b"android/view/WindowInsetsController\0".as_ptr() as *const i8,
+    if let Ok(v) = insetsctl {
+        if let Ok(ctl) = v.l() {
+            if !ctl.is_null() {
+                // APPEARANCE_LIGHT_STATUS_BARS = 0x00000008
+                let mask: i32 = 0x00000008;
+                let appearance: i32 = match style.status_bar_style {
+                    crate::StatusBarContentStyle::Dark => 0x00000008,
+                    crate::StatusBarContentStyle::Light => 0,
+                };
+                let _ = env.call_method(
+                    &ctl,
+                    "setSystemBarsAppearance",
+                    "(II)V",
+                    &[JValue::Int(appearance), JValue::Int(mask)],
                 );
-                if !insetsctl_cls.is_null() {
-                    let set_appearance = get_method_id(
-                        env,
-                        insetsctl_cls,
-                        b"setSystemBarsAppearance\0".as_ptr() as *const i8,
-                        b"(II)V\0".as_ptr() as *const i8,
-                    );
-                    if !set_appearance.is_null() {
-                        // APPEARANCE_LIGHT_STATUS_BARS = 0x00000008
-                        let mask: i64 = 0x00000008;
-                        let appearance: i64 = match style.status_bar_style {
-                            crate::StatusBarContentStyle::Dark => 0x00000008, // light status bar = dark icons
-                            crate::StatusBarContentStyle::Light => 0,         // no flag = light icons
-                        };
-                        let args: [i64; 2] = [appearance, mask];
-                        call_void_method_a(env, insetsctl, set_appearance, args.as_ptr());
-                        if exception_check(env) != 0 { exception_clear(env); }
-                    } else if exception_check(env) != 0 {
-                        exception_clear(env);
-                    }
-                    delete_local_ref(env, insetsctl_cls);
-                }
-                delete_local_ref(env, insetsctl);
-            } else if exception_check(env) != 0 {
-                exception_clear(env);
+                let _ = env.exception_clear();
             }
-        } else {
-            // Fallback for API < 30: use decorView.setSystemUiVisibility
-            if exception_check(env) != 0 { exception_clear(env); }
+        }
+    } else {
+        // Fallback for API < 30: use decorView.setSystemUiVisibility
+        let _ = env.exception_clear();
 
-            let get_decor_view = get_method_id(
-                env,
-                window_cls,
-                b"getDecorView\0".as_ptr() as *const i8,
-                b"()Landroid/view/View;\0".as_ptr() as *const i8,
-            );
-            if !get_decor_view.is_null() {
-                let decor_view = call_object_method_a(env, window_obj, get_decor_view, no_args.as_ptr());
-                if !decor_view.is_null() {
-                    let view_cls = find_class(env, b"android/view/View\0".as_ptr() as *const i8);
-                    if !view_cls.is_null() {
-                        // Get current flags
-                        let get_vis = get_method_id(
-                            env, view_cls,
-                            b"getSystemUiVisibility\0".as_ptr() as *const i8,
-                            b"()I\0".as_ptr() as *const i8,
-                        );
-                        let set_vis = get_method_id(
-                            env, view_cls,
-                            b"setSystemUiVisibility\0".as_ptr() as *const i8,
-                            b"(I)V\0".as_ptr() as *const i8,
-                        );
-                        if !get_vis.is_null() && !set_vis.is_null() {
-                            type CallIntMethodAFn = unsafe extern "C" fn(
-                                *mut c_void, *mut c_void, *mut c_void, *const i64
-                            ) -> i32;
-                            let call_int_method_a: CallIntMethodAFn = jni_fn!(49, CallIntMethodAFn);
-                            let current = call_int_method_a(env, decor_view, get_vis, no_args.as_ptr());
-                            // SYSTEM_UI_FLAG_LIGHT_STATUS_BAR = 0x00002000
-                            let new_flags = match style.status_bar_style {
-                                crate::StatusBarContentStyle::Dark => current | 0x00002000,
-                                crate::StatusBarContentStyle::Light => current & !0x00002000,
-                            };
-                            let args: [i64; 1] = [new_flags as i64];
-                            call_void_method_a(env, decor_view, set_vis, args.as_ptr());
-                            if exception_check(env) != 0 { exception_clear(env); }
-                        }
-                        delete_local_ref(env, view_cls);
-                    }
-                    delete_local_ref(env, decor_view);
+        if let Ok(decor) = env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+            .and_then(|v| v.l())
+        {
+            if !decor.is_null() {
+                if let Ok(current) = env
+                    .call_method(&decor, "getSystemUiVisibility", "()I", &[])
+                    .and_then(|v| v.i())
+                {
+                    // SYSTEM_UI_FLAG_LIGHT_STATUS_BAR = 0x00002000
+                    let new_flags = match style.status_bar_style {
+                        crate::StatusBarContentStyle::Dark => current | 0x00002000,
+                        crate::StatusBarContentStyle::Light => current & !0x00002000,
+                    };
+                    let _ = env.call_method(
+                        &decor,
+                        "setSystemUiVisibility",
+                        "(I)V",
+                        &[JValue::Int(new_flags)],
+                    );
+                    let _ = env.exception_clear();
                 }
-            } else if exception_check(env) != 0 {
-                exception_clear(env);
             }
         }
     }
-
-    delete_local_ref(env, window_cls);
-    delete_local_ref(env, window_obj);
 
     log::info!(
         "set_system_chrome: status_bar_color={:?}, nav_bar_color={:?}, style={:?}",

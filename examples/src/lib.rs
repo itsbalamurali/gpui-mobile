@@ -86,7 +86,7 @@ fn android_main(app: android_activity::AndroidApp) {
     // Logger first — so everything after this is visible in logcat.
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Debug)
+            .with_max_level(log::LevelFilter::Info)
             .with_tag("gpui-mobile-example"),
     );
 

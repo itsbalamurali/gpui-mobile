@@ -728,216 +728,53 @@ impl AndroidPlatform {
     ///
     /// Returns `None` if the JNI environment is unavailable or the call fails.
     fn query_keyboard_layout_id_via_jni(&self) -> Option<String> {
-        use crate::android::jni;
-        use std::ffi::c_void;
+        use crate::android::jni_helpers::{self, get_string};
+        use jni::objects::JValue;
 
-        let vm = jni::java_vm();
-        if vm.is_null() {
+        let mut env = jni_helpers::obtain_env().ok()?;
+        let activity = jni_helpers::activity().ok()?;
+
+        // activity.getSystemService("input_method")
+        let service_name = env.new_string("input_method").ok()?;
+        let imm = env
+            .call_method(
+                &activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service_name)],
+            )
+            .and_then(|v| v.l())
+            .ok()?;
+        if imm.is_null() {
             return None;
         }
 
-        let activity_obj = jni::activity_as_ptr();
-        if activity_obj.is_null() {
+        // imm.getCurrentInputMethodSubtype()
+        let subtype = env
+            .call_method(
+                &imm,
+                "getCurrentInputMethodSubtype",
+                "()Landroid/view/inputmethod/InputMethodSubtype;",
+                &[],
+            )
+            .and_then(|v| v.l())
+            .ok()?;
+        if subtype.is_null() {
             return None;
         }
 
-        unsafe {
-            let env = jni::jni_fns::get_env_from_vm(vm);
-            if env.is_null() {
-                return None;
-            }
+        // subtype.getLocale()
+        let locale_obj = env
+            .call_method(&subtype, "getLocale", "()Ljava/lang/String;", &[])
+            .and_then(|v| v.l())
+            .ok()?;
 
-            // Get the fn table
-            let fn_table = *(env as *const *const *const c_void);
-
-            macro_rules! jni_fn {
-                ($idx:expr, $ty:ty) => {
-                    std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
-                };
-            }
-
-            type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-            type GetMethodIDFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
-            type CallObjectMethodAFn = unsafe extern "C" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                *const i64,
-            ) -> *mut c_void;
-            type GetStringUtfCharsFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *mut u8) -> *const i8;
-            type ReleaseStringUtfCharsFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8);
-            type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
-            type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
-            type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
-            type NewStringUtfFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-
-            let find_class: FindClassFn = jni_fn!(6, FindClassFn);
-            let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
-            let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
-            let get_string_utf_chars: GetStringUtfCharsFn = jni_fn!(169, GetStringUtfCharsFn);
-            let release_string_utf_chars: ReleaseStringUtfCharsFn =
-                jni_fn!(170, ReleaseStringUtfCharsFn);
-            let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
-            let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
-            let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
-            let new_string_utf: NewStringUtfFn = jni_fn!(167, NewStringUtfFn);
-
-            // activity_obj is already the Activity jobject from activity_as_ptr()
-
-            // 1. Call activity.getSystemService("input_method")
-            let context_cls = find_class(env, b"android/content/Context\0".as_ptr() as *const i8);
-            if context_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return None;
-            }
-
-            let get_system_service = get_method_id(
-                env,
-                context_cls,
-                b"getSystemService\0".as_ptr() as *const i8,
-                b"(Ljava/lang/String;)Ljava/lang/Object;\0".as_ptr() as *const i8,
-            );
-            if get_system_service.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return None;
-            }
-
-            let service_name = new_string_utf(env, b"input_method\0".as_ptr() as *const i8);
-            if service_name.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return None;
-            }
-
-            let args: [i64; 1] = [service_name as i64];
-            let imm = call_object_method_a(
-                env,
-                activity_obj as *mut c_void,
-                get_system_service,
-                args.as_ptr(),
-            );
-            delete_local_ref(env, service_name);
-            delete_local_ref(env, context_cls);
-
-            if imm.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return None;
-            }
-
-            // 2. Call imm.getCurrentInputMethodSubtype()
-            let imm_cls = find_class(
-                env,
-                b"android/view/inputmethod/InputMethodManager\0".as_ptr() as *const i8,
-            );
-            if imm_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, imm);
-                return None;
-            }
-
-            let get_subtype = get_method_id(
-                env,
-                imm_cls,
-                b"getCurrentInputMethodSubtype\0".as_ptr() as *const i8,
-                b"()Landroid/view/inputmethod/InputMethodSubtype;\0".as_ptr() as *const i8,
-            );
-            if get_subtype.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, imm_cls);
-                delete_local_ref(env, imm);
-                return None;
-            }
-
-            let no_args: [i64; 0] = [];
-            let subtype = call_object_method_a(env, imm, get_subtype, no_args.as_ptr());
-            delete_local_ref(env, imm_cls);
-            delete_local_ref(env, imm);
-
-            if subtype.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return None;
-            }
-
-            // 3. Call subtype.getLocale()
-            let subtype_cls = find_class(
-                env,
-                b"android/view/inputmethod/InputMethodSubtype\0".as_ptr() as *const i8,
-            );
-            if subtype_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, subtype);
-                return None;
-            }
-
-            let get_locale = get_method_id(
-                env,
-                subtype_cls,
-                b"getLocale\0".as_ptr() as *const i8,
-                b"()Ljava/lang/String;\0".as_ptr() as *const i8,
-            );
-            if get_locale.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, subtype_cls);
-                delete_local_ref(env, subtype);
-                return None;
-            }
-
-            let locale_str = call_object_method_a(env, subtype, get_locale, no_args.as_ptr());
-            delete_local_ref(env, subtype_cls);
-            delete_local_ref(env, subtype);
-
-            if locale_str.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return None;
-            }
-
-            // 4. Convert the Java String to a Rust String
-            let utf_chars = get_string_utf_chars(env, locale_str, std::ptr::null_mut());
-            if utf_chars.is_null() {
-                delete_local_ref(env, locale_str);
-                return None;
-            }
-
-            let rust_string = std::ffi::CStr::from_ptr(utf_chars as *const std::ffi::c_char)
-                .to_string_lossy()
-                .into_owned();
-
-            release_string_utf_chars(env, locale_str, utf_chars);
-            delete_local_ref(env, locale_str);
-
-            // Convert underscores to hyphens (e.g. "en_US" → "en-US")
-            let result = rust_string.replace('_', "-");
-
-            if result.is_empty() {
-                None
-            } else {
-                log::debug!("keyboard_layout_id via JNI: {}", result);
-                Some(result)
-            }
+        let result = get_string(&mut env, &locale_obj).replace('_', "-");
+        if result.is_empty() {
+            None
+        } else {
+            log::debug!("keyboard_layout_id via JNI: {}", result);
+            Some(result)
         }
     }
 
@@ -986,151 +823,53 @@ impl AndroidPlatform {
     /// Returns -1 on failure (JNI unavailable, API < 29, etc.).
     #[allow(dead_code)]
     fn query_thermal_status_via_jni(&self) -> i32 {
-        use crate::android::jni;
-        use std::ffi::c_void;
+        use crate::android::jni_helpers;
+        use jni::objects::JValue;
 
-        let vm = jni::java_vm();
-        if vm.is_null() {
-            return -1;
-        }
+        let mut env = match jni_helpers::obtain_env() {
+            Ok(e) => e,
+            Err(_) => return -1,
+        };
+        let activity = match jni_helpers::activity() {
+            Ok(a) => a,
+            Err(_) => return -1,
+        };
 
-        let activity_obj = jni::activity_as_ptr();
-        if activity_obj.is_null() {
-            return -1;
-        }
-
-        unsafe {
-            let env = jni::jni_fns::get_env_from_vm(vm);
-            if env.is_null() {
+        // activity.getSystemService("power")
+        let service_name = match env.new_string("power") {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let pm = match env
+            .call_method(
+                &activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service_name)],
+            )
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => {
+                let _ = env.exception_clear();
                 return -1;
             }
+        };
 
-            let fn_table = *(env as *const *const *const c_void);
-
-            macro_rules! jni_fn {
-                ($idx:expr, $ty:ty) => {
-                    std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
-                };
-            }
-
-            type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-            type GetMethodIDFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
-            type CallObjectMethodAFn = unsafe extern "C" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                *const i64,
-            ) -> *mut c_void;
-            type CallIntMethodAFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> i32;
-            type NewStringUtfFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-            type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
-            type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
-            type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
-
-            let find_class: FindClassFn = jni_fn!(6, FindClassFn);
-            let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
-            let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
-            let call_int_method_a: CallIntMethodAFn = jni_fn!(49, CallIntMethodAFn);
-            let new_string_utf: NewStringUtfFn = jni_fn!(167, NewStringUtfFn);
-            let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
-            let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
-            let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
-
-            // activity_obj is already the Activity jobject from activity_as_ptr()
-
-            // 1. activity.getSystemService("power")
-            let context_cls = find_class(env, b"android/content/Context\0".as_ptr() as *const i8);
-            if context_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
+        // pm.getCurrentThermalStatus() — API 29+
+        let status = match env
+            .call_method(&pm, "getCurrentThermalStatus", "()I", &[])
+            .and_then(|v| v.i())
+        {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = env.exception_clear();
                 return -1;
             }
+        };
 
-            let get_system_service = get_method_id(
-                env,
-                context_cls,
-                b"getSystemService\0".as_ptr() as *const i8,
-                b"(Ljava/lang/String;)Ljava/lang/Object;\0".as_ptr() as *const i8,
-            );
-            if get_system_service.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return -1;
-            }
-
-            let service_name = new_string_utf(env, b"power\0".as_ptr() as *const i8);
-            if service_name.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return -1;
-            }
-
-            let args: [i64; 1] = [service_name as i64];
-            let pm = call_object_method_a(
-                env,
-                activity_obj as *mut c_void,
-                get_system_service,
-                args.as_ptr(),
-            );
-            delete_local_ref(env, service_name);
-            delete_local_ref(env, context_cls);
-
-            if pm.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return -1;
-            }
-
-            // 2. pm.getCurrentThermalStatus() — API 29+
-            let pm_cls = find_class(env, b"android/os/PowerManager\0".as_ptr() as *const i8);
-            if pm_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, pm);
-                return -1;
-            }
-
-            let get_thermal = get_method_id(
-                env,
-                pm_cls,
-                b"getCurrentThermalStatus\0".as_ptr() as *const i8,
-                b"()I\0".as_ptr() as *const i8,
-            );
-            if get_thermal.is_null() {
-                // Method not found — likely API < 29
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, pm_cls);
-                delete_local_ref(env, pm);
-                return -1;
-            }
-
-            let no_args: [i64; 0] = [];
-            let status = call_int_method_a(env, pm, get_thermal, no_args.as_ptr());
-
-            if exception_check(env) != 0 {
-                exception_clear(env);
-                delete_local_ref(env, pm_cls);
-                delete_local_ref(env, pm);
-                return -1;
-            }
-
-            delete_local_ref(env, pm_cls);
-            delete_local_ref(env, pm);
-
-            log::trace!("query_thermal_status_via_jni: status={}", status);
-            status
-        }
+        log::trace!("query_thermal_status_via_jni: status={}", status);
+        status
     }
 
     /// Preferred wgpu backend.

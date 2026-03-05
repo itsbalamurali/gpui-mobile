@@ -1645,322 +1645,113 @@ impl PlatformWindow for AndroidPlatformWindow {
     }
 
     fn update_ime_position(&self, bounds: gpui::Bounds<gpui::Pixels>) {
-        // Update the IME (Input Method Editor) candidate window position via JNI.
-        //
-        // On Android, the IME candidate window position can be set by calling
-        // `InputMethodManager.updateCursorAnchorInfo()` with a
-        // `CursorAnchorInfo` object.  This tells the soft keyboard where to
-        // position its suggestions popup relative to the text cursor.
-        //
-        // For NativeActivity apps, we call:
-        //   View view = activity.getWindow().getDecorView();
-        //   InputMethodManager imm = activity.getSystemService("input_method");
-        //   // Build CursorAnchorInfo with the bounds
-        //   imm.updateCursorAnchorInfo(view, info);
-        //
-        // This requires API level 21+ (Lollipop).
+        // Update the IME candidate window position via JNI.
+        // Calls InputMethodManager.updateCursorAnchorInfo() with a
+        // CursorAnchorInfo built from the given bounds.
+        // Requires API level 21+ (Lollipop).
 
-        use crate::android::jni;
-        use std::ffi::c_void;
+        use crate::android::jni_helpers;
+        use jni::objects::JValue;
 
-        let vm = jni::java_vm();
-        if vm.is_null() {
-            return;
-        }
+        let mut env = match jni_helpers::obtain_env() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let activity = match jni_helpers::activity() {
+            Ok(a) => a,
+            Err(_) => return,
+        };
 
-        let activity_obj = jni::activity_as_ptr();
-        if activity_obj.is_null() {
-            return;
-        }
+        // 1. Get InputMethodManager
+        let service_name = match env.new_string("input_method") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let imm = match env
+            .call_method(
+                &activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service_name)],
+            )
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => { let _ = env.exception_clear(); return; }
+        };
 
-        unsafe {
-            let env = jni::jni_fns::get_env_from_vm(vm);
-            if env.is_null() {
-                return;
-            }
+        // 2. Build CursorAnchorInfo
+        let builder = match env.new_object(
+            "android/view/inputmethod/CursorAnchorInfo$Builder",
+            "()V",
+            &[],
+        ) {
+            Ok(b) => b,
+            Err(_) => { let _ = env.exception_clear(); return; }
+        };
 
-            let fn_table = *(env as *const *const *const c_void);
+        let x: f32 = bounds.origin.x.into();
+        let y: f32 = bounds.origin.y.into();
+        let h: f32 = bounds.size.height.into();
 
-            macro_rules! jni_fn {
-                ($idx:expr, $ty:ty) => {
-                    std::mem::transmute::<*const c_void, $ty>(*fn_table.add($idx))
-                };
-            }
+        let _ = env.call_method(
+            &builder,
+            "setInsertionMarkerLocation",
+            "(FFFFI)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+            &[
+                JValue::Float(x),
+                JValue::Float(y),
+                JValue::Float(y + h * 0.8),
+                JValue::Float(y + h),
+                JValue::Int(0),
+            ],
+        );
+        let _ = env.exception_clear();
 
-            type FindClassFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-            type GetMethodIDFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *const i8, *const i8) -> *mut c_void;
-            type CallObjectMethodAFn = unsafe extern "C" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                *const i64,
-            ) -> *mut c_void;
-            type CallVoidMethodAFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64);
-            type NewStringUtfFn = unsafe extern "C" fn(*mut c_void, *const i8) -> *mut c_void;
-            type NewObjectAFn = unsafe extern "C" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                *const i64,
-            ) -> *mut c_void;
-            type CallIntMethodAFn =
-                unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i64) -> i32;
-            type DeleteLocalRefFn = unsafe extern "C" fn(*mut c_void, *mut c_void);
-            type ExceptionCheckFn = unsafe extern "C" fn(*mut c_void) -> u8;
-            type ExceptionClearFn = unsafe extern "C" fn(*mut c_void);
+        let anchor_info = match env
+            .call_method(
+                &builder,
+                "build",
+                "()Landroid/view/inputmethod/CursorAnchorInfo;",
+                &[],
+            )
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => { let _ = env.exception_clear(); return; }
+        };
 
-            let find_class: FindClassFn = jni_fn!(6, FindClassFn);
-            let get_method_id: GetMethodIDFn = jni_fn!(33, GetMethodIDFn);
-            let call_object_method_a: CallObjectMethodAFn = jni_fn!(36, CallObjectMethodAFn);
-            let call_void_method_a: CallVoidMethodAFn = jni_fn!(61, CallVoidMethodAFn);
-            let new_string_utf: NewStringUtfFn = jni_fn!(167, NewStringUtfFn);
-            let new_object_a: NewObjectAFn = jni_fn!(30, NewObjectAFn);
-            let delete_local_ref: DeleteLocalRefFn = jni_fn!(23, DeleteLocalRefFn);
-            let exception_check: ExceptionCheckFn = jni_fn!(228, ExceptionCheckFn);
-            let exception_clear: ExceptionClearFn = jni_fn!(17, ExceptionClearFn);
+        // 3. Get decor view: activity.getWindow().getDecorView()
+        let window = match env
+            .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => { let _ = env.exception_clear(); return; }
+        };
+        let decor_view = match env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => { let _ = env.exception_clear(); return; }
+        };
 
-            // activity_obj is already the Activity jobject from activity_as_ptr()
+        // 4. imm.updateCursorAnchorInfo(view, info)
+        let _ = env.call_method(
+            &imm,
+            "updateCursorAnchorInfo",
+            "(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V",
+            &[JValue::Object(&decor_view), JValue::Object(&anchor_info)],
+        );
+        let _ = env.exception_clear();
 
-            // 1. Get InputMethodManager
-            let context_cls = find_class(env, b"android/content/Context\0".as_ptr() as *const i8);
-            if context_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return;
-            }
-
-            let get_system_service = get_method_id(
-                env,
-                context_cls,
-                b"getSystemService\0".as_ptr() as *const i8,
-                b"(Ljava/lang/String;)Ljava/lang/Object;\0".as_ptr() as *const i8,
-            );
-            if get_system_service.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return;
-            }
-
-            let service_name = new_string_utf(env, b"input_method\0".as_ptr() as *const i8);
-            if service_name.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, context_cls);
-                return;
-            }
-
-            let args: [i64; 1] = [service_name as i64];
-            let imm = call_object_method_a(
-                env,
-                activity_obj as *mut c_void,
-                get_system_service,
-                args.as_ptr(),
-            );
-            delete_local_ref(env, service_name);
-            delete_local_ref(env, context_cls);
-
-            if imm.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                return;
-            }
-
-            // 2. Build CursorAnchorInfo with insertion marker location
-            let builder_cls = find_class(
-                env,
-                b"android/view/inputmethod/CursorAnchorInfo$Builder\0".as_ptr() as *const i8,
-            );
-            if builder_cls.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, imm);
-                return;
-            }
-
-            let builder_init = get_method_id(
-                env,
-                builder_cls,
-                b"<init>\0".as_ptr() as *const i8,
-                b"()V\0".as_ptr() as *const i8,
-            );
-            if builder_init.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, builder_cls);
-                delete_local_ref(env, imm);
-                return;
-            }
-
-            let no_args: [i64; 0] = [];
-            let builder = new_object_a(env, builder_cls, builder_init, no_args.as_ptr());
-            if builder.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, builder_cls);
-                delete_local_ref(env, imm);
-                return;
-            }
-
-            // setInsertionMarkerLocation(float horizontalPosition, float lineTop,
-            //                            float lineBaseline, float lineBottom, int flags)
-            let set_marker = get_method_id(
-                env,
-                builder_cls,
-                b"setInsertionMarkerLocation\0".as_ptr() as *const i8,
-                b"(FFFFI)Landroid/view/inputmethod/CursorAnchorInfo$Builder;\0".as_ptr()
-                    as *const i8,
-            );
-
-            if !set_marker.is_null() {
-                // Pack float args as i64 (JNI jvalue union: float stored in lower 32 bits)
-                let x: f32 = bounds.origin.x.into();
-                let y: f32 = bounds.origin.y.into();
-                let h: f32 = bounds.size.height.into();
-                let marker_args: [i64; 5] = [
-                    f32::to_bits(x) as i64,           // horizontalPosition
-                    f32::to_bits(y) as i64,           // lineTop
-                    f32::to_bits(y + h * 0.8) as i64, // lineBaseline
-                    f32::to_bits(y + h) as i64,       // lineBottom
-                    0i64,                             // flags = 0
-                ];
-                let _ = call_object_method_a(env, builder, set_marker, marker_args.as_ptr());
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-            }
-
-            // Build the CursorAnchorInfo
-            let build_method = get_method_id(
-                env,
-                builder_cls,
-                b"build\0".as_ptr() as *const i8,
-                b"()Landroid/view/inputmethod/CursorAnchorInfo;\0".as_ptr() as *const i8,
-            );
-
-            if build_method.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, builder);
-                delete_local_ref(env, builder_cls);
-                delete_local_ref(env, imm);
-                return;
-            }
-
-            let anchor_info = call_object_method_a(env, builder, build_method, no_args.as_ptr());
-            delete_local_ref(env, builder);
-            delete_local_ref(env, builder_cls);
-
-            if anchor_info.is_null() {
-                if exception_check(env) != 0 {
-                    exception_clear(env);
-                }
-                delete_local_ref(env, imm);
-                return;
-            }
-
-            // 3. Get the decor view for updateCursorAnchorInfo
-            //    activity.getWindow().getDecorView()
-            let activity_cls = find_class(env, b"android/app/Activity\0".as_ptr() as *const i8);
-            if !activity_cls.is_null() {
-                let get_window = get_method_id(
-                    env,
-                    activity_cls,
-                    b"getWindow\0".as_ptr() as *const i8,
-                    b"()Landroid/view/Window;\0".as_ptr() as *const i8,
-                );
-
-                if !get_window.is_null() {
-                    let app_window = call_object_method_a(
-                        env,
-                        activity_obj as *mut c_void,
-                        get_window,
-                        no_args.as_ptr(),
-                    );
-
-                    if !app_window.is_null() {
-                        let window_cls =
-                            find_class(env, b"android/view/Window\0".as_ptr() as *const i8);
-                        if !window_cls.is_null() {
-                            let get_decor = get_method_id(
-                                env,
-                                window_cls,
-                                b"getDecorView\0".as_ptr() as *const i8,
-                                b"()Landroid/view/View;\0".as_ptr() as *const i8,
-                            );
-
-                            if !get_decor.is_null() {
-                                let decor_view = call_object_method_a(
-                                    env,
-                                    app_window,
-                                    get_decor,
-                                    no_args.as_ptr(),
-                                );
-
-                                if !decor_view.is_null() {
-                                    // 4. imm.updateCursorAnchorInfo(view, info)
-                                    let imm_cls = find_class(
-                                        env,
-                                        b"android/view/inputmethod/InputMethodManager\0".as_ptr()
-                                            as *const i8,
-                                    );
-                                    if !imm_cls.is_null() {
-                                        let update_method = get_method_id(
-                                            env,
-                                            imm_cls,
-                                            b"updateCursorAnchorInfo\0".as_ptr() as *const i8,
-                                            b"(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V\0"
-                                                .as_ptr() as *const i8,
-                                        );
-                                        if !update_method.is_null() {
-                                            let update_args: [i64; 2] =
-                                                [decor_view as i64, anchor_info as i64];
-                                            call_void_method_a(
-                                                env,
-                                                imm,
-                                                update_method,
-                                                update_args.as_ptr(),
-                                            );
-                                            if exception_check(env) != 0 {
-                                                exception_clear(env);
-                                            }
-
-                                            log::trace!(
-                                                "update_ime_position: x={:.0} y={:.0} h={:.0}",
-                                                f32::from(bounds.origin.x),
-                                                f32::from(bounds.origin.y),
-                                                f32::from(bounds.size.height)
-                                            );
-                                        }
-                                        delete_local_ref(env, imm_cls);
-                                    }
-                                    delete_local_ref(env, decor_view);
-                                }
-                            }
-                            delete_local_ref(env, window_cls);
-                        }
-                        delete_local_ref(env, app_window);
-                    }
-                }
-                delete_local_ref(env, activity_cls);
-            }
-
-            if exception_check(env) != 0 {
-                exception_clear(env);
-            }
-            delete_local_ref(env, anchor_info);
-            delete_local_ref(env, imm);
-        }
+        log::trace!(
+            "update_ime_position: x={:.0} y={:.0} h={:.0}",
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.height)
+        );
     }
 }
 
