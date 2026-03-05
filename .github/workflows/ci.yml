@@ -22,7 +22,7 @@ jobs:
     name: Host Check & Tests
     runs-on: macos-14 # Apple Silicon runner — has Xcode + iOS SDKs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -67,7 +67,7 @@ jobs:
           - target: aarch64-apple-ios-sim
             label: simulator
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + iOS target
         uses: dtolnay/rust-toolchain@stable
@@ -100,7 +100,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: "27.0.12077973"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + Android target
         uses: dtolnay/rust-toolchain@stable
@@ -160,7 +160,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: "27.0.12077973"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + Android target
         uses: dtolnay/rust-toolchain@stable
