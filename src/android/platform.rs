@@ -731,51 +731,56 @@ impl AndroidPlatform {
         use crate::android::jni::{self as jni_helpers, get_string};
         use jni::objects::JValue;
 
-        let mut env = jni_helpers::obtain_env().ok()?;
-        let activity = jni_helpers::activity().ok()?;
+        jni_helpers::with_env(|env| {
+            let activity = jni_helpers::activity()?;
 
-        // activity.getSystemService("input_method")
-        let service_name = env.new_string("input_method").ok()?;
-        let imm = env
-            .call_method(
-                &activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&service_name)],
-            )
-            .and_then(|v| v.l())
-            .ok()?;
-        if imm.is_null() {
-            return None;
-        }
+            // activity.getSystemService("input_method")
+            let service_name = env
+                .new_string("input_method")
+                .map_err(|e| e.to_string())?;
+            let imm = env
+                .call_method(
+                    &activity,
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&service_name)],
+                )
+                .and_then(|v| v.l())
+                .map_err(|e| e.to_string())?;
+            if imm.is_null() {
+                return Ok(None);
+            }
 
-        // imm.getCurrentInputMethodSubtype()
-        let subtype = env
-            .call_method(
-                &imm,
-                "getCurrentInputMethodSubtype",
-                "()Landroid/view/inputmethod/InputMethodSubtype;",
-                &[],
-            )
-            .and_then(|v| v.l())
-            .ok()?;
-        if subtype.is_null() {
-            return None;
-        }
+            // imm.getCurrentInputMethodSubtype()
+            let subtype = env
+                .call_method(
+                    &imm,
+                    "getCurrentInputMethodSubtype",
+                    "()Landroid/view/inputmethod/InputMethodSubtype;",
+                    &[],
+                )
+                .and_then(|v| v.l())
+                .map_err(|e| e.to_string())?;
+            if subtype.is_null() {
+                return Ok(None);
+            }
 
-        // subtype.getLocale()
-        let locale_obj = env
-            .call_method(&subtype, "getLocale", "()Ljava/lang/String;", &[])
-            .and_then(|v| v.l())
-            .ok()?;
+            // subtype.getLocale()
+            let locale_obj = env
+                .call_method(&subtype, "getLocale", "()Ljava/lang/String;", &[])
+                .and_then(|v| v.l())
+                .map_err(|e| e.to_string())?;
 
-        let result = get_string(&mut env, &locale_obj).replace('_', "-");
-        if result.is_empty() {
-            None
-        } else {
-            log::debug!("keyboard_layout_id via JNI: {}", result);
-            Some(result)
-        }
+            let result = get_string(env, &locale_obj).replace('_', "-");
+            if result.is_empty() {
+                Ok(None)
+            } else {
+                log::debug!("keyboard_layout_id via JNI: {}", result);
+                Ok(Some(result))
+            }
+        })
+        .ok()
+        .flatten()
     }
 
     /// Register a thermal status listener via JNI using PowerManager.
@@ -826,50 +831,43 @@ impl AndroidPlatform {
         use crate::android::jni as jni_helpers;
         use jni::objects::JValue;
 
-        let mut env = match jni_helpers::obtain_env() {
-            Ok(e) => e,
-            Err(_) => return -1,
-        };
-        let activity = match jni_helpers::activity() {
-            Ok(a) => a,
-            Err(_) => return -1,
-        };
+        jni_helpers::with_env(|env| {
+            let activity = jni_helpers::activity()?;
 
-        // activity.getSystemService("power")
-        let service_name = match env.new_string("power") {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
-        let pm = match env
-            .call_method(
-                &activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&service_name)],
-            )
-            .and_then(|v| v.l())
-        {
-            Ok(o) if !o.is_null() => o,
-            _ => {
-                let _ = env.exception_clear();
-                return -1;
-            }
-        };
+            // activity.getSystemService("power")
+            let service_name = env.new_string("power").map_err(|e| e.to_string())?;
+            let pm = match env
+                .call_method(
+                    &activity,
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&service_name)],
+                )
+                .and_then(|v| v.l())
+            {
+                Ok(o) if !o.is_null() => o,
+                _ => {
+                    let _ = env.exception_clear();
+                    return Err("getSystemService(power) failed or returned null".to_string());
+                }
+            };
 
-        // pm.getCurrentThermalStatus() — API 29+
-        let status = match env
-            .call_method(&pm, "getCurrentThermalStatus", "()I", &[])
-            .and_then(|v| v.i())
-        {
-            Ok(s) => s,
-            Err(_) => {
-                let _ = env.exception_clear();
-                return -1;
-            }
-        };
+            // pm.getCurrentThermalStatus() — API 29+
+            let status = match env
+                .call_method(&pm, "getCurrentThermalStatus", "()I", &[])
+                .and_then(|v| v.i())
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = env.exception_clear();
+                    return Err("getCurrentThermalStatus() failed".to_string());
+                }
+            };
 
-        log::trace!("query_thermal_status_via_jni: status={}", status);
-        status
+            log::trace!("query_thermal_status_via_jni: status={}", status);
+            Ok(status)
+        })
+        .unwrap_or(-1)
     }
 
     /// Preferred wgpu backend.

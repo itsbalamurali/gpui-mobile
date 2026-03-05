@@ -9,26 +9,22 @@ const TYPE_MAGNETIC_FIELD: i32 = 2;
 const TYPE_PRESSURE: i32 = 6;
 
 pub fn available_sensors() -> SensorAvailability {
-    let mut env = match jni_helpers::obtain_env() {
-        Ok(e) => e,
-        Err(_) => return SensorAvailability::default(),
-    };
-    let activity = match jni_helpers::activity() {
-        Ok(a) => a,
-        Err(_) => return SensorAvailability::default(),
-    };
+    jni_helpers::with_env(|env| {
+        let activity = jni_helpers::activity()?;
 
-    let sm = match get_sensor_manager(&mut env, &activity) {
-        Some(sm) => sm,
-        None => return SensorAvailability::default(),
-    };
+        let sm = match get_sensor_manager(env, &activity) {
+            Some(sm) => sm,
+            None => return Ok(SensorAvailability::default()),
+        };
 
-    SensorAvailability {
-        accelerometer: has_sensor(&mut env, &sm, TYPE_ACCELEROMETER),
-        gyroscope: has_sensor(&mut env, &sm, TYPE_GYROSCOPE),
-        magnetometer: has_sensor(&mut env, &sm, TYPE_MAGNETIC_FIELD),
-        barometer: has_sensor(&mut env, &sm, TYPE_PRESSURE),
-    }
+        Ok(SensorAvailability {
+            accelerometer: has_sensor(env, &sm, TYPE_ACCELEROMETER),
+            gyroscope: has_sensor(env, &sm, TYPE_GYROSCOPE),
+            magnetometer: has_sensor(env, &sm, TYPE_MAGNETIC_FIELD),
+            barometer: has_sensor(env, &sm, TYPE_PRESSURE),
+        })
+    })
+    .unwrap_or_default()
 }
 
 pub fn accelerometer() -> Option<SensorData> {
@@ -53,7 +49,7 @@ pub fn barometer() -> Option<BarometerData> {
 }
 
 fn get_sensor_manager<'local>(
-    env: &mut jni::JNIEnv<'local>,
+    env: &mut jni::Env<'local>,
     activity: &jni::objects::JObject<'_>,
 ) -> Option<jni::objects::JObject<'local>> {
     let service_name = env.new_string("sensor").ok()?;
@@ -75,7 +71,7 @@ fn get_sensor_manager<'local>(
 }
 
 fn has_sensor(
-    env: &mut jni::JNIEnv<'_>,
+    env: &mut jni::Env<'_>,
     sm: &jni::objects::JObject<'_>,
     sensor_type: i32,
 ) -> bool {

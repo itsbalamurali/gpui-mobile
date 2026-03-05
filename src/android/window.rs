@@ -1653,105 +1653,116 @@ impl PlatformWindow for AndroidPlatformWindow {
         use crate::android::jni as jni_helpers;
         use jni::objects::JValue;
 
-        let mut env = match jni_helpers::obtain_env() {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        let activity = match jni_helpers::activity() {
-            Ok(a) => a,
-            Err(_) => return,
-        };
-
-        // 1. Get InputMethodManager
-        let service_name = match env.new_string("input_method") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let imm = match env
-            .call_method(
-                &activity,
-                "getSystemService",
-                "(Ljava/lang/String;)Ljava/lang/Object;",
-                &[JValue::Object(&service_name)],
-            )
-            .and_then(|v| v.l())
-        {
-            Ok(o) if !o.is_null() => o,
-            _ => { let _ = env.exception_clear(); return; }
-        };
-
-        // 2. Build CursorAnchorInfo
-        let builder = match env.new_object(
-            "android/view/inputmethod/CursorAnchorInfo$Builder",
-            "()V",
-            &[],
-        ) {
-            Ok(b) => b,
-            Err(_) => { let _ = env.exception_clear(); return; }
-        };
-
         let x: f32 = bounds.origin.x.into();
         let y: f32 = bounds.origin.y.into();
         let h: f32 = bounds.size.height.into();
 
-        let _ = env.call_method(
-            &builder,
-            "setInsertionMarkerLocation",
-            "(FFFFI)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
-            &[
-                JValue::Float(x),
-                JValue::Float(y),
-                JValue::Float(y + h * 0.8),
-                JValue::Float(y + h),
-                JValue::Int(0),
-            ],
-        );
-        let _ = env.exception_clear();
+        let _ = jni_helpers::with_env(|env| {
+            let activity = jni_helpers::activity()?;
 
-        let anchor_info = match env
-            .call_method(
+            // 1. Get InputMethodManager
+            let service_name = env
+                .new_string("input_method")
+                .map_err(|e| e.to_string())?;
+            let imm = env
+                .call_method(
+                    &activity,
+                    "getSystemService",
+                    "(Ljava/lang/String;)Ljava/lang/Object;",
+                    &[JValue::Object(&service_name)],
+                )
+                .and_then(|v| v.l())
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+            if imm.is_null() {
+                return Err("getSystemService returned null".to_string());
+            }
+
+            // 2. Build CursorAnchorInfo
+            let builder = env
+                .new_object(
+                    "android/view/inputmethod/CursorAnchorInfo$Builder",
+                    "()V",
+                    &[],
+                )
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+
+            let _ = env.call_method(
                 &builder,
-                "build",
-                "()Landroid/view/inputmethod/CursorAnchorInfo;",
-                &[],
-            )
-            .and_then(|v| v.l())
-        {
-            Ok(o) if !o.is_null() => o,
-            _ => { let _ = env.exception_clear(); return; }
-        };
+                "setInsertionMarkerLocation",
+                "(FFFFI)Landroid/view/inputmethod/CursorAnchorInfo$Builder;",
+                &[
+                    JValue::Float(x),
+                    JValue::Float(y),
+                    JValue::Float(y + h * 0.8),
+                    JValue::Float(y + h),
+                    JValue::Int(0),
+                ],
+            );
+            let _ = env.exception_clear();
 
-        // 3. Get decor view: activity.getWindow().getDecorView()
-        let window = match env
-            .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
-            .and_then(|v| v.l())
-        {
-            Ok(o) if !o.is_null() => o,
-            _ => { let _ = env.exception_clear(); return; }
-        };
-        let decor_view = match env
-            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
-            .and_then(|v| v.l())
-        {
-            Ok(o) if !o.is_null() => o,
-            _ => { let _ = env.exception_clear(); return; }
-        };
+            let anchor_info = env
+                .call_method(
+                    &builder,
+                    "build",
+                    "()Landroid/view/inputmethod/CursorAnchorInfo;",
+                    &[],
+                )
+                .and_then(|v| v.l())
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+            if anchor_info.is_null() {
+                return Err("CursorAnchorInfo.build() returned null".to_string());
+            }
 
-        // 4. imm.updateCursorAnchorInfo(view, info)
-        let _ = env.call_method(
-            &imm,
-            "updateCursorAnchorInfo",
-            "(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V",
-            &[JValue::Object(&decor_view), JValue::Object(&anchor_info)],
-        );
-        let _ = env.exception_clear();
+            // 3. Get decor view: activity.getWindow().getDecorView()
+            let window = env
+                .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
+                .and_then(|v| v.l())
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+            if window.is_null() {
+                return Err("getWindow() returned null".to_string());
+            }
 
-        log::trace!(
-            "update_ime_position: x={:.0} y={:.0} h={:.0}",
-            f32::from(bounds.origin.x),
-            f32::from(bounds.origin.y),
-            f32::from(bounds.size.height)
-        );
+            let decor_view = env
+                .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+                .and_then(|v| v.l())
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+            if decor_view.is_null() {
+                return Err("getDecorView() returned null".to_string());
+            }
+
+            // 4. imm.updateCursorAnchorInfo(view, info)
+            let _ = env.call_method(
+                &imm,
+                "updateCursorAnchorInfo",
+                "(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V",
+                &[JValue::Object(&decor_view), JValue::Object(&anchor_info)],
+            );
+            let _ = env.exception_clear();
+
+            log::trace!(
+                "update_ime_position: x={:.0} y={:.0} h={:.0}",
+                x,
+                y,
+                h
+            );
+
+            Ok(())
+        });
     }
 }
 

@@ -9,25 +9,29 @@ impl AndroidSharedPreferences {
     }
 
     pub fn get_string(&self, key: &str) -> Option<String> {
-        let mut env = jni_helpers::obtain_env().ok()?;
-        let prefs = get_default_prefs(&mut env)?;
+        let key = key.to_owned();
+        jni_helpers::with_env(|env| {
+            let prefs = get_default_prefs(env).ok_or_else(|| "Failed to get prefs".to_string())?;
 
-        let jkey = env.new_string(key).ok()?;
-        let result = env
-            .call_method(
-                &prefs,
-                "getString",
-                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-                &[JValue::Object(&jkey), JValue::Object(&JObject::null())],
-            )
-            .and_then(|v| v.l())
-            .ok()?;
+            let jkey = env.new_string(&key).map_err(|e| e.to_string())?;
+            let result = env
+                .call_method(
+                    &prefs,
+                    "getString",
+                    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                    &[JValue::Object(&jkey), JValue::Object(&JObject::null())],
+                )
+                .and_then(|v| v.l())
+                .map_err(|e| e.to_string())?;
 
-        if result.is_null() {
-            None
-        } else {
-            Some(get_string(&mut env, &result))
-        }
+            if result.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(get_string(env, &result)))
+            }
+        })
+        .ok()
+        .flatten()
     }
 
     pub fn set_string(&self, key: &str, value: &str) -> Result<(), String> {
@@ -45,21 +49,26 @@ impl AndroidSharedPreferences {
     }
 
     pub fn get_int(&self, key: &str) -> Option<i64> {
-        let mut env = jni_helpers::obtain_env().ok()?;
-        let prefs = get_default_prefs(&mut env)?;
+        let key = key.to_owned();
+        jni_helpers::with_env(|env| {
+            let prefs = get_default_prefs(env).ok_or_else(|| "Failed to get prefs".to_string())?;
 
-        if !self.contains_key_jni(&mut env, &prefs, key) {
-            return None;
-        }
-        let jkey = env.new_string(key).ok()?;
-        env.call_method(
-            &prefs,
-            "getLong",
-            "(Ljava/lang/String;J)J",
-            &[JValue::Object(&jkey), JValue::Long(0)],
-        )
-        .and_then(|v| v.j())
+            if !self.contains_key_jni(env, &prefs, &key) {
+                return Ok(None);
+            }
+            let jkey = env.new_string(&key).map_err(|e| e.to_string())?;
+            let val = env.call_method(
+                &prefs,
+                "getLong",
+                "(Ljava/lang/String;J)J",
+                &[JValue::Object(&jkey), JValue::Long(0)],
+            )
+            .and_then(|v| v.j())
+            .map_err(|e| e.to_string())?;
+            Ok(Some(val))
+        })
         .ok()
+        .flatten()
     }
 
     pub fn set_int(&self, key: &str, value: i64) -> Result<(), String> {
@@ -76,21 +85,26 @@ impl AndroidSharedPreferences {
     }
 
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        let mut env = jni_helpers::obtain_env().ok()?;
-        let prefs = get_default_prefs(&mut env)?;
+        let key = key.to_owned();
+        jni_helpers::with_env(|env| {
+            let prefs = get_default_prefs(env).ok_or_else(|| "Failed to get prefs".to_string())?;
 
-        if !self.contains_key_jni(&mut env, &prefs, key) {
-            return None;
-        }
-        let jkey = env.new_string(key).ok()?;
-        env.call_method(
-            &prefs,
-            "getBoolean",
-            "(Ljava/lang/String;Z)Z",
-            &[JValue::Object(&jkey), JValue::Bool(0)],
-        )
-        .and_then(|v| v.z())
+            if !self.contains_key_jni(env, &prefs, &key) {
+                return Ok(None);
+            }
+            let jkey = env.new_string(&key).map_err(|e| e.to_string())?;
+            let val = env.call_method(
+                &prefs,
+                "getBoolean",
+                "(Ljava/lang/String;Z)Z",
+                &[JValue::Object(&jkey), JValue::Bool(0)],
+            )
+            .and_then(|v| v.z())
+            .map_err(|e| e.to_string())?;
+            Ok(Some(val))
+        })
         .ok()
+        .flatten()
     }
 
     pub fn set_bool(&self, key: &str, value: bool) -> Result<(), String> {
@@ -132,20 +146,17 @@ impl AndroidSharedPreferences {
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        let mut env = match jni_helpers::obtain_env() {
-            Ok(e) => e,
-            Err(_) => return false,
-        };
-        let prefs = match get_default_prefs(&mut env) {
-            Some(p) => p,
-            None => return false,
-        };
-        self.contains_key_jni(&mut env, &prefs, key)
+        let key = key.to_owned();
+        jni_helpers::with_env(|env| {
+            let prefs = get_default_prefs(env).ok_or_else(|| "Failed to get prefs".to_string())?;
+            Ok(self.contains_key_jni(env, &prefs, &key))
+        })
+        .unwrap_or(false)
     }
 
     fn contains_key_jni(
         &self,
-        env: &mut jni::JNIEnv<'_>,
+        env: &mut jni::Env<'_>,
         prefs: &JObject<'_>,
         key: &str,
     ) -> bool {
@@ -166,7 +177,7 @@ impl AndroidSharedPreferences {
 
 /// Get default SharedPreferences via PreferenceManager.
 fn get_default_prefs<'local>(
-    env: &mut jni::JNIEnv<'local>,
+    env: &mut jni::Env<'local>,
 ) -> Option<JObject<'local>> {
     let activity = jni_helpers::activity().ok()?;
     let prefs = env
@@ -183,28 +194,29 @@ fn get_default_prefs<'local>(
 
 /// Get an editor, run the callback, then commit.
 fn with_editor(
-    f: impl FnOnce(&mut jni::JNIEnv<'_>, &JObject<'_>) -> Result<(), String>,
+    f: impl FnOnce(&mut jni::Env<'_>, &JObject<'_>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut env = jni_helpers::obtain_env()?;
-    let prefs = get_default_prefs(&mut env)
-        .ok_or_else(|| "Failed to get SharedPreferences".to_string())?;
+    jni_helpers::with_env(|env| {
+        let prefs = get_default_prefs(env)
+            .ok_or_else(|| "Failed to get SharedPreferences".to_string())?;
 
-    let editor = env
-        .call_method(
-            &prefs,
-            "edit",
-            "()Landroid/content/SharedPreferences$Editor;",
-            &[],
-        )
-        .and_then(|v| v.l())
-        .e()?;
-    if editor.is_null() {
-        return Err("edit() returned null".into());
-    }
+        let editor = env
+            .call_method(
+                &prefs,
+                "edit",
+                "()Landroid/content/SharedPreferences$Editor;",
+                &[],
+            )
+            .and_then(|v| v.l())
+            .e()?;
+        if editor.is_null() {
+            return Err("edit() returned null".into());
+        }
 
-    f(&mut env, &editor)?;
+        f(env, &editor)?;
 
-    // Commit
-    let _ = env.call_method(&editor, "commit", "()Z", &[]);
-    Ok(())
+        // Commit
+        let _ = env.call_method(&editor, "commit", "()Z", &[]);
+        Ok(())
+    })
 }

@@ -34,115 +34,110 @@ pub fn battery_state() -> BatteryState {
 }
 
 pub fn is_battery_save_mode() -> bool {
-    let mut env = match jni_helpers::obtain_env() {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    let activity = match jni_helpers::activity() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
+    jni_helpers::with_env(|env| {
+        let activity = jni_helpers::activity()?;
 
-    // PowerManager pm = (PowerManager) context.getSystemService("power");
-    let service_name = match env.new_string("power") {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let pm = match env
-        .call_method(
-            &activity,
-            "getSystemService",
-            "(Ljava/lang/String;)Ljava/lang/Object;",
-            &[JValue::Object(&service_name)],
-        )
-        .and_then(|v| v.l())
-    {
-        Ok(o) if !o.is_null() => o,
-        _ => {
-            let _ = env.exception_clear();
-            return false;
-        }
-    };
+        // PowerManager pm = (PowerManager) context.getSystemService("power");
+        let service_name = env.new_string("power").map_err(|e| e.to_string())?;
+        let pm = match env
+            .call_method(
+                &activity,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[JValue::Object(&service_name)],
+            )
+            .and_then(|v| v.l())
+        {
+            Ok(o) if !o.is_null() => o,
+            _ => {
+                let _ = env.exception_clear();
+                return Ok(false);
+            }
+        };
 
-    // pm.isPowerSaveMode()
-    match env
-        .call_method(&pm, "isPowerSaveMode", "()Z", &[])
-        .and_then(|v| v.z())
-    {
-        Ok(v) => v,
-        Err(_) => {
-            let _ = env.exception_clear();
-            false
+        // pm.isPowerSaveMode()
+        match env
+            .call_method(&pm, "isPowerSaveMode", "()Z", &[])
+            .and_then(|v| v.z())
+        {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                let _ = env.exception_clear();
+                Ok(false)
+            }
         }
-    }
+    })
+    .unwrap_or(false)
 }
 
 /// Read battery info from the sticky ACTION_BATTERY_CHANGED broadcast.
 ///
 /// Returns `(level, scale, status)` or None on failure.
 fn read_battery_sticky() -> Option<(i32, i32, i32)> {
-    let mut env = jni_helpers::obtain_env().ok()?;
-    let activity = jni_helpers::activity().ok()?;
+    jni_helpers::with_env(|env| {
+        let activity = jni_helpers::activity()?;
 
-    // IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-    let action = env.new_string("android.intent.action.BATTERY_CHANGED").ok()?;
-    let filter = env
-        .new_object(
-            "android/content/IntentFilter",
-            "(Ljava/lang/String;)V",
-            &[JValue::Object(&action)],
-        )
-        .ok()?;
+        // IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        let action = env.new_string("android.intent.action.BATTERY_CHANGED").map_err(|e| e.to_string())?;
+        let filter = env
+            .new_object(
+                "android/content/IntentFilter",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&action)],
+            )
+            .map_err(|e| e.to_string())?;
 
-    // Intent batteryStatus = context.registerReceiver(null, filter);
-    let battery_intent = env
-        .call_method(
-            &activity,
-            "registerReceiver",
-            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
-            &[JValue::Object(&jni::objects::JObject::null()), JValue::Object(&filter)],
-        )
-        .and_then(|v| v.l())
-        .ok()?;
-    if battery_intent.is_null() {
-        return None;
-    }
+        // Intent batteryStatus = context.registerReceiver(null, filter);
+        let battery_intent = env
+            .call_method(
+                &activity,
+                "registerReceiver",
+                "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
+                &[JValue::Object(&jni::objects::JObject::null()), JValue::Object(&filter)],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| e.to_string())?;
+        if battery_intent.is_null() {
+            return Err("battery intent is null".into());
+        }
 
-    // int level = intent.getIntExtra("level", -1);
-    let key_level = env.new_string("level").ok()?;
-    let level = env
-        .call_method(
-            &battery_intent,
-            "getIntExtra",
-            "(Ljava/lang/String;I)I",
-            &[JValue::Object(&key_level), JValue::Int(-1)],
-        )
-        .and_then(|v| v.i())
-        .ok()?;
+        // int level = intent.getIntExtra("level", -1);
+        let key_level = env.new_string("level").map_err(|e| e.to_string())?;
+        let level = env
+            .call_method(
+                &battery_intent,
+                "getIntExtra",
+                "(Ljava/lang/String;I)I",
+                &[JValue::Object(&key_level), JValue::Int(-1)],
+            )
+            .and_then(|v| v.i())
+            .map_err(|e| e.to_string())?;
 
-    // int scale = intent.getIntExtra("scale", -1);
-    let key_scale = env.new_string("scale").ok()?;
-    let scale = env
-        .call_method(
-            &battery_intent,
-            "getIntExtra",
-            "(Ljava/lang/String;I)I",
-            &[JValue::Object(&key_scale), JValue::Int(-1)],
-        )
-        .and_then(|v| v.i())
-        .ok()?;
+        // int scale = intent.getIntExtra("scale", -1);
+        let key_scale = env.new_string("scale").map_err(|e| e.to_string())?;
+        let scale = env
+            .call_method(
+                &battery_intent,
+                "getIntExtra",
+                "(Ljava/lang/String;I)I",
+                &[JValue::Object(&key_scale), JValue::Int(-1)],
+            )
+            .and_then(|v| v.i())
+            .map_err(|e| e.to_string())?;
 
-    // int status = intent.getIntExtra("status", -1);
-    let key_status = env.new_string("status").ok()?;
-    let status = env
-        .call_method(
-            &battery_intent,
-            "getIntExtra",
-            "(Ljava/lang/String;I)I",
-            &[JValue::Object(&key_status), JValue::Int(-1)],
-        )
-        .and_then(|v| v.i())
-        .ok()?;
+        // int status = intent.getIntExtra("status", -1);
+        let key_status = env.new_string("status").map_err(|e| e.to_string())?;
+        let status = env
+            .call_method(
+                &battery_intent,
+                "getIntExtra",
+                "(Ljava/lang/String;I)I",
+                &[JValue::Object(&key_status), JValue::Int(-1)],
+            )
+            .and_then(|v| v.i())
+            .map_err(|e| e.to_string())?;
 
-    Some((level, scale, status))
+        Ok(Some((level, scale, status)))
+    })
+    .unwrap_or(None)
 }

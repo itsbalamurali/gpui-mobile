@@ -49,7 +49,7 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 use super::platform::{AndroidPlatform, SharedPlatform};
 
 use jni::objects::{JObject, JString, JValue};
-use jni::{JNIEnv, JavaVM};
+use jni::JavaVM;
 
 // ── JNI helpers (safe `jni` crate wrappers) ──────────────────────────────────
 
@@ -65,16 +65,32 @@ fn java_vm_safe() -> Result<&'static JavaVM, String> {
         return Err("JavaVM not available".into());
     }
     Ok(JAVA_VM.get_or_init(|| unsafe {
-        JavaVM::from_raw(ptr as *mut jni::sys::JavaVM).expect("Invalid JavaVM pointer")
+        JavaVM::from_raw(ptr as *mut jni::sys::JavaVM)
     }))
 }
 
-/// Attach the current thread to the JVM and return a `JNIEnv`.
+/// Run a closure with an attached `jni::Env` for the current thread.
 ///
-/// The returned [`jni::AttachGuard`] auto-detaches the thread when dropped.
-pub fn obtain_env() -> Result<jni::AttachGuard<'static>, String> {
+/// In jni 0.22 the `attach_current_thread` API is closure-based.
+/// The thread is auto-detached when the closure returns (if it was
+/// not already attached).
+pub fn with_env<T>(f: impl FnOnce(&mut jni::Env) -> Result<T, String>) -> Result<T, String> {
     let vm = java_vm_safe()?;
-    vm.attach_current_thread().map_err(|e| e.to_string())
+    let mut result: Option<Result<T, String>> = None;
+    vm.attach_current_thread(|env: &mut jni::Env| -> Result<(), jni::errors::Error> {
+        result = Some(f(env));
+        Ok(())
+    })
+    .map_err(|e: jni::errors::Error| e.to_string())?;
+    result.unwrap()
+}
+
+/// Convenience alias: kept so existing callers that import `obtain_env`
+/// compile with minimal changes. Returns a result by running the given
+/// closure inside `with_env`.
+#[inline]
+pub fn obtain_env<T>(f: impl FnOnce(&mut jni::Env) -> Result<T, String>) -> Result<T, String> {
+    with_env(f)
 }
 
 /// Get the Activity as a [`JObject`].
@@ -93,7 +109,7 @@ pub fn activity() -> Result<JObject<'static>, String> {
 /// Convert a Java String (`JObject` wrapping a `java.lang.String`) to a Rust `String`.
 ///
 /// Returns an empty string on null or error.
-pub fn get_string(env: &mut JNIEnv<'_>, obj: &JObject<'_>) -> String {
+pub fn get_string(env: &mut jni::Env<'_>, obj: &JObject<'_>) -> String {
     if obj.is_null() {
         return String::new();
     }
@@ -105,8 +121,6 @@ pub fn get_string(env: &mut JNIEnv<'_>, obj: &JObject<'_>) -> String {
             String::new()
         }
     };
-    // Prevent JString from interfering with the raw jobject lifetime.
-    // JString has no Drop, but we explicitly forget for clarity.
     std::mem::forget(jstr);
     result
 }
@@ -139,31 +153,30 @@ static PLATFORM: OnceLock<Arc<AndroidPlatform>> = OnceLock::new();
 /// This creates a `android.view.KeyEvent` Java object and calls
 /// `getUnicodeChar(metaState)` on it.  Returns 0 on failure.
 pub fn unicode_char_for_key_event(key_code: i32, action: i32, meta_state: i32) -> u32 {
-    let mut env = match obtain_env() {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-    let key_event = match env.new_object(
-        "android/view/KeyEvent",
-        "(II)V",
-        &[JValue::Int(action), JValue::Int(key_code)],
-    ) {
-        Ok(o) => o,
-        Err(_) => {
-            let _ = env.exception_clear();
-            return 0;
+    with_env(|env| {
+        let key_event = match env.new_object(
+            "android/view/KeyEvent",
+            "(II)V",
+            &[JValue::Int(action), JValue::Int(key_code)],
+        ) {
+            Ok(o) => o,
+            Err(_) => {
+                let _ = env.exception_clear();
+                return Ok(0);
+            }
+        };
+        match env.call_method(&key_event, "getUnicodeChar", "(I)I", &[JValue::Int(meta_state)]) {
+            Ok(v) => {
+                let c = v.i().unwrap_or(0);
+                Ok(if c > 0 { c as u32 } else { 0 })
+            }
+            Err(_) => {
+                let _ = env.exception_clear();
+                Ok(0)
+            }
         }
-    };
-    match env.call_method(&key_event, "getUnicodeChar", "(I)I", &[JValue::Int(meta_state)]) {
-        Ok(v) => {
-            let c = v.i().unwrap_or(0);
-            if c > 0 { c as u32 } else { 0 }
-        }
-        Err(_) => {
-            let _ = env.exception_clear();
-            0
-        }
-    }
+    })
+    .unwrap_or(0)
 }
 
 // ── public accessors ──────────────────────────────────────────────────────────
