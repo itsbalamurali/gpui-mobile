@@ -1,6 +1,6 @@
 use super::*;
 use crate::android::jni::{self as jni_helpers, JniExt};
-use jni::objects::JValue;
+use jni::objects::{JObject, JValue};
 
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiCamera";
 
@@ -29,13 +29,13 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             return Ok(vec![]);
         }
 
-        let arr = jni::objects::JObjectArray::from(result);
-        let len = env.get_array_length(&arr).e()? as usize;
+        let arr = unsafe { jni::objects::JObjectArray::<JObject>::from_raw(env, result.as_raw()) };
+        let len = arr.len(env).e()?;
         let mut cameras = Vec::with_capacity(len);
 
         for i in 0..len {
-            let obj = env.get_object_array_element(&arr, i as i32).e()?;
-            let entry: String = env.get_string(&obj.into()).e()?.into();
+            let obj: JObject = arr.get_element(env, i).e()?;
+            let entry = jni_helpers::get_string(env, &obj);
             // Parse "id|facing|orientation"
             let parts: Vec<&str> = entry.split('|').collect();
             if parts.len() >= 3 {
@@ -55,6 +55,7 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             }
         }
 
+        std::mem::forget(arr);
         Ok(cameras)
     })
 }
@@ -160,7 +161,7 @@ pub fn take_picture(handle: &CameraHandle) -> Result<CapturedImage, String> {
             return Err("Failed to capture photo".into());
         }
 
-        let entry: String = env.get_string(&result.into()).e()?.into();
+        let entry = jni_helpers::get_string(env, &result);
         let parts: Vec<&str> = entry.split('|').collect();
         if parts.len() >= 3 {
             Ok(CapturedImage {
@@ -218,7 +219,7 @@ pub fn stop_video_recording(handle: &CameraHandle) -> Result<RecordedVideo, Stri
             return Err("Failed to stop video recording".into());
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         Ok(RecordedVideo { path })
     })
 }

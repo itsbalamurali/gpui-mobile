@@ -129,7 +129,7 @@ pub fn request_permissions(permissions: &[Permission]) -> Result<Vec<(Permission
                 .collect());
         }
 
-        let result_str: String = env.get_string(&result.into()).e()?.into();
+        let result_str = jni_helpers::get_string(env, &result);
         let statuses: Vec<i32> = result_str
             .split('|')
             .filter_map(|s| s.parse().ok())

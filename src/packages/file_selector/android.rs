@@ -1,6 +1,6 @@
 use super::{OpenFileOptions, SaveFileOptions, SelectedFile};
 use crate::android::jni::{self as jni_helpers, JniExt};
-use jni::objects::JValue;
+use jni::objects::{JObject, JValue};
 
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiFilePicker";
 
@@ -31,7 +31,7 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             return Ok(None);
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         Ok(Some(SelectedFile { path, name }))
     })
@@ -64,15 +64,16 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
             return Ok(vec![]);
         }
 
-        let arr = jni::objects::JObjectArray::from(result);
-        let len = env.get_array_length(&arr).e()? as usize;
+        let arr = unsafe { jni::objects::JObjectArray::<JObject>::from_raw(env, result.as_raw()) };
+        let len = arr.len(env).e()?;
         let mut files = Vec::with_capacity(len);
         for i in 0..len {
-            let obj = env.get_object_array_element(&arr, i as i32).e()?;
-            let path: String = env.get_string(&obj.into()).e()?.into();
+            let obj: JObject = arr.get_element(env, i).e()?;
+            let path = jni_helpers::get_string(env, &obj);
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             files.push(SelectedFile { path, name });
         }
+        std::mem::forget(arr);
         Ok(files)
     })
 }
@@ -111,7 +112,7 @@ pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String
             return Ok(None);
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         Ok(Some(path))
     })
 }
@@ -140,7 +141,7 @@ pub fn get_directory_path(_initial_directory: Option<&str>) -> Result<Option<Str
             return Ok(None);
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         Ok(Some(path))
     })
 }
@@ -154,7 +155,6 @@ fn build_mime_string(options: &OpenFileOptions) -> String {
         if !group.mime_types.is_empty() {
             mimes.extend(group.mime_types.iter().cloned());
         } else if !group.extensions.is_empty() {
-            // Map common extensions to MIME types
             for ext in &group.extensions {
                 mimes.push(extension_to_mime(ext));
             }

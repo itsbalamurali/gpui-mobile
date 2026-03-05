@@ -516,7 +516,6 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
         .child(section_header("Camera", sub_text))
         .child({
             let camera_status = router.camera_status.as_deref().unwrap_or("Idle");
-            let previewing = router.camera_previewing;
             let recording = router.camera_recording;
             let has_handle = router.camera_handle.is_some();
 

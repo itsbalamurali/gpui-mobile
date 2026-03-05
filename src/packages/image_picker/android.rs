@@ -1,6 +1,6 @@
 use super::{CameraDevice, ImagePickerOptions, ImageSource, PickedFile};
 use crate::android::jni::{self as jni_helpers, JniExt};
-use jni::objects::JValue;
+use jni::objects::{JObject, JValue};
 
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiImagePicker";
 
@@ -41,7 +41,7 @@ pub fn pick_image(options: &ImagePickerOptions) -> Result<Option<PickedFile>, St
             return Ok(None);
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         Ok(Some(PickedFile { path, name }))
     })
@@ -75,15 +75,16 @@ pub fn pick_multi_image(
             return Ok(vec![]);
         }
 
-        let arr = jni::objects::JObjectArray::from(result);
-        let len = env.get_array_length(&arr).e()? as usize;
+        let arr = unsafe { jni::objects::JObjectArray::<JObject>::from_raw(env, result.as_raw()) };
+        let len = arr.len(env).e()?;
         let mut files = Vec::with_capacity(len);
         for i in 0..len {
-            let obj = env.get_object_array_element(&arr, i as i32).e()?;
-            let path: String = env.get_string(&obj.into()).e()?.into();
+            let obj: JObject = arr.get_element(env, i).e()?;
+            let path = jni_helpers::get_string(env, &obj);
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             files.push(PickedFile { path, name });
         }
+        std::mem::forget(arr);
         Ok(files)
     })
 }
@@ -128,7 +129,7 @@ pub fn pick_video(
             return Ok(None);
         }
 
-        let path: String = env.get_string(&result.into()).e()?.into();
+        let path = jni_helpers::get_string(env, &result);
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         Ok(Some(PickedFile { path, name }))
     })

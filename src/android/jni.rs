@@ -143,13 +143,7 @@ pub fn get_string(env: &mut jni::Env<'_>, obj: &JObject<'_>) -> String {
         return String::new();
     }
     let jstr = unsafe { JString::from_raw(env, obj.as_raw()) };
-    let result = match env.get_string(&jstr) {
-        Ok(s) => s.into(),
-        Err(_) => {
-            let _ = env.exception_clear();
-            String::new()
-        }
-    };
+    let result = jstr.to_string();
     std::mem::forget(jstr);
     result
 }
@@ -325,8 +319,6 @@ pub struct ANativeWindow {
 }
 
 unsafe extern "C" {
-    fn ANativeWindow_acquire(window: *mut ANativeWindow);
-    fn ANativeWindow_release(window: *mut ANativeWindow);
     fn ANativeWindow_getWidth(window: *mut ANativeWindow) -> i32;
     fn ANativeWindow_getHeight(window: *mut ANativeWindow) -> i32;
 }
@@ -775,7 +767,7 @@ pub fn run_event_loop(app: &AndroidApp) {
 }
 
 /// Handle a single `MainEvent` from `android-activity`.
-fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
+fn handle_main_event(_app: &AndroidApp, event: MainEvent<'_>) {
     match event {
         MainEvent::InitWindow { .. } => {
             log::info!("MainEvent::InitWindow");
