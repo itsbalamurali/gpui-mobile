@@ -80,7 +80,7 @@ ndk-sys     = "0.6"
 android-activity = { version = "0.6", features = ["native-activity"] }
 
 # Logging to logcat
-android_logger = "0.13"
+android_logger = "0.15"
 
 # gpui_wgpu — local fork from Zed repo with Android surface replacement support
 gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
