@@ -40,9 +40,15 @@
 
 use std::{
     ffi::c_void,
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}},
     time::Duration,
 };
+
+/// Whether the deferred init-window callback has already been invoked.
+///
+/// Reset to `false` on `TerminateWindow` so that when the surface is
+/// recreated on resume the init callbacks run again.
+static INIT_WINDOW_DONE: AtomicBool = AtomicBool::new(false);
 
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
@@ -431,7 +437,7 @@ pub fn run_event_loop(app: &AndroidApp) {
     // Instead we check each loop iteration: if a primary window exists and
     // the callback is still pending, invoke it *after* poll_events has
     // returned so focus/input events have already been drained.
-    let mut init_window_done = false;
+    INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
     let mut iteration: u64 = 0;
     let mut last_heartbeat = std::time::Instant::now();
     let mut app_is_active = false;
@@ -445,7 +451,7 @@ pub fn run_event_loop(app: &AndroidApp) {
             log::info!(
                 "run_event_loop: heartbeat — iteration={}, init_done={}",
                 iteration,
-                init_window_done,
+                INIT_WINDOW_DONE.load(Ordering::Relaxed),
             );
             last_heartbeat = now;
         }
@@ -528,7 +534,7 @@ pub fn run_event_loop(app: &AndroidApp) {
         //    extra work when the window becomes available.
         //
         // Both are invoked at most once.
-        if !init_window_done {
+        if !INIT_WINDOW_DONE.load(Ordering::Relaxed) {
             if let Some(platform) = PLATFORM.get() {
                 if platform.primary_window().is_some() {
                     // 1. Invoke the GPUI finish-launching callback first.
@@ -561,7 +567,7 @@ pub fn run_event_loop(app: &AndroidApp) {
                         );
                     }
 
-                    init_window_done = true;
+                    INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
 
                     // Force an immediate first frame render right now,
                     // rather than waiting for the next loop iteration
@@ -594,7 +600,7 @@ pub fn run_event_loop(app: &AndroidApp) {
         // by GPUI internals) so they don't pile up until the next
         // looper wake.
         //
-        // IMPORTANT: Only drive rendering AFTER `init_window_done`.
+        // IMPORTANT: Only drive rendering AFTER `INIT_WINDOW_DONE`.
         // Before that point the GPUI view hierarchy hasn't been set up
         // (finish_launching hasn't run yet), so calling request_frame()
         // would render an empty scene and present a blank/transparent
@@ -610,9 +616,9 @@ pub fn run_event_loop(app: &AndroidApp) {
             platform.flush_main_thread_tasks();
 
             // Only drive rendering when:
-            // 1. init_window_done — GPUI callbacks are wired up
+            // 1. INIT_WINDOW_DONE — GPUI callbacks are wired up
             // 2. app_is_active — surface is valid (not backgrounded)
-            if init_window_done && app_is_active {
+            if INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active {
                 if let Some(win) = platform.primary_window() {
                     let frame_start = std::time::Instant::now();
                     win.request_frame();
@@ -672,38 +678,68 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
                         .unwrap_or(1.0);
 
                     let win_ptr = raw_ptr as *mut crate::android::window::ANativeWindow;
-                    match unsafe { platform.open_window(win_ptr, scale_factor, false) } {
-                        Ok(win) => {
-                            log::info!(
-                                "window opened — id={:#x} scale={:.1}",
-                                win.id(),
-                                scale_factor
-                            );
 
-                            // Query the content rect to compute safe area insets.
-                            // content_rect excludes system bars (status bar, nav bar).
-                            let cr = app.content_rect();
-                            log::info!(
-                                "content_rect: left={} top={} right={} bottom={} (window={}×{})",
-                                cr.left,
-                                cr.top,
-                                cr.right,
-                                cr.bottom,
-                                width,
-                                height,
-                            );
-                            win.update_safe_area_from_content_rect(
-                                cr.left, cr.top, cr.right, cr.bottom,
-                            );
-
-                            // NOTE: The callback is NOT invoked here — it
-                            // runs in run_event_loop after poll_events returns
-                            // so the system's FocusEvent is consumed first
-                            // (avoids ANR).
-                            log::info!("InitWindow: window ready, callback deferred to event loop");
+                    // If the logical window already exists (i.e. we're
+                    // returning from background), reinit its surface
+                    // instead of creating a brand-new window.  This
+                    // preserves all GPUI callbacks (on_request_frame,
+                    // touch, key, etc.) that were registered during the
+                    // initial open_window / finish_launching sequence.
+                    if let Some(existing) = platform.primary_window() {
+                        let mut gpu_ctx = platform.take_gpu_context();
+                        match unsafe { existing.init_window(win_ptr, &mut gpu_ctx) } {
+                            Ok(()) => {
+                                platform.return_gpu_context(gpu_ctx);
+                                log::info!(
+                                    "InitWindow: reinitialised existing window id={:#x}",
+                                    existing.id(),
+                                );
+                            }
+                            Err(e) => {
+                                platform.return_gpu_context(gpu_ctx);
+                                log::error!("failed to reinit window surface: {e:#}");
+                            }
                         }
-                        Err(e) => {
-                            log::error!("failed to open window: {e:#}");
+
+                        // Update safe area insets.
+                        let cr = app.content_rect();
+                        existing.update_safe_area_from_content_rect(
+                            cr.left, cr.top, cr.right, cr.bottom,
+                        );
+
+                        // Mark init done so the event loop resumes
+                        // rendering immediately (the GPUI callbacks are
+                        // already wired up from the first launch).
+                        INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
+                    } else {
+                        // First launch — create a new window.
+                        match unsafe { platform.open_window(win_ptr, scale_factor, false) } {
+                            Ok(win) => {
+                                log::info!(
+                                    "window opened — id={:#x} scale={:.1}",
+                                    win.id(),
+                                    scale_factor
+                                );
+
+                                let cr = app.content_rect();
+                                log::info!(
+                                    "content_rect: left={} top={} right={} bottom={} (window={}×{})",
+                                    cr.left,
+                                    cr.top,
+                                    cr.right,
+                                    cr.bottom,
+                                    width,
+                                    height,
+                                );
+                                win.update_safe_area_from_content_rect(
+                                    cr.left, cr.top, cr.right, cr.bottom,
+                                );
+
+                                log::info!("InitWindow: window ready, callback deferred to event loop");
+                            }
+                            Err(e) => {
+                                log::error!("failed to open window: {e:#}");
+                            }
                         }
                     }
                 }
@@ -713,10 +749,19 @@ fn handle_main_event(app: &AndroidApp, event: MainEvent<'_>) {
         MainEvent::TerminateWindow { .. } => {
             log::info!("MainEvent::TerminateWindow");
 
+            // Reset so that the deferred-init block in run_event_loop
+            // fires again when the window surface is recreated on resume.
+            INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
+
             if let Some(platform) = PLATFORM.get() {
                 if let Some(win) = platform.primary_window() {
+                    // Only tear down the surface — do NOT call
+                    // platform.close_window().  Closing the logical window
+                    // destroys all GPUI callbacks (on_request_frame, touch,
+                    // etc.).  When the surface is recreated on resume,
+                    // InitWindow would create a brand-new window with no
+                    // callbacks, causing the app to freeze.
                     win.term_window();
-                    platform.close_window(win.id());
                 }
             }
         }
@@ -1027,34 +1072,30 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
 // ── software keyboard (IME) control ───────────────────────────────────────────
 
 /// Show the software keyboard on Android with a specific keyboard type.
+/// Show the software keyboard on Android.
 ///
-/// Uses `AndroidApp::show_soft_input()` from the `android-activity` crate.
-pub fn show_keyboard_android(keyboard_type: crate::KeyboardType) {
-    let _ = keyboard_type; // TODO: map keyboard type to InputType flags
-    let app = match android_app() {
-        Some(app) => app,
-        None => {
-            log::warn!("show_keyboard_android: no AndroidApp");
-            return;
-        }
-    };
-    app.show_soft_input(true); // show_implicit = true
-    log::info!("show_keyboard_android: keyboard shown (via android-activity)");
+/// Uses the NDK `ANativeActivity_showSoftInput` via `android-activity`.
+/// The previous EditText/JNI approach silently failed with
+/// `CalledFromWrongThreadException` because all JNI View operations
+/// must run on the Android UI thread, not the native Rust thread.
+/// The NDK function handles the UI-thread dispatch internally.
+///
+/// Text input arrives via `KeyEvent`s through `process_input_events()`.
+pub fn show_keyboard_android(_keyboard_type: crate::KeyboardType) {
+    if let Some(app) = android_app() {
+        log::info!("show_keyboard_android: using NDK show_soft_input");
+        app.show_soft_input(false);
+    }
 }
 
 /// Hide the software keyboard on Android.
 ///
-/// Uses `AndroidApp::hide_soft_input()` from the `android-activity` crate.
+/// Uses the NDK `ANativeActivity_hideSoftInput` via `android-activity`.
 pub fn hide_keyboard_android() {
-    let app = match android_app() {
-        Some(app) => app,
-        None => {
-            log::warn!("hide_keyboard_android: no AndroidApp");
-            return;
-        }
-    };
-    app.hide_soft_input(false); // hide_implicit_only = false
-    log::info!("hide_keyboard_android: keyboard hidden (via android-activity)");
+    if let Some(app) = android_app() {
+        log::info!("hide_keyboard_android: using NDK hide_soft_input");
+        app.hide_soft_input(false);
+    }
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

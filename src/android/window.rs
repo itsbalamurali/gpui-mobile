@@ -413,10 +413,12 @@ impl AndroidWindow {
 
         state.is_active = false;
 
-        // Fire the close callback.
-        if let Some(cb) = state.close_callback.take() {
-            cb();
-        }
+        // NOTE: We intentionally do NOT fire the close callback here.
+        // On Android, term_window means the surface is being destroyed
+        // (e.g. the app is going to the background), but the logical
+        // window and all its GPUI callbacks should stay alive so that
+        // when the surface is recreated on resume, rendering resumes
+        // seamlessly via init_window().
     }
 
     /// Called when `APP_CMD_WINDOW_RESIZED` fires.

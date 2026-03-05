@@ -5,21 +5,9 @@ We implement the basic packages used in the apps in the `src/packages` module (e
 
 eg: src/packages/connectivity/mod.rs,android/,ios/ etc., we can have a common interface in mod.rs and platform-specific implementations in android/ and ios/ folders. The mod.rs file can use conditional compilation to include the appropriate platform-specific implementation based on the target platform.
 Create todos for each package implementation, and track progress in the `TODO.md` file.
-**Tier 1 — Core Utilities (foundational, used by almost every app)**
 
  
-6. https://pub.dev/packages/flutter_inappwebview with https://crates.io/crates/wry for webview support https://raw.githubusercontent.com/longbridge/gpui-component/refs/heads/main/crates/webview/src/lib.rs
-1. https://pub.dev/packages/url_launcher
-2. https://pub.dev/packages/shared_preferences
-3. https://pub.dev/packages/path_provider
-4. https://pub.dev/packages/package_info_plus
-5. https://pub.dev/packages/device_info_plus
-6. https://pub.dev/packages/connectivity_plus
-7. https://pub.dev/packages/network_info_plus
-16. https://pub.dev/packages/flutter_vibrate
-
 **Tier 2 — Networking & Location (critical for connected/location-aware apps)**
-
 
 8. https://pub.dev/packages/geolocator
 9. https://pub.dev/packages/location
@@ -27,14 +15,9 @@ Create todos for each package implementation, and track progress in the `TODO.md
 **Tier 3 — User-Facing Features (notifications, sharing, media)**
 
 10. https://pub.dev/packages/flutter_local_notifications
-11. https://pub.dev/packages/share_plus
 12. https://pub.dev/packages/video_player
 13. https://pub.dev/packages/just_audio
 
-**Tier 4 — Device Hardware & Sensors**
-
-14. https://pub.dev/packages/sensors_plus
-15. https://pub.dev/packages/battery_plus
 
 **Tier 5 — Platform-Specific & UI Helpers**
 

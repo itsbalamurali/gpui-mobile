@@ -605,6 +605,22 @@ impl AndroidPlatform {
         self.state.lock().windows.len()
     }
 
+    /// Take the shared GPU context out of the platform state.
+    ///
+    /// Used when reinitialising an existing window's surface — the window's
+    /// `init_window` needs a `&mut Option<WgpuContext>` to potentially reuse
+    /// or create the GPU context.
+    pub fn take_gpu_context(&self) -> Option<WgpuContext> {
+        self.state.lock().gpu_context.take()
+    }
+
+    /// Return the GPU context to the platform state after reinit.
+    pub fn return_gpu_context(&self, ctx: Option<WgpuContext>) {
+        if ctx.is_some() {
+            self.state.lock().gpu_context = ctx;
+        }
+    }
+
     // ── display management ────────────────────────────────────────────────────
 
     /// Returns all connected displays.

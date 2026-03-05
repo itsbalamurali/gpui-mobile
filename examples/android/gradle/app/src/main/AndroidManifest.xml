@@ -78,6 +78,7 @@
             android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:theme="@style/GpuiTheme"
+            android:windowSoftInputMode="adjustResize"
         >
 
             <!-- The native library name WITHOUT the "lib" prefix and ".so" suffix.
