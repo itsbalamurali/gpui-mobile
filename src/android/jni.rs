@@ -762,9 +762,8 @@ pub fn run_event_loop(app: &AndroidApp) {
             }
         }
 
-        // Yield CPU briefly to avoid starving system threads.
-        // 1ms is enough to prevent ANR while keeping input latency low.
-        std::thread::sleep(Duration::from_millis(1));
+        // Yield CPU to avoid starving system threads and causing ANR.
+        std::thread::sleep(Duration::from_millis(2));
     }
 
     log::info!("run_event_loop: exiting main loop");
