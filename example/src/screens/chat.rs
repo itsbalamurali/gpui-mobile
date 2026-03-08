@@ -403,6 +403,7 @@ fn render_bubble_interactive(
     dark: bool,
     show_picker: bool,
     extra_reactions: &[String],
+    swipe: Option<(f32, &str)>, // (offset, timestamp)
     cx: &mut gpui::Context<Router>,
 ) -> impl IntoElement {
     let bubble_color = if msg.is_me {
@@ -428,8 +429,6 @@ fn render_bubble_interactive(
             div()
                 .w(px(max_width))
                 .h(px(180.0))
-                .rounded(px(18.0))
-                .overflow_hidden()
                 .bg(rgb(msg.image_color))
                 .flex()
                 .items_center()
@@ -466,32 +465,74 @@ fn render_bubble_interactive(
     bubble = bubble.on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-            if this.chat_reaction_picker == Some(idx) {
-                this.chat_reaction_picker = None;
-            } else {
-                this.chat_reaction_picker = Some(idx);
+            // Only toggle if not swiping
+            if this.chat_swipe_offset.abs() < 5.0 {
+                if this.chat_reaction_picker == Some(idx) {
+                    this.chat_reaction_picker = None;
+                } else {
+                    this.chat_reaction_picker = Some(idx);
+                }
+                cx.notify();
             }
-            cx.notify();
         }),
     );
 
     // Wrapper
-    let mut row = div().flex().flex_col().w_full();
+    let mut outer = div().flex().flex_col().w_full();
     if msg.is_me {
-        row = row.items_end();
+        outer = outer.items_end();
     } else {
-        row = row.items_start();
+        outer = outer.items_start();
     }
 
     // Reaction picker (above the bubble)
     if show_picker {
-        row = row.child(render_reaction_picker(idx, msg.is_me, dark, cx));
+        outer = outer.child(render_reaction_picker(idx, msg.is_me, dark, cx));
     }
 
-    row = row.child(bubble);
+    // Swipe row: timestamp + bubble (or bubble + timestamp)
+    if let Some((offset, ts)) = swipe {
+        let ts_opacity = (offset.abs() - 15.0).max(0.0) / 40.0;
+        let ts_opacity = ts_opacity.min(1.0);
+
+        let mut swipe_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(6.0));
+
+        if msg.is_me {
+            // Sent: timestamp appears on the left when swiped left (offset < 0)
+            swipe_row = swipe_row
+                .justify_end()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(TIMESTAMP_COLOR))
+                        .opacity(ts_opacity)
+                        .child(ts.to_string()),
+                )
+                .child(bubble);
+        } else {
+            // Received: timestamp appears on the right when swiped right (offset > 0)
+            swipe_row = swipe_row
+                .child(bubble)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(TIMESTAMP_COLOR))
+                        .opacity(ts_opacity)
+                        .child(ts.to_string()),
+                );
+        }
+        outer = outer.child(swipe_row);
+    } else {
+        outer = outer.child(bubble);
+    }
 
     // Reactions display
-    row = row.child(render_reactions_row(
+    outer = outer.child(render_reactions_row(
         msg.reactions,
         extra_reactions,
         msg.is_me,
@@ -505,7 +546,7 @@ fn render_bubble_interactive(
             MessageStatus::Read => "Read",
             MessageStatus::None => "",
         };
-        row = row.child(
+        outer = outer.child(
             div()
                 .flex()
                 .w_full()
@@ -520,7 +561,7 @@ fn render_bubble_interactive(
         );
     }
 
-    row
+    outer
 }
 
 // ── Interactive sent bubble (user-composed messages) ────────────────────────
@@ -531,50 +572,70 @@ fn render_sent_bubble_interactive(
     dark: bool,
     show_picker: bool,
     extra_reactions: &[String],
+    swipe: Option<f32>,
     cx: &mut gpui::Context<Router>,
 ) -> impl IntoElement {
-    let mut row = div().flex().flex_col().w_full().items_end();
+    let mut outer = div().flex().flex_col().w_full().items_end();
 
     if show_picker {
-        row = row.child(render_reaction_picker(idx, true, dark, cx));
+        outer = outer.child(render_reaction_picker(idx, true, dark, cx));
     }
 
-    row = row.child(
-        div()
-            .id(format!("sent-msg-{idx}"))
-            .max_w(px(280.0))
-            .rounded(px(18.0))
-            .bg(rgb(IMESSAGE_BLUE))
-            .px(px(14.0))
-            .py(px(8.0))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xFFFFFF))
-                    .child(text.to_string()),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+    let bubble = div()
+        .id(format!("sent-msg-{idx}"))
+        .max_w(px(280.0))
+        .rounded(px(18.0))
+        .bg(rgb(IMESSAGE_BLUE))
+        .px(px(14.0))
+        .py(px(8.0))
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xFFFFFF))
+                .child(text.to_string()),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
+                if this.chat_swipe_offset.abs() < 5.0 {
                     if this.chat_reaction_picker == Some(idx) {
                         this.chat_reaction_picker = None;
                     } else {
                         this.chat_reaction_picker = Some(idx);
                     }
                     cx.notify();
-                }),
-            ),
-    );
+                }
+            }),
+        );
 
-    // Reactions
-    row = row.child(render_reactions_row(
-        &[],
-        extra_reactions,
-        true,
-        dark,
-    ));
+    // Swipe to reveal timestamp
+    if let Some(offset) = swipe {
+        let ts_opacity = (offset.abs() - 15.0).max(0.0) / 40.0;
+        let ts_opacity = ts_opacity.min(1.0);
 
-    row = row.child(
+        let swipe_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(6.0))
+            .justify_end()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(TIMESTAMP_COLOR))
+                    .opacity(ts_opacity)
+                    .child("Now"),
+            )
+            .child(bubble);
+        outer = outer.child(swipe_row);
+    } else {
+        outer = outer.child(bubble);
+    }
+
+    outer = outer.child(render_reactions_row(&[], extra_reactions, true, dark));
+
+    outer = outer.child(
         div()
             .flex()
             .w_full()
@@ -588,7 +649,7 @@ fn render_sent_bubble_interactive(
             ),
     );
 
-    row
+    outer
 }
 
 // ── Reaction picker bar ─────────────────────────────────────────────────────
@@ -751,8 +812,8 @@ fn render_composer(
         .flex_row()
         .items_end()
         .gap_2()
-        .px_3()
-        .py_2()
+        .px(px(16.0))
+        .py(px(8.0))
         .bg(rgb(composer_bg))
         .border_t_1()
         .border_color(rgb(if dark { 0x38383A } else { 0xC6C6C8 }))
