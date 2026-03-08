@@ -100,6 +100,45 @@ unsafe extern "C" {
     fn ANativeWindow_getHeight(window: *mut ANativeWindow) -> i32;
 }
 
+/// Request 120 Hz refresh rate from the native window.
+///
+/// Uses `ANativeWindow_setFrameRate` (API 30+), loaded via `dlsym` so this
+/// is a no-op on older Android versions.
+unsafe fn request_high_frame_rate(window: *mut ANativeWindow) {
+    use std::ffi::c_void;
+
+    type SetFrameRateFn = unsafe extern "C" fn(*mut ANativeWindow, f32, i32) -> i32;
+
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+    }
+
+    /// Pseudo-handle: search all loaded shared objects.
+    const RTLD_DEFAULT: *mut c_void = std::ptr::null_mut();
+
+    static FN_PTR: std::sync::OnceLock<Option<SetFrameRateFn>> = std::sync::OnceLock::new();
+    let func = FN_PTR.get_or_init(|| {
+        let name = c"ANativeWindow_setFrameRate";
+        let ptr = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr().cast()) };
+        if ptr.is_null() {
+            log::info!("ANativeWindow_setFrameRate not available (pre-API 30)");
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<*mut c_void, SetFrameRateFn>(ptr) })
+        }
+    });
+
+    if let Some(set_frame_rate) = func {
+        // compatibility = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT (0)
+        let result = unsafe { set_frame_rate(window, 120.0, 0) };
+        if result == 0 {
+            log::info!("Requested 120 Hz frame rate");
+        } else {
+            log::warn!("ANativeWindow_setFrameRate returned {result}");
+        }
+    }
+}
+
 // ── callback type aliases ─────────────────────────────────────────────────────
 
 /// Called once per VSync tick to produce the next `Scene`.
@@ -269,6 +308,9 @@ impl AndroidWindow {
         // Acquire our own reference.
         unsafe { ANativeWindow_acquire(native_window) };
 
+        // Request 120 Hz refresh rate (no-op on API < 30).
+        unsafe { request_high_frame_rate(native_window) };
+
         let width = unsafe { ANativeWindow_getWidth(native_window) };
         let height = unsafe { ANativeWindow_getHeight(native_window) };
 
@@ -361,6 +403,9 @@ impl AndroidWindow {
         anyhow::ensure!(!native_window.is_null(), "ANativeWindow must not be null");
 
         unsafe { ANativeWindow_acquire(native_window) };
+
+        // Re-request 120 Hz after surface recreation.
+        unsafe { request_high_frame_rate(native_window) };
 
         let width = unsafe { ANativeWindow_getWidth(native_window) };
         let height = unsafe { ANativeWindow_getHeight(native_window) };

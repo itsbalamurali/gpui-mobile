@@ -39,43 +39,30 @@ use std::time::Instant;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/// Friction coefficient per second.  Higher = stops faster.
-/// iOS UIScrollView uses ≈0.998 per-millisecond which works out to roughly
-/// e^(−3.0·t) in continuous time.  We use a similar value tuned so that a
-/// moderate flick (~1500 px/s) scrolls about 3–4 screen-lengths before
-/// stopping — matching native feel on both iOS and Android.
-/// Deceleration rate per millisecond.  Android's native `OverScroller` uses
-/// a ViewConfiguration-derived friction that corresponds to roughly 0.985
-/// per ms in continuous time.  iOS `UIScrollView` with its default
-/// `decelerationRate = .normal` (0.998) is slightly floatier but still
-/// much snappier than our previous 0.997.
+/// Deceleration rate per millisecond.  iOS `UIScrollView` uses
+/// `decelerationRate = .normal` which is 0.998 per ms.  This gives a
+/// moderate fling (~2000 px/s) about 2–3 seconds of travel before
+/// stopping — matching the native feel users expect.
 ///
-/// **0.985** gives a moderate-fast fling (~2000 px/s) about 1.5–2 screen
-/// lengths of travel before stopping — close to native Android feel.
-/// The previous value of 0.997 was far too close to 1.0 (barely any
-/// friction), making scrolls feel floaty and laggy.
-const DECELERATION_RATE: f32 = 0.985;
+/// At 60fps (dt=16.6ms): decay = 0.998^16.6 = 0.967 → 3.3% loss/frame.
+/// A 2000px/s fling runs for ~130 frames (~2.2 seconds).
+const DECELERATION_RATE: f32 = 0.998;
 
 /// Below this velocity (px/s) we consider the fling finished.
-/// Raised from 20 → 50 to cut the long, barely-visible tail of the
-/// deceleration curve that made scrolling feel like it "stuck" at the end.
-const MIN_VELOCITY: f32 = 50.0;
+const MIN_VELOCITY: f32 = 30.0;
 
-/// Maximum velocity (px/s) we allow.  Caps extremely fast flings so they
-/// don't overshoot wildly.
-const MAX_VELOCITY: f32 = 8000.0;
+/// Maximum velocity (px/s) we allow.  A fast swipe on modern phones
+/// can easily reach 12000+ px/s.
+const MAX_VELOCITY: f32 = 16000.0;
 
 /// Maximum number of recent touch samples kept for velocity estimation.
 const MAX_SAMPLES: usize = 20;
 
-/// Only samples within this time window (seconds) are used for velocity
-/// estimation.  Older samples are ignored so that a slow-then-fast gesture
-/// correctly captures the fast release velocity.
-///
-/// Widened from 100 ms → 150 ms to capture slightly more of the gesture
-/// for smoother velocity estimation, especially on devices where touch
-/// events may be batched or delayed under load.
-const VELOCITY_WINDOW_SECS: f64 = 0.15; // 150 ms
+/// Only samples within the most recent N milliseconds are used for
+/// velocity estimation.  A shorter window (100ms) captures just the
+/// fast release portion of the gesture, preventing a slow start from
+/// diluting the fling velocity.
+const VELOCITY_WINDOW_SECS: f64 = 0.10; // 100 ms
 
 /// Minimum number of samples needed to compute a meaningful velocity.
 const MIN_SAMPLES_FOR_VELOCITY: usize = 2;
@@ -126,8 +113,9 @@ impl VelocityTracker {
 
     /// Compute the release velocity in logical px/s.
     ///
-    /// Uses a least-squares fit over recent samples within
-    /// [`VELOCITY_WINDOW_SECS`] to produce a smooth estimate.
+    /// Uses a weighted least-squares fit over recent samples within
+    /// [`VELOCITY_WINDOW_SECS`] to produce a smooth estimate that
+    /// emphasizes the most recent (fastest) portion of the gesture.
     /// Returns `(vx, vy)`.
     pub fn velocity(&self) -> (f32, f32) {
         let now = Instant::now();
@@ -150,7 +138,12 @@ impl VelocityTracker {
         // Sort by time ascending.
         recent.sort_by(|a, b| a.time.cmp(&b.time));
 
-        // Simple finite-difference: use oldest and newest in the window.
+        // Use weighted regression for 3+ samples, simple difference for 2.
+        if recent.len() >= 3 {
+            let (wvx, wvy) = weighted_velocity(&recent);
+            return (clamp_velocity(wvx), clamp_velocity(wvy));
+        }
+
         let first = recent[0];
         let last = recent[recent.len() - 1];
         let dt = last.time.duration_since(first.time).as_secs_f64();
@@ -161,13 +154,6 @@ impl VelocityTracker {
 
         let vx = ((last.x - first.x) as f64 / dt) as f32;
         let vy = ((last.y - first.y) as f64 / dt) as f32;
-
-        // For a more robust estimate with many samples, do a weighted
-        // linear regression giving more weight to recent samples.
-        if recent.len() >= 4 {
-            let (wvx, wvy) = weighted_velocity(&recent);
-            return (clamp_velocity(wvx), clamp_velocity(wvy));
-        }
 
         (clamp_velocity(vx), clamp_velocity(vy))
     }
@@ -180,7 +166,9 @@ impl VelocityTracker {
     }
 }
 
-/// Weighted least-squares velocity: more recent samples have higher weight.
+/// Weighted least-squares velocity: exponentially increasing weight toward
+/// recent samples so the release velocity reflects the *end* of the gesture,
+/// not the slow start.
 fn weighted_velocity(samples: &[&Sample]) -> (f32, f32) {
     if samples.len() < 2 {
         return (0.0, 0.0);
@@ -189,8 +177,8 @@ fn weighted_velocity(samples: &[&Sample]) -> (f32, f32) {
     let t0 = samples[0].time;
     let n = samples.len();
 
-    // Weight increases linearly with index so that the most recent samples
-    // dominate.  This prevents a slow start from dragging down a fast finish.
+    // Exponential weight: w = e^(2 * i / n).  The most recent sample gets
+    // ~7x the weight of the oldest, strongly biasing toward the fast release.
     let mut sum_w = 0.0_f64;
     let mut sum_wt = 0.0_f64;
     let mut sum_wt2 = 0.0_f64;
@@ -201,7 +189,7 @@ fn weighted_velocity(samples: &[&Sample]) -> (f32, f32) {
 
     for (i, s) in samples.iter().enumerate() {
         let t = s.time.duration_since(t0).as_secs_f64();
-        let w = (i + 1) as f64; // linearly increasing weight
+        let w = (2.0 * i as f64 / n as f64).exp();
 
         sum_w += w;
         sum_wt += w * t;
@@ -214,7 +202,6 @@ fn weighted_velocity(samples: &[&Sample]) -> (f32, f32) {
 
     let denom = sum_w * sum_wt2 - sum_wt * sum_wt;
     if denom.abs() < 1e-12 {
-        // Degenerate — all samples at the same time.
         let first = samples[0];
         let last = samples[n - 1];
         let dt = last.time.duration_since(first.time).as_secs_f64();
@@ -227,7 +214,6 @@ fn weighted_velocity(samples: &[&Sample]) -> (f32, f32) {
         );
     }
 
-    // Slope of weighted linear fit = velocity in px/s.
     let vx = (sum_w * sum_wtx - sum_wt * sum_wx) / denom;
     let vy = (sum_w * sum_wty - sum_wt * sum_wy) / denom;
 
@@ -303,9 +289,9 @@ impl MomentumScroller {
         self.last_time = now;
 
         // Guard against huge dt (e.g. app was suspended or a GC pause).
-        // Cap at 50ms (~20 fps) instead of 100ms — if we've been stalled
-        // that long the user probably noticed; don't teleport the content.
-        let dt = dt.min(0.05);
+        // Cap at 33ms (~30 fps) — enough for variable frame rates but
+        // prevents teleporting content after long stalls.
+        let dt = dt.min(0.033);
 
         if dt < 1e-6 {
             return None;
@@ -475,14 +461,8 @@ mod tests {
         assert!(scroller.is_active());
 
         // Run for several "frames" (sleeping ~16ms each to simulate 60fps).
-        // Because thread::sleep is imprecise, individual frame deltas can
-        // jitter (a longer sleep → larger dt → bigger displacement even
-        // though velocity is lower).  Instead of checking strict per-frame
-        // monotonicity we verify:
-        //   1. All deltas are non-negative (direction preserved).
-        //   2. The first quarter's average delta > the last quarter's average
-        //      (overall deceleration).
-        //   3. The scroller eventually stops.
+        // With DECELERATION_RATE=0.998, a 2000px/s fling should run for
+        // ~130 frames (~2.2 seconds) and travel ~1000px total.
         let mut deltas = Vec::new();
         let mut total_dy = 0.0_f32;
         let mut frame_count = 0;
@@ -491,7 +471,6 @@ mod tests {
             thread::sleep(Duration::from_millis(16));
             match scroller.step() {
                 Some(delta) => {
-                    // dy should be non-negative (scrolling down).
                     assert!(delta.dy >= 0.0, "dy should be >= 0, got {}", delta.dy);
                     deltas.push(delta.dy);
                     total_dy += delta.dy;
@@ -500,14 +479,14 @@ mod tests {
                 None => break,
             }
             // Safety: don't run forever.
-            if frame_count > 600 {
+            if frame_count > 1000 {
                 break;
             }
         }
 
         assert!(!scroller.is_active());
-        assert!(total_dy > 50.0, "total_dy={total_dy} should be > 50 px");
-        assert!(frame_count > 5, "should have run for multiple frames");
+        assert!(total_dy > 200.0, "total_dy={total_dy} should be > 200 px");
+        assert!(frame_count > 20, "should have run for many frames, got {frame_count}");
 
         // Verify overall deceleration: the average delta in the first
         // quarter of frames should be larger than the last quarter.
