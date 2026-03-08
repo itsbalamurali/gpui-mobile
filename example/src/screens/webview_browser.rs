@@ -4,6 +4,8 @@
 //! back/reload/close buttons above the WebView area. The native WebView
 //! is offset below the GPUI toolbar using `WebViewSettings::top_offset`.
 
+use std::cell::RefCell;
+
 use gpui::{div, prelude::*, px, rgb};
 
 use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_TEXT, RED, SURFACE0, SURFACE1, TEXT};
@@ -11,13 +13,43 @@ use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_TEXT, RED, SURFACE0, SURFA
 /// Approximate height of the TopAppBar rendered by the Router (in logical pt).
 const APP_BAR_HEIGHT: f32 = 56.0;
 
+/// Thread-local state for the in-app WebView, decoupled from Router.
+#[derive(Default)]
+pub struct WebViewState {
+    pub url: String,
+    pub handle: Option<usize>,
+}
+
+thread_local! {
+    pub(crate) static WEBVIEW_STATE: RefCell<WebViewState> = RefCell::new(WebViewState::default());
+}
+
+/// Dismiss an active WebView (if any) and return whether one was dismissed.
+///
+/// Intended for use from `mod.rs` during `navigate_to` / `go_back`.
+pub fn dismiss_webview() -> bool {
+    WEBVIEW_STATE.with(|s| {
+        let mut state = s.borrow_mut();
+        if let Some(ptr) = state.handle.take() {
+            let handle = gpui_mobile::packages::webview::WebViewHandle { ptr };
+            let _ = gpui_mobile::packages::webview::dismiss(handle);
+            true
+        } else {
+            false
+        }
+    })
+}
+
 pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
     let dark = router.dark_mode;
     let text_color = if dark { TEXT } else { LIGHT_TEXT };
     let card_bg = if dark { SURFACE0 } else { LIGHT_CARD_BG };
     let toolbar_bg = if dark { SURFACE1 } else { 0xDADAE0 };
-    let has_webview = router.webview_handle.is_some();
-    let url_display = router.webview_url.clone();
+
+    let (has_webview, url_display) = WEBVIEW_STATE.with(|s| {
+        let state = s.borrow();
+        (state.handle.is_some(), state.url.clone())
+    });
 
     if has_webview {
         // ── Active WebView: show compact toolbar with back/reload/close ──
@@ -39,12 +71,15 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     .child(toolbar_btn(
                         "←",
                         text_color,
-                        cx.listener(|this, _, _, cx| {
-                            if let Some(ptr) = this.webview_handle {
-                                let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                                let _ = gpui_mobile::packages::webview::go_back(&h);
-                                std::mem::forget(h);
-                            }
+                        cx.listener(|_this, _, _, cx| {
+                            WEBVIEW_STATE.with(|s| {
+                                let state = s.borrow();
+                                if let Some(ptr) = state.handle {
+                                    let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
+                                    let _ = gpui_mobile::packages::webview::go_back(&h);
+                                    std::mem::forget(h);
+                                }
+                            });
                             cx.notify();
                         }),
                     ))
@@ -52,12 +87,15 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     .child(toolbar_btn(
                         "↻",
                         text_color,
-                        cx.listener(|this, _, _, cx| {
-                            if let Some(ptr) = this.webview_handle {
-                                let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                                let _ = gpui_mobile::packages::webview::reload(&h);
-                                std::mem::forget(h);
-                            }
+                        cx.listener(|_this, _, _, cx| {
+                            WEBVIEW_STATE.with(|s| {
+                                let state = s.borrow();
+                                if let Some(ptr) = state.handle {
+                                    let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
+                                    let _ = gpui_mobile::packages::webview::reload(&h);
+                                    std::mem::forget(h);
+                                }
+                            });
                             cx.notify();
                         }),
                     ))
@@ -81,11 +119,14 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     .child(toolbar_btn(
                         "X",
                         RED,
-                        cx.listener(|this, _, _, cx| {
-                            if let Some(ptr) = this.webview_handle.take() {
-                                let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                                let _ = gpui_mobile::packages::webview::dismiss(h);
-                            }
+                        cx.listener(|_this, _, _, cx| {
+                            WEBVIEW_STATE.with(|s| {
+                                let mut state = s.borrow_mut();
+                                if let Some(ptr) = state.handle.take() {
+                                    let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
+                                    let _ = gpui_mobile::packages::webview::dismiss(h);
+                                }
+                            });
                             cx.notify();
                         }),
                     )),
@@ -149,8 +190,11 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                             let html = r#"<html><body style="background:#1e1f25;color:#e2e2e9;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;flex-direction:column"><h1>GPUI WebView</h1><p>Custom HTML loaded successfully</p><button onclick="document.body.style.background='#4285F4'" style="padding:12px 24px;font-size:16px;border:none;border-radius:8px;background:#34A853;color:white;margin-top:16px">Change Color</button></body></html>"#;
                             match gpui_mobile::packages::webview::load_html(html, &settings) {
                                 Ok(handle) => {
-                                    this.webview_url = "about:blank".into();
-                                    this.webview_handle = Some(handle.ptr);
+                                    WEBVIEW_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.url = "about:blank".into();
+                                        state.handle = Some(handle.ptr);
+                                    });
                                     std::mem::forget(handle);
                                 }
                                 Err(e) => log::error!("WebView HTML error: {e}"),
@@ -222,18 +266,24 @@ fn open_url_btn(
         )
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
+            cx.listener(move |_this, _, _, cx| {
                 // Dismiss existing
-                if let Some(ptr) = this.webview_handle.take() {
-                    let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                    let _ = gpui_mobile::packages::webview::dismiss(h);
-                }
+                WEBVIEW_STATE.with(|s| {
+                    let mut state = s.borrow_mut();
+                    if let Some(ptr) = state.handle.take() {
+                        let h = gpui_mobile::packages::webview::WebViewHandle { ptr };
+                        let _ = gpui_mobile::packages::webview::dismiss(h);
+                    }
+                });
                 let mut settings = gpui_mobile::packages::webview::WebViewSettings::default();
                 settings.top_offset = top_offset;
                 match gpui_mobile::packages::webview::load_url(url, &settings) {
                     Ok(handle) => {
-                        this.webview_url = url.into();
-                        this.webview_handle = Some(handle.ptr);
+                        WEBVIEW_STATE.with(|s| {
+                            let mut state = s.borrow_mut();
+                            state.url = url.into();
+                            state.handle = Some(handle.ptr);
+                        });
                         std::mem::forget(handle);
                         log::info!("WebView: loaded {url}");
                     }

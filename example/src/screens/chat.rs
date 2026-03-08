@@ -183,45 +183,72 @@ const MESSAGES: &[ChatMessage] = &[
     },
 ];
 
-// ── Thread-local state for chat text input ──────────────────────────────────
+// ── Thread-local chat state ─────────────────────────────────────────────────
+
+/// All mutable state for the chat screen, stored in a thread-local.
+#[derive(Default)]
+pub struct ChatState {
+    pub compose_text: String,
+    pub sent_messages: Vec<String>,
+    pub focused: bool,
+    pub reaction_picker: Option<usize>,
+    pub user_reactions: Vec<Vec<String>>,
+    pub mic_recording: bool,
+    pub swipe_offset: f32,
+    pub swipe_msg: Option<usize>,
+    pub swipe_start_x: Option<f32>,
+    /// Pending text chunks from the keyboard callback (replaces old CHAT_PENDING_TEXT).
+    pub pending_text: Vec<String>,
+    /// Whether the composer field was tapped (replaces old CHAT_FIELD_TAPPED).
+    pub field_tapped: bool,
+}
 
 thread_local! {
-    static CHAT_PENDING_TEXT: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static CHAT_FIELD_TAPPED: RefCell<bool> = RefCell::new(false);
+    pub(crate) static CHAT_STATE: RefCell<ChatState> = RefCell::new(ChatState::default());
+}
+
+/// Dismiss the chat keyboard and reset focus state.
+///
+/// Call this from `navigate_to` / `go_back` when leaving the Chat screen.
+pub fn dismiss_chat() {
+    CHAT_STATE.with(|s| {
+        s.borrow_mut().focused = false;
+    });
+    gpui_mobile::hide_keyboard();
+    gpui_mobile::set_text_input_callback(None);
 }
 
 fn install_chat_keyboard_callback() {
     gpui_mobile::set_text_input_callback(Some(Box::new(|text: &str| {
-        CHAT_PENDING_TEXT.with(|pending| {
-            pending.borrow_mut().push(text.to_string());
+        CHAT_STATE.with(|s| {
+            s.borrow_mut().pending_text.push(text.to_string());
         });
     })));
     gpui_mobile::TEXT_INPUT_DIRTY.store(true, std::sync::atomic::Ordering::Release);
 }
 
-fn drain_chat_pending_text(router: &mut Router) {
-    CHAT_FIELD_TAPPED.with(|tapped| {
-        let mut val = tapped.borrow_mut();
-        if *val {
-            *val = false;
-            router.chat_focused = true;
-        }
-    });
+fn drain_chat_pending_text() {
+    CHAT_STATE.with(|s| {
+        let mut state = s.borrow_mut();
 
-    CHAT_PENDING_TEXT.with(|pending| {
-        let texts: Vec<String> = pending.borrow_mut().drain(..).collect();
+        if state.field_tapped {
+            state.field_tapped = false;
+            state.focused = true;
+        }
+
+        let texts: Vec<String> = state.pending_text.drain(..).collect();
         let backspace_count = texts.iter().filter(|t| t.as_str() == "\x08").count();
 
         if backspace_count >= 6 {
-            router.chat_compose_text.clear();
+            state.compose_text.clear();
         } else {
             for text in texts {
                 match text.as_str() {
                     "\x08" => {
-                        router.chat_compose_text.pop();
+                        state.compose_text.pop();
                     }
                     other => {
-                        router.chat_compose_text.push_str(other);
+                        state.compose_text.push_str(other);
                     }
                 }
             }
@@ -231,17 +258,24 @@ fn drain_chat_pending_text(router: &mut Router) {
 
 // ── Render ──────────────────────────────────────────────────────────────────
 
-pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
-    drain_chat_pending_text(router);
+pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
+    drain_chat_pending_text();
 
     let dark = router.dark_mode;
-    let sent_messages = router.chat_sent_messages.clone();
-    let compose_text = router.chat_compose_text.clone();
-    let focused = router.chat_focused;
-    let reaction_picker_msg = router.chat_reaction_picker;
-    let user_reactions = router.chat_user_reactions.clone();
-    let recording = router.chat_mic_recording;
-    let swipe_offset = router.chat_swipe_offset;
+
+    let (sent_messages, compose_text, focused, reaction_picker_msg, user_reactions, recording, swipe_offset) =
+        CHAT_STATE.with(|s| {
+            let st = s.borrow();
+            (
+                st.sent_messages.clone(),
+                st.compose_text.clone(),
+                st.focused,
+                st.reaction_picker,
+                st.user_reactions.clone(),
+                st.mic_recording,
+                st.swipe_offset,
+            )
+        });
 
     let kb_height = gpui_mobile::keyboard_height();
     let safe_bottom = router.safe_area.bottom;
@@ -260,29 +294,42 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
                 .overflow_y_scroll()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _window, _cx| {
-                        this.chat_swipe_start_x = Some(event.position.x.as_f32());
-                        this.chat_swipe_offset = 0.0;
+                    cx.listener(|_this, event: &MouseDownEvent, _window, _cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            st.swipe_start_x = Some(event.position.x.as_f32());
+                            st.swipe_offset = 0.0;
+                        });
                     }),
                 )
                 .on_mouse_move(
-                    cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                        if let Some(start_x) = this.chat_swipe_start_x {
-                            let dx = event.position.x.as_f32() - start_x;
-                            // Only activate swipe if horizontal movement > 10px
-                            if dx.abs() > 10.0 {
-                                // Clamp to reasonable range with rubber-band
-                                this.chat_swipe_offset = dx.clamp(-80.0, 80.0);
-                                cx.notify();
+                    cx.listener(|_this, event: &MouseMoveEvent, _window, cx| {
+                        let changed = CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            if let Some(start_x) = st.swipe_start_x {
+                                let dx = event.position.x.as_f32() - start_x;
+                                // Only activate swipe if horizontal movement > 10px
+                                if dx.abs() > 10.0 {
+                                    // Clamp to reasonable range with rubber-band
+                                    st.swipe_offset = dx.clamp(-80.0, 80.0);
+                                    return true;
+                                }
                             }
+                            false
+                        });
+                        if changed {
+                            cx.notify();
                         }
                     }),
                 )
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                        this.chat_swipe_start_x = None;
-                        this.chat_swipe_offset = 0.0;
+                    cx.listener(|_this, _event: &MouseUpEvent, _window, cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            st.swipe_start_x = None;
+                            st.swipe_offset = 0.0;
+                        });
                         cx.notify();
                     }),
                 )
@@ -464,16 +511,19 @@ fn render_bubble_interactive(
     // Tap to toggle reaction picker
     bubble = bubble.on_mouse_down(
         MouseButton::Left,
-        cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-            // Only toggle if not swiping
-            if this.chat_swipe_offset.abs() < 5.0 {
-                if this.chat_reaction_picker == Some(idx) {
-                    this.chat_reaction_picker = None;
-                } else {
-                    this.chat_reaction_picker = Some(idx);
+        cx.listener(move |_this, _event: &MouseDownEvent, _window, cx| {
+            CHAT_STATE.with(|s| {
+                let mut st = s.borrow_mut();
+                // Only toggle if not swiping
+                if st.swipe_offset.abs() < 5.0 {
+                    if st.reaction_picker == Some(idx) {
+                        st.reaction_picker = None;
+                    } else {
+                        st.reaction_picker = Some(idx);
+                    }
                 }
-                cx.notify();
-            }
+            });
+            cx.notify();
         }),
     );
 
@@ -596,15 +646,18 @@ fn render_sent_bubble_interactive(
         )
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                if this.chat_swipe_offset.abs() < 5.0 {
-                    if this.chat_reaction_picker == Some(idx) {
-                        this.chat_reaction_picker = None;
-                    } else {
-                        this.chat_reaction_picker = Some(idx);
+            cx.listener(move |_this, _event: &MouseDownEvent, _window, cx| {
+                CHAT_STATE.with(|s| {
+                    let mut st = s.borrow_mut();
+                    if st.swipe_offset.abs() < 5.0 {
+                        if st.reaction_picker == Some(idx) {
+                            st.reaction_picker = None;
+                        } else {
+                            st.reaction_picker = Some(idx);
+                        }
                     }
-                    cx.notify();
-                }
+                });
+                cx.notify();
             }),
         );
 
@@ -686,25 +739,28 @@ fn render_reaction_picker(
                 .child(emoji.to_string())
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _event: &MouseDownEvent, _window, cx| {
-                        // Ensure the reactions vec is big enough
-                        let total_msgs =
-                            MESSAGES.len() + this.chat_sent_messages.len();
-                        if this.chat_user_reactions.len() < total_msgs {
-                            this.chat_user_reactions.resize(total_msgs, Vec::new());
-                        }
-                        if msg_idx < this.chat_user_reactions.len() {
-                            let reactions = &mut this.chat_user_reactions[msg_idx];
-                            // Toggle: remove if already reacted with this emoji
-                            if let Some(pos) =
-                                reactions.iter().position(|r| r == &emoji_owned)
-                            {
-                                reactions.remove(pos);
-                            } else {
-                                reactions.push(emoji_owned.clone());
+                    cx.listener(move |_this, _event: &MouseDownEvent, _window, cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            // Ensure the reactions vec is big enough
+                            let total_msgs =
+                                MESSAGES.len() + st.sent_messages.len();
+                            if st.user_reactions.len() < total_msgs {
+                                st.user_reactions.resize(total_msgs, Vec::new());
                             }
-                        }
-                        this.chat_reaction_picker = None;
+                            if msg_idx < st.user_reactions.len() {
+                                let reactions = &mut st.user_reactions[msg_idx];
+                                // Toggle: remove if already reacted with this emoji
+                                if let Some(pos) =
+                                    reactions.iter().position(|r| r == &emoji_owned)
+                                {
+                                    reactions.remove(pos);
+                                } else {
+                                    reactions.push(emoji_owned.clone());
+                                }
+                            }
+                            st.reaction_picker = None;
+                        });
                         cx.notify();
                     }),
                 ),
@@ -876,7 +932,7 @@ fn render_composer(
                 .on_mouse_down(
                     MouseButton::Left,
                     move |_event: &MouseDownEvent, _window, _cx| {
-                        CHAT_FIELD_TAPPED.with(|f| *f.borrow_mut() = true);
+                        CHAT_STATE.with(|s| s.borrow_mut().field_tapped = true);
                         install_chat_keyboard_callback();
                         gpui_mobile::show_keyboard_with_type(KeyboardType::Default);
                     },
@@ -902,12 +958,15 @@ fn render_composer(
                 )
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                        if !this.chat_compose_text.is_empty() {
-                            let text = std::mem::take(&mut this.chat_compose_text);
-                            this.chat_sent_messages.push(text);
-                            cx.notify();
-                        }
+                    cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            if !st.compose_text.is_empty() {
+                                let text = std::mem::take(&mut st.compose_text);
+                                st.sent_messages.push(text);
+                            }
+                        });
+                        cx.notify();
                     }),
                 )
                 .into_any_element()
@@ -945,31 +1004,28 @@ fn render_composer(
                 )
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                        if this.chat_mic_recording {
-                            let _ =
-                                gpui_mobile::packages::microphone::stop_recording();
-                            this.chat_mic_recording = false;
-                        } else {
-                            let path = format!(
-                                "{}/voice_{}.m4a",
-                                std::env::temp_dir().display(),
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs()
-                            );
-                            match gpui_mobile::packages::microphone::start_recording(
-                                &path,
-                            ) {
-                                Ok(_) => {
-                                    this.chat_mic_recording = true;
-                                }
-                                Err(e) => {
-                                    log::error!("Mic start error: {e}");
+                    cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            if st.mic_recording {
+                                let _ =
+                                    gpui_mobile::packages::microphone::stop_recording();
+                                st.mic_recording = false;
+                            } else {
+                                let config =
+                                    gpui_mobile::packages::microphone::RecordingConfig::default();
+                                match gpui_mobile::packages::microphone::start_recording(
+                                    &config,
+                                ) {
+                                    Ok(_) => {
+                                        st.mic_recording = true;
+                                    }
+                                    Err(e) => {
+                                        log::error!("Mic start error: {e}");
+                                    }
                                 }
                             }
-                        }
+                        });
                         cx.notify();
                     }),
                 )

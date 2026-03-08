@@ -29,7 +29,7 @@ use gpui::{
     div, point, prelude::*, px, rgb, size, Bounds, Context, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, SharedString, Window,
 };
-use gpui_mobile::components::material::{MaterialTheme, NavigationBarBuilder, TextField, TopAppBar};
+use gpui_mobile::components::material::{MaterialTheme, NavigationBarBuilder, TopAppBar};
 use gpui_mobile::{set_system_chrome, StatusBarContentStyle, SystemChromeStyle};
 
 // ── Screen enum ──────────────────────────────────────────────────────────────
@@ -149,143 +149,6 @@ pub struct Router {
     /// The shader showcase demo (lazily created when the screen is visited).
     shader_showcase: Option<ShaderShowcase>,
 
-    // ── Form demo state ─────────────────────────────────────────────────
-    pub form: FormState,
-
-    // ── Pull-to-refresh state ────────────────────────────────────────
-    /// Y coordinate where the pull gesture started (None if not pulling).
-    pub pull_start_y: Option<f32>,
-    /// Current pull distance in pixels.
-    pub pull_distance: f32,
-    /// Whether the refresh is currently active (showing spinner).
-    pub refreshing: bool,
-
-    // ── WebView browser state ────────────────────────────────────────
-    /// The URL to load in the in-app browser.
-    pub webview_url: String,
-    /// Active WebView handle (if open).
-    pub webview_handle: Option<usize>,
-
-    // ── Swiper state ─────────────────────────────────────────────────
-    /// Index of the current top card in the swiper.
-    pub swiper_index: usize,
-    /// Horizontal drag offset for the current card (pixels).
-    pub swiper_drag_x: f32,
-    /// X position where the drag gesture started (for relative tracking).
-    pub swiper_drag_start_x: Option<f32>,
-    /// Whether a drag gesture is active.
-    pub swiper_dragging: bool,
-    /// Swipe-out animation: +1.0 = liked (fly right), -1.0 = noped (fly left), 0.0 = none.
-    pub swiper_fly_direction: f32,
-    /// Monotonic counter used to generate unique animation IDs per swipe.
-    pub swiper_anim_id: u32,
-
-    // ── File/Image picker state ─────────────────────────────────────
-    /// Last picked file name (for demo display).
-    pub last_picked_file: Option<String>,
-    /// Last picked image name (for demo display).
-    pub last_picked_image: Option<String>,
-
-    // ── Camera state ─────────────────────────────────────────────────
-    /// Active camera session handle.
-    pub camera_handle: Option<usize>,
-    /// Last camera status message (for demo display).
-    pub camera_status: Option<String>,
-    /// Whether the camera preview is active.
-    pub camera_previewing: bool,
-    /// Whether video recording is active.
-    pub camera_recording: bool,
-
-    // ── Permission handler state ──────────────────────────────────
-    /// Last permission status message (for demo display).
-    pub perm_status: Option<String>,
-
-    // ── Location state ────────────────────────────────────────────
-    /// Last location result (for demo display).
-    pub location_status: Option<String>,
-
-    // ── Notifications state ───────────────────────────────────────
-    /// Last notification status (for demo display).
-    pub notif_status: Option<String>,
-    /// Notification counter for unique IDs.
-    pub notif_counter: i32,
-
-    // ── Audio state ───────────────────────────────────────────────
-    /// Last audio status (for demo display).
-    pub audio_status: Option<String>,
-
-    // ── Video player state ────────────────────────────────────────
-    /// Last video player status (for demo display).
-    pub video_status: Option<String>,
-
-    // ── Feed state ───────────────────────────────────────────────────
-    /// Which feed posts are "liked" (by index).
-    pub feed_likes: [bool; 6],
-    /// Feed pull-to-refresh: Y coordinate where drag started.
-    pub feed_pull_start_y: Option<f32>,
-    /// Feed pull-to-refresh: current pull distance in px.
-    pub feed_pull_distance: f32,
-    /// Whether the feed is currently "refreshing".
-    pub feed_refreshing: bool,
-
-    // ── Chat state ────────────────────────────────────────────────────
-    /// Text currently being composed in the chat input.
-    pub chat_compose_text: String,
-    /// Messages sent by the user during this session.
-    pub chat_sent_messages: Vec<String>,
-    /// Whether the chat composer field is focused.
-    pub chat_focused: bool,
-    /// Which message index has the reaction picker open (None = no picker).
-    pub chat_reaction_picker: Option<usize>,
-    /// User-added reactions per message index.
-    pub chat_user_reactions: Vec<Vec<String>>,
-    /// Whether the mic is currently recording.
-    pub chat_mic_recording: bool,
-    /// Horizontal swipe offset per message (for revealing timestamps).
-    /// Positive = swiped left (sent messages), negative = swiped right (received).
-    pub chat_swipe_offset: f32,
-    /// Message index currently being swiped.
-    pub chat_swipe_msg: Option<usize>,
-    /// X position where the swipe started.
-    pub chat_swipe_start_x: Option<f32>,
-}
-
-/// Mutable state backing the Material Form demo screen.
-#[derive(Debug, Clone)]
-pub struct FormState {
-    pub notifications: bool,
-    pub auto_update: bool,
-    pub account_type: u8, // 0=personal, 1=business, 2=education
-    pub interests: [bool; 4], // tech, design, science, music
-    pub skill_level: f32,
-    pub experience: f32,
-    pub terms_accepted: bool,
-    pub newsletter: bool,
-    // Text input fields (with cursor/selection state)
-    pub full_name: TextField,
-    pub email: TextField,
-    pub phone: TextField,
-    /// Which field is currently focused (None = no field focused).
-    pub focused_field: Option<u8>, // 0=name, 1=email, 2=phone
-}
-
-impl Default for FormState {
-    fn default() -> Self {
-        Self {
-            notifications: true,
-            auto_update: true,
-            account_type: 0,
-            interests: [true, false, true, false],
-            skill_level: 0.6,
-            experience: 0.3,
-            terms_accepted: false,
-            newsletter: false,
-            full_name: TextField::new("Jane Doe"),
-            email: TextField::new("jane@example.com"),
-            phone: TextField::new("+1 (555) 123-4567"),
-            focused_field: None,
-        }
-    }
 }
 
 impl Router {
@@ -309,43 +172,6 @@ impl Router {
             safe_area,
             animation_playground: None,
             shader_showcase: None,
-            form: FormState::default(),
-            pull_start_y: None,
-            pull_distance: 0.0,
-            refreshing: false,
-            webview_url: "https://google.com".into(),
-            webview_handle: None,
-            swiper_index: 0,
-            swiper_drag_x: 0.0,
-            swiper_drag_start_x: None,
-            swiper_dragging: false,
-            swiper_fly_direction: 0.0,
-            swiper_anim_id: 0,
-            last_picked_file: None,
-            last_picked_image: None,
-            camera_handle: None,
-            camera_status: None,
-            camera_previewing: false,
-            camera_recording: false,
-            perm_status: None,
-            location_status: None,
-            notif_status: None,
-            notif_counter: 0,
-            audio_status: None,
-            video_status: None,
-            feed_likes: [false; 6],
-            feed_pull_start_y: None,
-            feed_pull_distance: 0.0,
-            feed_refreshing: false,
-            chat_compose_text: String::new(),
-            chat_sent_messages: Vec::new(),
-            chat_focused: false,
-            chat_reaction_picker: None,
-            chat_user_reactions: Vec::new(),
-            chat_mic_recording: false,
-            chat_swipe_offset: 0.0,
-            chat_swipe_msg: None,
-            chat_swipe_start_x: None,
         }
     }
 
@@ -401,25 +227,11 @@ impl Router {
         if self.current_screen != screen {
             // Dismiss webview when leaving the browser screen
             if self.current_screen == Screen::WebViewBrowser {
-                if let Some(ptr) = self.webview_handle.take() {
-                    let handle = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                    let _ = gpui_mobile::packages::webview::dismiss(handle);
-                }
+                webview_browser::dismiss_webview();
             }
             // Dismiss keyboard when leaving form or chat screens
-            if self.form.focused_field.is_some() {
-                self.form.focused_field = None;
-                self.form.full_name.selection = None;
-                self.form.email.selection = None;
-                self.form.phone.selection = None;
-                gpui_mobile::hide_keyboard();
-                gpui_mobile::set_text_input_callback(None);
-            }
-            if self.chat_focused {
-                self.chat_focused = false;
-                gpui_mobile::hide_keyboard();
-                gpui_mobile::set_text_input_callback(None);
-            }
+            form::dismiss_form_keyboard();
+            chat::dismiss_chat();
             if screen.is_tab_root() {
                 // Switching to a tab-bar root screen — clear history so
                 // the back button is not shown on primary destinations.
@@ -447,20 +259,11 @@ impl Router {
         if let Some(prev) = self.history.pop() {
             // Dismiss webview when leaving browser
             if self.current_screen == Screen::WebViewBrowser {
-                if let Some(ptr) = self.webview_handle.take() {
-                    let handle = gpui_mobile::packages::webview::WebViewHandle { ptr };
-                    let _ = gpui_mobile::packages::webview::dismiss(handle);
-                }
+                webview_browser::dismiss_webview();
             }
             // Dismiss keyboard when navigating back
-            if self.form.focused_field.is_some() {
-                self.form.focused_field = None;
-                self.form.full_name.selection = None;
-                self.form.email.selection = None;
-                self.form.phone.selection = None;
-                gpui_mobile::hide_keyboard();
-                gpui_mobile::set_text_input_callback(None);
-            }
+            form::dismiss_form_keyboard();
+            chat::dismiss_chat();
             self.current_screen = prev;
             true
         } else {
@@ -622,26 +425,18 @@ impl Router {
             .flex_1()
             .overflow_y_scroll()
             // Dismiss keyboard when tapping outside text input fields.
-            // Safe to use cx.listener here because text inputs use on_tap_notify
-            // (no entity lease) so there's no double-lease conflict.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                    let mut changed = false;
-                    if this.form.focused_field.is_some() {
-                        this.form.focused_field = None;
-                        this.form.full_name.selection = None;
-                        this.form.email.selection = None;
-                        this.form.phone.selection = None;
-                        changed = true;
+                cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
+                    let form_had_focus = form::has_focused_field();
+                    let chat_had_focus = chat::CHAT_STATE.with(|s| s.borrow().focused);
+                    if form_had_focus {
+                        form::dismiss_form_keyboard();
                     }
-                    if this.chat_focused {
-                        this.chat_focused = false;
-                        changed = true;
+                    if chat_had_focus {
+                        chat::dismiss_chat();
                     }
-                    if changed {
-                        gpui_mobile::hide_keyboard();
-                        gpui_mobile::set_text_input_callback(None);
+                    if form_had_focus || chat_had_focus {
                         cx.notify();
                     }
                 }),
@@ -724,7 +519,7 @@ impl Router {
         components::render_material(self)
     }
 
-    fn render_form_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_form_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         form::render(self, cx)
     }
 
@@ -736,15 +531,15 @@ impl Router {
         webview_browser::render(self, cx)
     }
 
-    fn render_swiper_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_swiper_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         swiper::render(self, cx)
     }
 
-    fn render_feed_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_feed_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         feed::render(self, cx)
     }
 
-    fn render_chat_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
         chat::render(self, cx)
     }
 

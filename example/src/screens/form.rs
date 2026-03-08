@@ -4,14 +4,76 @@
 use gpui::{div, prelude::*, px, rgb, Context, MouseDownEvent};
 use gpui_mobile::components::material::{
     Card, Checkbox, CircularProgressIndicator, FilledButton, MaterialTheme, OutlinedButton, Radio,
-    RadioGroup, Slider, Switch, TextButton, TextInput,
+    RadioGroup, Slider, Switch, TextButton, TextInput, TextField,
 };
 use gpui_mobile::KeyboardType;
 use std::cell::RefCell;
 
 use super::Router;
 
+/// Mutable state backing the Material Form demo screen.
+#[derive(Debug, Clone)]
+pub struct FormState {
+    pub notifications: bool,
+    pub auto_update: bool,
+    pub account_type: u8, // 0=personal, 1=business, 2=education
+    pub interests: [bool; 4], // tech, design, science, music
+    pub skill_level: f32,
+    pub experience: f32,
+    pub terms_accepted: bool,
+    pub newsletter: bool,
+    // Text input fields (with cursor/selection state)
+    pub full_name: TextField,
+    pub email: TextField,
+    pub phone: TextField,
+    /// Which field is currently focused (None = no field focused).
+    pub focused_field: Option<u8>, // 0=name, 1=email, 2=phone
+}
+
+impl Default for FormState {
+    fn default() -> Self {
+        Self {
+            notifications: true,
+            auto_update: true,
+            account_type: 0,
+            interests: [true, false, true, false],
+            skill_level: 0.6,
+            experience: 0.3,
+            terms_accepted: false,
+            newsletter: false,
+            full_name: TextField::new("Jane Doe"),
+            email: TextField::new("jane@example.com"),
+            phone: TextField::new("+1 (555) 123-4567"),
+            focused_field: None,
+        }
+    }
+}
+
+/// All mutable state for the form screen, stored in a thread-local.
+pub struct FormScreenState {
+    pub form: FormState,
+    /// Y coordinate where the pull gesture started (None if not pulling).
+    pub pull_start_y: Option<f32>,
+    /// Current pull distance in pixels.
+    pub pull_distance: f32,
+    /// Whether the refresh is currently active (showing spinner).
+    pub refreshing: bool,
+}
+
+impl Default for FormScreenState {
+    fn default() -> Self {
+        Self {
+            form: FormState::default(),
+            pull_start_y: None,
+            pull_distance: 0.0,
+            refreshing: false,
+        }
+    }
+}
+
 thread_local! {
+    pub(crate) static FORM_STATE: RefCell<FormScreenState> = RefCell::new(FormScreenState::default());
+
     /// Pending text from the software keyboard, accumulated between frames.
     /// Each entry is a string fragment (or "\x08" for backspace, "\x1b[D" etc. for cursor).
     static PENDING_TEXT: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -39,26 +101,53 @@ const AVG_CHAR_WIDTH: f32 = 8.0;
 /// Approximate left padding of the text within the input field.
 const TEXT_START_X: f32 = 12.0;
 
-/// Drain pending keyboard text and apply it to the Router's focused field.
+/// Dismiss the form keyboard, clearing focus and selection state.
+///
+/// Intended for use from `mod.rs` during `navigate_to` / `go_back`.
+pub fn dismiss_form_keyboard() {
+    FORM_STATE.with(|s| {
+        let mut state = s.borrow_mut();
+        if state.form.focused_field.is_some() {
+            state.form.focused_field = None;
+            state.form.full_name.selection = None;
+            state.form.email.selection = None;
+            state.form.phone.selection = None;
+            gpui_mobile::hide_keyboard();
+            gpui_mobile::set_text_input_callback(None);
+        }
+    });
+}
+
+/// Returns true if the form currently has a focused field (for use from mod.rs).
+pub fn has_focused_field() -> bool {
+    FORM_STATE.with(|s| s.borrow().form.focused_field.is_some())
+}
+
+/// Drain pending keyboard text and apply it to the focused field.
 /// Also processes pending field-tap signals and tap-to-position.
-pub fn drain_pending_text(router: &mut Router) {
+pub fn drain_pending_text() {
     // Apply any pending field focus from on_tap_notify
     TAPPED_FIELD.with(|field| {
         if let Some(idx) = field.borrow_mut().take() {
-            router.form.focused_field = Some(idx);
+            FORM_STATE.with(|s| {
+                s.borrow_mut().form.focused_field = Some(idx);
+            });
         }
     });
 
     // Process tap position for cursor placement
     TAPPED_X.with(|x_cell| {
         if let Some(x) = x_cell.borrow_mut().take() {
-            let field = match router.form.focused_field {
-                Some(0) => &mut router.form.full_name,
-                Some(1) => &mut router.form.email,
-                Some(2) => &mut router.form.phone,
-                _ => return,
-            };
-            field.set_cursor_from_x(x, TEXT_START_X, AVG_CHAR_WIDTH);
+            FORM_STATE.with(|s| {
+                let mut state = s.borrow_mut();
+                let field = match state.form.focused_field {
+                    Some(0) => &mut state.form.full_name,
+                    Some(1) => &mut state.form.email,
+                    Some(2) => &mut state.form.phone,
+                    _ => return,
+                };
+                field.set_cursor_from_x(x, TEXT_START_X, AVG_CHAR_WIDTH);
+            });
         }
     });
 
@@ -69,49 +158,97 @@ pub fn drain_pending_text(router: &mut Router) {
         // is holding the delete key, so clear the field entirely.
         let backspace_count = texts.iter().filter(|t| t.as_str() == "\x08").count();
 
-        if backspace_count >= 6 {
-            let field = match router.form.focused_field {
-                Some(0) => &mut router.form.full_name,
-                Some(1) => &mut router.form.email,
-                Some(2) => &mut router.form.phone,
-                _ => return,
-            };
-            field.text.clear();
-            field.cursor = 0;
-            field.selection = None;
-        } else {
-            for text in texts {
-                let field = match router.form.focused_field {
-                    Some(0) => &mut router.form.full_name,
-                    Some(1) => &mut router.form.email,
-                    Some(2) => &mut router.form.phone,
-                    _ => continue,
+        FORM_STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            if backspace_count >= 6 {
+                let field = match state.form.focused_field {
+                    Some(0) => &mut state.form.full_name,
+                    Some(1) => &mut state.form.email,
+                    Some(2) => &mut state.form.phone,
+                    _ => return,
                 };
-                match text.as_str() {
-                    "\x08" => field.delete_at_cursor(),
-                    "\x1b[D" => field.move_cursor_left(),
-                    "\x1b[C" => field.move_cursor_right(),
-                    "\x1b[H" => field.move_cursor_to_start(),
-                    "\x1b[F" => field.move_cursor_to_end(),
-                    other => field.insert_at_cursor(other),
+                field.text.clear();
+                field.cursor = 0;
+                field.selection = None;
+            } else {
+                for text in texts {
+                    let field = match state.form.focused_field {
+                        Some(0) => &mut state.form.full_name,
+                        Some(1) => &mut state.form.email,
+                        Some(2) => &mut state.form.phone,
+                        _ => continue,
+                    };
+                    match text.as_str() {
+                        "\x08" => field.delete_at_cursor(),
+                        "\x1b[D" => field.move_cursor_left(),
+                        "\x1b[C" => field.move_cursor_right(),
+                        "\x1b[H" => field.move_cursor_to_start(),
+                        "\x1b[F" => field.move_cursor_to_end(),
+                        other => field.insert_at_cursor(other),
+                    }
                 }
             }
-        }
+        });
     });
 }
 
 /// Render the Material Form example screen with interactive controls.
-pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement {
+pub fn render(router: &Router, cx: &mut Context<Router>) -> impl IntoElement {
     log::info!("Form: render() called");
     // Drain any pending keyboard input into the focused field.
-    drain_pending_text(router);
+    drain_pending_text();
 
     let dark = router.dark_mode;
     let theme = MaterialTheme::from_appearance(dark);
     let sub_text: u32 = if dark { super::SUBTEXT } else { super::LIGHT_SUBTEXT };
-    let form = &router.form;
-    let pull_distance = router.pull_distance;
-    let refreshing = router.refreshing;
+
+    let (
+        notifications,
+        auto_update,
+        account_type,
+        interests,
+        skill_level,
+        experience,
+        terms_accepted,
+        newsletter,
+        full_name_text,
+        full_name_cursor,
+        full_name_selection,
+        email_text,
+        email_cursor,
+        email_selection,
+        phone_text,
+        phone_cursor,
+        phone_selection,
+        focused_field,
+        pull_distance,
+        refreshing,
+    ) = FORM_STATE.with(|s| {
+        let state = s.borrow();
+        let f = &state.form;
+        (
+            f.notifications,
+            f.auto_update,
+            f.account_type,
+            f.interests,
+            f.skill_level,
+            f.experience,
+            f.terms_accepted,
+            f.newsletter,
+            f.full_name.text.clone(),
+            f.full_name.cursor,
+            f.full_name.normalized_selection(),
+            f.email.text.clone(),
+            f.email.cursor,
+            f.email.normalized_selection(),
+            f.phone.text.clone(),
+            f.phone.cursor,
+            f.phone.normalized_selection(),
+            f.focused_field,
+            state.pull_distance,
+            state.refreshing,
+        )
+    });
 
     div()
         .id("form-pull-container")
@@ -164,12 +301,12 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .child(
                             TextInput::<Router>::new("input-name", theme)
                                 .label("Full Name")
-                                .value(&form.full_name.text)
-                                .cursor(form.full_name.cursor)
-                                .selection(form.full_name.normalized_selection())
+                                .value(&full_name_text)
+                                .cursor(full_name_cursor)
+                                .selection(full_name_selection)
                                 .placeholder("Enter your name")
                                 .keyboard_type(KeyboardType::Default)
-                                .focused(form.focused_field == Some(0))
+                                .focused(focused_field == Some(0))
                                 .on_tap_notify(|event: &MouseDownEvent| {
                                     log::info!("Form: name field tapped");
                                     TAPPED_FIELD.with(|f| *f.borrow_mut() = Some(0));
@@ -182,12 +319,12 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .child(
                             TextInput::<Router>::new("input-email", theme)
                                 .label("Email")
-                                .value(&form.email.text)
-                                .cursor(form.email.cursor)
-                                .selection(form.email.normalized_selection())
+                                .value(&email_text)
+                                .cursor(email_cursor)
+                                .selection(email_selection)
                                 .placeholder("user@example.com")
                                 .keyboard_type(KeyboardType::EmailAddress)
-                                .focused(form.focused_field == Some(1))
+                                .focused(focused_field == Some(1))
                                 .on_tap_notify(|event: &MouseDownEvent| {
                                     log::info!("Form: email field tapped");
                                     TAPPED_FIELD.with(|f| *f.borrow_mut() = Some(1));
@@ -200,12 +337,12 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .child(
                             TextInput::<Router>::new("input-phone", theme)
                                 .label("Phone")
-                                .value(&form.phone.text)
-                                .cursor(form.phone.cursor)
-                                .selection(form.phone.normalized_selection())
+                                .value(&phone_text)
+                                .cursor(phone_cursor)
+                                .selection(phone_selection)
                                 .placeholder("+1 (555) 000-0000")
                                 .keyboard_type(KeyboardType::Phone)
-                                .focused(form.focused_field == Some(2))
+                                .focused(focused_field == Some(2))
                                 .on_tap_notify(|event: &MouseDownEvent| {
                                     log::info!("Form: phone field tapped");
                                     TAPPED_FIELD.with(|f| *f.borrow_mut() = Some(2));
@@ -230,10 +367,13 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .p_4()
                         .child(
                             Switch::new(theme)
-                                .on(form.notifications)
+                                .on(notifications)
                                 .label("Enable notifications")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.notifications = !this.form.notifications;
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.notifications = !state.form.notifications;
+                                    });
                                     cx.notify();
                                 }))
                                 .id("notif-switch"),
@@ -252,11 +392,14 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .child(div().h(px(1.0)).mx_4().bg(rgb(theme.outline_variant)))
                         .child(
                             Switch::new(theme)
-                                .on(form.auto_update)
+                                .on(auto_update)
                                 .label("Auto-update")
                                 .with_icons()
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.auto_update = !this.form.auto_update;
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.auto_update = !state.form.auto_update;
+                                    });
                                     cx.notify();
                                 }))
                                 .id("update-switch"),
@@ -278,25 +421,31 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                             RadioGroup::new(theme)
                                 .option(
                                     "Personal",
-                                    form.account_type == 0,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.form.account_type = 0;
+                                    account_type == 0,
+                                    cx.listener(|_this, _, _, cx| {
+                                        FORM_STATE.with(|s| {
+                                            s.borrow_mut().form.account_type = 0;
+                                        });
                                         cx.notify();
                                     }),
                                 )
                                 .option(
                                     "Business",
-                                    form.account_type == 1,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.form.account_type = 1;
+                                    account_type == 1,
+                                    cx.listener(|_this, _, _, cx| {
+                                        FORM_STATE.with(|s| {
+                                            s.borrow_mut().form.account_type = 1;
+                                        });
                                         cx.notify();
                                     }),
                                 )
                                 .option(
                                     "Education",
-                                    form.account_type == 2,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.form.account_type = 2;
+                                    account_type == 2,
+                                    cx.listener(|_this, _, _, cx| {
+                                        FORM_STATE.with(|s| {
+                                            s.borrow_mut().form.account_type = 2;
+                                        });
                                         cx.notify();
                                     }),
                                 ),
@@ -316,40 +465,52 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .p_4()
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.interests[0])
+                                .checked(interests[0])
                                 .label("Technology")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.interests[0] = !this.form.interests[0];
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.interests[0] = !state.form.interests[0];
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-tech"),
                         )
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.interests[1])
+                                .checked(interests[1])
                                 .label("Design")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.interests[1] = !this.form.interests[1];
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.interests[1] = !state.form.interests[1];
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-design"),
                         )
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.interests[2])
+                                .checked(interests[2])
                                 .label("Science")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.interests[2] = !this.form.interests[2];
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.interests[2] = !state.form.interests[2];
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-science"),
                         )
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.interests[3])
+                                .checked(interests[3])
                                 .label("Music")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.interests[3] = !this.form.interests[3];
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.interests[3] = !state.form.interests[3];
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-music"),
@@ -369,7 +530,7 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .p_4()
                         .child(
                             Slider::new(theme)
-                                .value(form.skill_level)
+                                .value(skill_level)
                                 .label("Skill level")
                                 .show_value_label(true)
                                 .range_labels("Beginner", "Expert")
@@ -377,7 +538,7 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         )
                         .child(
                             Slider::new(theme)
-                                .value(form.experience)
+                                .value(experience)
                                 .label("Years of experience")
                                 .steps(10)
                                 .show_value_label(true)
@@ -398,20 +559,26 @@ pub fn render(router: &mut Router, cx: &mut Context<Router>) -> impl IntoElement
                         .p_4()
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.terms_accepted)
+                                .checked(terms_accepted)
                                 .label("I agree to the Terms of Service")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.terms_accepted = !this.form.terms_accepted;
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.terms_accepted = !state.form.terms_accepted;
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-terms"),
                         )
                         .child(
                             Checkbox::new(theme)
-                                .checked(form.newsletter)
+                                .checked(newsletter)
                                 .label("Subscribe to newsletter")
-                                .on_toggle(cx.listener(|this, _, _, cx| {
-                                    this.form.newsletter = !this.form.newsletter;
+                                .on_toggle(cx.listener(|_this, _, _, cx| {
+                                    FORM_STATE.with(|s| {
+                                        let mut state = s.borrow_mut();
+                                        state.form.newsletter = !state.form.newsletter;
+                                    });
                                     cx.notify();
                                 }))
                                 .id("cb-newsletter"),

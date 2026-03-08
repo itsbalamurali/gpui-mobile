@@ -5,6 +5,7 @@
 //! the horizontal drag distance. Release triggers a fly-off animation when
 //! past the swipe threshold, or a snap-back otherwise.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use gpui::{div, img, prelude::*, px, rgb, Animation, AnimationExt};
@@ -35,14 +36,36 @@ struct Profile {
     photo_id: u32,
 }
 
-pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
+/// All mutable state for the swiper screen, stored in a thread-local.
+#[derive(Default)]
+pub struct SwiperState {
+    pub index: usize,
+    pub drag_x: f32,
+    pub drag_start_x: Option<f32>,
+    pub dragging: bool,
+    pub fly_direction: f32,
+    pub anim_id: u32,
+}
+
+thread_local! {
+    pub(crate) static SWIPER_STATE: RefCell<SwiperState> = RefCell::new(SwiperState::default());
+}
+
+/// Reset swiper state to defaults.
+pub fn reset_state() {
+    SWIPER_STATE.with(|s| *s.borrow_mut() = SwiperState::default());
+}
+
+pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
     let dark = router.dark_mode;
     let text_color = if dark { TEXT } else { LIGHT_TEXT };
     let _card_bg = if dark { SURFACE0 } else { LIGHT_CARD_BG };
-    let idx = router.swiper_index;
-    let drag_x = router.swiper_drag_x;
-    let fly_dir = router.swiper_fly_direction;
-    let anim_id = router.swiper_anim_id;
+
+    let (idx, drag_x, fly_dir, anim_id) = SWIPER_STATE.with(|s| {
+        let s = s.borrow();
+        (s.index, s.drag_x, s.fly_direction, s.anim_id)
+    });
+
     let all_swiped = idx >= PROFILES.len();
     let is_flying = fly_dir != 0.0;
 
@@ -80,9 +103,12 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
                     )
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.swiper_index = 0;
-                            this.swiper_fly_direction = 0.0;
+                        cx.listener(|_this, _, _, cx| {
+                            SWIPER_STATE.with(|s| {
+                                let mut s = s.borrow_mut();
+                                s.index = 0;
+                                s.fly_direction = 0.0;
+                            });
                             cx.notify();
                         }),
                     ),
@@ -243,52 +269,68 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
         .when(!is_flying, |el| {
             el.on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                    this.swiper_dragging = true;
-                    this.swiper_drag_start_x = Some(event.position.x.as_f32());
-                    this.swiper_drag_x = 0.0;
+                cx.listener(|_this, event: &gpui::MouseDownEvent, _window, cx| {
+                    SWIPER_STATE.with(|s| {
+                        let mut s = s.borrow_mut();
+                        s.dragging = true;
+                        s.drag_start_x = Some(event.position.x.as_f32());
+                        s.drag_x = 0.0;
+                    });
                     cx.notify();
                 }),
             )
-            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
-                if let Some(start_x) = this.swiper_drag_start_x {
-                    this.swiper_drag_x = event.position.x.as_f32() - start_x;
-                    cx.notify();
-                }
+            .on_mouse_move(cx.listener(|_this, event: &gpui::MouseMoveEvent, _window, cx| {
+                SWIPER_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    if let Some(start_x) = s.drag_start_x {
+                        s.drag_x = event.position.x.as_f32() - start_x;
+                    }
+                });
+                cx.notify();
             }))
             .on_mouse_up(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _event: &gpui::MouseUpEvent, _window, cx| {
-                    if this.swiper_dragging {
-                        this.swiper_dragging = false;
-                        this.swiper_drag_start_x = None;
-                        if this.swiper_drag_x.abs() > SWIPE_THRESHOLD {
-                            // Trigger fly-off animation
-                            this.swiper_fly_direction = if this.swiper_drag_x > 0.0 { 1.0 } else { -1.0 };
-                            this.swiper_anim_id += 1;
-                            this.swiper_drag_x = 0.0;
-                            let direction = if this.swiper_fly_direction > 0.0 { "LIKED" } else { "NOPED" };
-                            if this.swiper_index < PROFILES.len() {
-                                log::info!("Swiper: {} {}", direction, PROFILES[this.swiper_index].name);
+                cx.listener(|_this, _event: &gpui::MouseUpEvent, _window, cx| {
+                    let should_fly = SWIPER_STATE.with(|s| {
+                        let mut s = s.borrow_mut();
+                        if s.dragging {
+                            s.dragging = false;
+                            s.drag_start_x = None;
+                            if s.drag_x.abs() > SWIPE_THRESHOLD {
+                                // Trigger fly-off animation
+                                s.fly_direction = if s.drag_x > 0.0 { 1.0 } else { -1.0 };
+                                s.anim_id += 1;
+                                let direction = if s.fly_direction > 0.0 { "LIKED" } else { "NOPED" };
+                                if s.index < PROFILES.len() {
+                                    log::info!("Swiper: {} {}", direction, PROFILES[s.index].name);
+                                }
+                                s.drag_x = 0.0;
+                                return true;
+                            } else {
+                                // Snap back
+                                s.drag_x = 0.0;
                             }
-                            // Schedule advance after animation
-                            cx.spawn(async |this, cx| {
-                                cx.background_executor()
-                                    .timer(Duration::from_millis(320))
-                                    .await;
-                                let _ = this.update(cx, |this, cx| {
-                                    this.swiper_index += 1;
-                                    this.swiper_fly_direction = 0.0;
-                                    this.swiper_drag_x = 0.0;
-                                    cx.notify();
-                                });
-                            }).detach();
-                        } else {
-                            // Snap back
-                            this.swiper_drag_x = 0.0;
                         }
-                        cx.notify();
+                        false
+                    });
+                    if should_fly {
+                        // Schedule advance after animation
+                        cx.spawn(async |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(320))
+                                .await;
+                            let _ = this.update(cx, |_this, cx| {
+                                SWIPER_STATE.with(|s| {
+                                    let mut s = s.borrow_mut();
+                                    s.index += 1;
+                                    s.fly_direction = 0.0;
+                                    s.drag_x = 0.0;
+                                });
+                                cx.notify();
+                            });
+                        }).detach();
                     }
+                    cx.notify();
                 }),
             )
         });
@@ -302,19 +344,29 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
             .flex_row()
             .gap_6()
             .mt_4()
-            .child(action_btn("X", RED, cx.listener(|this, _, _, cx| {
-                if this.swiper_index < PROFILES.len() && this.swiper_fly_direction == 0.0 {
-                    log::info!("Swiper: NOPED {}", PROFILES[this.swiper_index].name);
-                    this.swiper_fly_direction = -1.0;
-                    this.swiper_anim_id += 1;
-                    this.swiper_drag_x = 0.0;
+            .child(action_btn("X", RED, cx.listener(|_this, _, _, cx| {
+                let should_fly = SWIPER_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    if s.index < PROFILES.len() && s.fly_direction == 0.0 {
+                        log::info!("Swiper: NOPED {}", PROFILES[s.index].name);
+                        s.fly_direction = -1.0;
+                        s.anim_id += 1;
+                        s.drag_x = 0.0;
+                        return true;
+                    }
+                    false
+                });
+                if should_fly {
                     cx.spawn(async |this, cx| {
                         cx.background_executor()
                             .timer(Duration::from_millis(320))
                             .await;
-                        let _ = this.update(cx, |this, cx| {
-                            this.swiper_index += 1;
-                            this.swiper_fly_direction = 0.0;
+                        let _ = this.update(cx, |_this, cx| {
+                            SWIPER_STATE.with(|s| {
+                                let mut s = s.borrow_mut();
+                                s.index += 1;
+                                s.fly_direction = 0.0;
+                            });
                             cx.notify();
                         });
                     }).detach();
@@ -325,19 +377,29 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
                 log::info!("Swiper: SUPERLIKED");
                 cx.notify();
             })))
-            .child(action_btn("~", GREEN, cx.listener(|this, _, _, cx| {
-                if this.swiper_index < PROFILES.len() && this.swiper_fly_direction == 0.0 {
-                    log::info!("Swiper: LIKED {}", PROFILES[this.swiper_index].name);
-                    this.swiper_fly_direction = 1.0;
-                    this.swiper_anim_id += 1;
-                    this.swiper_drag_x = 0.0;
+            .child(action_btn("~", GREEN, cx.listener(|_this, _, _, cx| {
+                let should_fly = SWIPER_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    if s.index < PROFILES.len() && s.fly_direction == 0.0 {
+                        log::info!("Swiper: LIKED {}", PROFILES[s.index].name);
+                        s.fly_direction = 1.0;
+                        s.anim_id += 1;
+                        s.drag_x = 0.0;
+                        return true;
+                    }
+                    false
+                });
+                if should_fly {
                     cx.spawn(async |this, cx| {
                         cx.background_executor()
                             .timer(Duration::from_millis(320))
                             .await;
-                        let _ = this.update(cx, |this, cx| {
-                            this.swiper_index += 1;
-                            this.swiper_fly_direction = 0.0;
+                        let _ = this.update(cx, |_this, cx| {
+                            SWIPER_STATE.with(|s| {
+                                let mut s = s.borrow_mut();
+                                s.index += 1;
+                                s.fly_direction = 0.0;
+                            });
                             cx.notify();
                         });
                     }).detach();

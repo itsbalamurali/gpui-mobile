@@ -3,6 +3,7 @@
 //! Photo cards with user avatars, like/comment/share buttons, captions,
 //! and like counts. Tap the heart to toggle likes. Pull down to refresh.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use gpui::{div, img, prelude::*, px, rgb};
@@ -11,6 +12,34 @@ use super::{Router, LIGHT_CARD_BG, LIGHT_TEXT, RED, SURFACE0, SURFACE1, TEXT, SU
 
 /// Pull distance (px) to trigger refresh.
 const REFRESH_THRESHOLD: f32 = 80.0;
+
+/// All mutable feed state, stored in a thread-local instead of on Router.
+pub(crate) struct FeedState {
+    pub likes: [bool; 6],
+    pub pull_start_y: Option<f32>,
+    pub pull_distance: f32,
+    pub refreshing: bool,
+}
+
+impl Default for FeedState {
+    fn default() -> Self {
+        Self {
+            likes: [false; 6],
+            pull_start_y: None,
+            pull_distance: 0.0,
+            refreshing: false,
+        }
+    }
+}
+
+thread_local! {
+    pub(crate) static FEED_STATE: RefCell<FeedState> = RefCell::new(FeedState::default());
+}
+
+/// Reset feed state back to defaults.
+pub fn reset_state() {
+    FEED_STATE.with(|s| *s.borrow_mut() = FeedState::default());
+}
 
 /// Feed post data.
 struct FeedPost {
@@ -88,14 +117,16 @@ const POSTS: &[FeedPost] = &[
     },
 ];
 
-pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
+pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoElement {
     let dark = router.dark_mode;
     let text_color = if dark { TEXT } else { LIGHT_TEXT };
     let sub_text = if dark { SUBTEXT } else { LIGHT_SUBTEXT };
     let _card_bg = if dark { SURFACE0 } else { LIGHT_CARD_BG };
     let divider = if dark { SURFACE1 } else { 0xDADAE0 };
-    let pull_distance = router.feed_pull_distance;
-    let refreshing = router.feed_refreshing;
+    let (pull_distance, refreshing) = FEED_STATE.with(|s| {
+        let s = s.borrow();
+        (s.pull_distance, s.refreshing)
+    });
 
     let mut feed = div()
         .flex()
@@ -104,47 +135,63 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
         // Pull-to-refresh touch handlers
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
-                if !this.feed_refreshing {
-                    this.feed_pull_start_y = Some(event.position.y.as_f32());
-                }
+            cx.listener(|_this, event: &gpui::MouseDownEvent, _window, cx| {
+                FEED_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    if !s.refreshing {
+                        s.pull_start_y = Some(event.position.y.as_f32());
+                    }
+                });
                 cx.notify();
             }),
         )
-        .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _window, cx| {
-            if let Some(start_y) = this.feed_pull_start_y {
-                let delta = event.position.y.as_f32() - start_y;
-                // Only allow downward pull (positive delta) with diminishing return
-                this.feed_pull_distance = if delta > 0.0 {
-                    delta * 0.5 // Rubber-band effect
-                } else {
-                    0.0
-                };
-                cx.notify();
-            }
+        .on_mouse_move(cx.listener(|_this, event: &gpui::MouseMoveEvent, _window, cx| {
+            FEED_STATE.with(|s| {
+                let mut s = s.borrow_mut();
+                if let Some(start_y) = s.pull_start_y {
+                    let delta = event.position.y.as_f32() - start_y;
+                    // Only allow downward pull (positive delta) with diminishing return
+                    s.pull_distance = if delta > 0.0 {
+                        delta * 0.5 // Rubber-band effect
+                    } else {
+                        0.0
+                    };
+                }
+            });
+            cx.notify();
         }))
         .on_mouse_up(
             gpui::MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                this.feed_pull_start_y = None;
-                if this.feed_pull_distance > REFRESH_THRESHOLD {
-                    // Trigger refresh
-                    this.feed_refreshing = true;
-                    this.feed_pull_distance = 60.0; // Keep indicator visible
+            cx.listener(|_this, _, _, cx| {
+                let should_refresh = FEED_STATE.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.pull_start_y = None;
+                    if s.pull_distance > REFRESH_THRESHOLD {
+                        // Trigger refresh
+                        s.refreshing = true;
+                        s.pull_distance = 60.0; // Keep indicator visible
+                        true
+                    } else {
+                        s.pull_distance = 0.0;
+                        false
+                    }
+                });
+                if should_refresh {
                     cx.spawn(async |this, cx| {
                         cx.background_executor()
                             .timer(Duration::from_millis(1500))
                             .await;
-                        let _ = this.update(cx, |this, cx| {
-                            this.feed_refreshing = false;
-                            this.feed_pull_distance = 0.0;
-                            // Reset likes on refresh for demo
-                            this.feed_likes = [false; 6];
+                        let _ = this.update(cx, |_this, cx| {
+                            FEED_STATE.with(|s| {
+                                let mut s = s.borrow_mut();
+                                s.refreshing = false;
+                                s.pull_distance = 0.0;
+                                // Reset likes on refresh for demo
+                                s.likes = [false; 6];
+                            });
                             cx.notify();
                         });
                     }).detach();
-                } else {
-                    this.feed_pull_distance = 0.0;
                 }
                 cx.notify();
             }),
@@ -183,7 +230,7 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
     }
 
     for (i, post) in POSTS.iter().enumerate() {
-        let liked = router.feed_likes[i];
+        let liked = FEED_STATE.with(|s| s.borrow().likes[i]);
         let like_count = post.likes + if liked { 1 } else { 0 };
 
         feed = feed.child(
@@ -268,8 +315,11 @@ pub fn render(router: &mut Router, cx: &mut gpui::Context<Router>) -> impl IntoE
                                 .child(if liked { "♥" } else { "♡" })
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.feed_likes[idx] = !this.feed_likes[idx];
+                                    cx.listener(move |_this, _, _, cx| {
+                                        FEED_STATE.with(|s| {
+                                            let mut s = s.borrow_mut();
+                                            s.likes[idx] = !s.likes[idx];
+                                        });
                                         cx.notify();
                                     }),
                                 )
