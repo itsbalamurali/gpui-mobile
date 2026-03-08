@@ -1284,10 +1284,15 @@ impl PlatformWindow for AndroidPlatformWindow {
                 }
             }
 
+            // Check if text input arrived since last frame — if so, force a
+            // render so drain_pending_text() runs and the UI updates.
+            let text_dirty =
+                crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+
             let mut cb = send_callback.lock();
             cb(RequestFrameOptions {
                 require_presentation: true,
-                force_render: false,
+                force_render: text_dirty,
             });
         });
     }

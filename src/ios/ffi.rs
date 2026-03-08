@@ -294,12 +294,19 @@ pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
     // scroll that users expect on iOS after a fling gesture.
     window.pump_momentum();
 
+    // Check if text input arrived since last frame — if so, force a render
+    // so drain_pending_text() runs and the UI updates.
+    let text_dirty = crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+
     // Take the callback, invoke it, then restore it
     // We must complete the borrow before invoking the callback,
     // as the callback might try to borrow the same RefCell
     let callback = window.request_frame_callback.borrow_mut().take();
     if let Some(mut cb) = callback {
-        cb(RequestFrameOptions::default());
+        cb(RequestFrameOptions {
+            force_render: text_dirty,
+            ..Default::default()
+        });
         // Restore the callback for the next frame
         window.request_frame_callback.borrow_mut().replace(cb);
     }

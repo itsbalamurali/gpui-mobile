@@ -653,6 +653,78 @@ impl IosWindow {
                 self.text_input_view
             );
         }
+
+        // Listen for keyboard show/hide so we can expose the keyboard height.
+        self.register_keyboard_observers();
+    }
+
+    /// Register for keyboard show/hide notifications so we can track the
+    /// keyboard height and allow the UI to shift content above the keyboard.
+    pub(crate) fn register_keyboard_observers(&self) {
+        unsafe {
+            let notification_center: *mut Object =
+                msg_send![class!(NSNotificationCenter), defaultCenter];
+
+            // Helper to create an NSString from a Rust &str.
+            fn make_nsstring(s: &str) -> *mut Object {
+                let cls = class!(NSString);
+                let bytes = s.as_ptr() as *const c_void;
+                let len = s.len();
+                unsafe {
+                    let ns: *mut Object = msg_send![cls, alloc];
+                    msg_send![ns, initWithBytes:bytes length:len encoding:4u64] // NSUTF8StringEncoding
+                }
+            }
+
+            let show_name = make_nsstring("UIKeyboardWillShowNotification");
+            let hide_name = make_nsstring("UIKeyboardWillHideNotification");
+
+            // Block that fires when the keyboard appears — extracts the
+            // end-frame height and stores it in the global atomic.
+            let show_block = block::ConcreteBlock::new(move |notification: *mut Object| {
+                if notification.is_null() {
+                    return;
+                }
+                let user_info: *mut Object = msg_send![notification, userInfo];
+                if user_info.is_null() {
+                    return;
+                }
+                let frame_key = make_nsstring("UIKeyboardFrameEndUserInfoKey");
+                let frame_value: *mut Object = msg_send![user_info, objectForKey: frame_key];
+                if frame_value.is_null() {
+                    return;
+                }
+                let frame: core_graphics::geometry::CGRect =
+                    msg_send![frame_value, CGRectValue];
+                let height = frame.size.height as f32;
+                log::info!("GPUI iOS: Keyboard will show, height={}", height);
+                crate::set_keyboard_height(height);
+            });
+            let show_block = show_block.copy();
+
+            let hide_block = block::ConcreteBlock::new(move |_notification: *mut Object| {
+                log::info!("GPUI iOS: Keyboard will hide");
+                crate::set_keyboard_height(0.0);
+            });
+            let hide_block = hide_block.copy();
+
+            let _: *mut Object = msg_send![notification_center,
+                addObserverForName: show_name
+                object: std::ptr::null::<Object>()
+                queue: std::ptr::null::<Object>()
+                usingBlock: &*show_block
+            ];
+            let _: *mut Object = msg_send![notification_center,
+                addObserverForName: hide_name
+                object: std::ptr::null::<Object>()
+                queue: std::ptr::null::<Object>()
+                usingBlock: &*hide_block
+            ];
+
+            // Leak the blocks so they live for the app lifetime.
+            std::mem::forget(show_block);
+            std::mem::forget(hide_block);
+        }
     }
 
     /// Handle a touch event from UIKit.

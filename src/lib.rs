@@ -137,6 +137,16 @@ pub fn set_system_chrome(style: &SystemChromeStyle) {
 // ── Text input callback ──────────────────────────────────────────────────────
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Global flag indicating that text input was received and a re-render is needed.
+///
+/// GPUI only redraws when its invalidator is dirty. Since `dispatch_text_input`
+/// stores text in a thread-local (`PENDING_TEXT`) outside of GPUI's entity
+/// system, nothing marks the window dirty. The platform frame callbacks check
+/// this flag and pass `force_render: true` to ensure the render cycle runs,
+/// which in turn calls `drain_pending_text()` and updates the UI.
+pub static TEXT_INPUT_DIRTY: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// Global text input callback — set by the active text input component.
@@ -157,11 +167,13 @@ pub fn set_text_input_callback(callback: Option<Box<dyn FnMut(&str)>>) {
 /// Dispatch text input to the registered callback.
 ///
 /// Called internally by the platform layer when keyboard text is received.
-/// Returns true if a callback handled the text.
+/// Returns true if a callback handled the text. Also sets `TEXT_INPUT_DIRTY`
+/// so the platform frame callback forces a re-render.
 pub fn dispatch_text_input(text: &str) -> bool {
     TEXT_INPUT_CALLBACK.with(|cb| {
         if let Some(callback) = cb.borrow_mut().as_mut() {
             callback(text);
+            TEXT_INPUT_DIRTY.store(true, Ordering::Release);
             true
         } else {
             false
@@ -251,6 +263,32 @@ pub fn hide_keyboard() {
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {}
+}
+
+// ── Keyboard height ─────────────────────────────────────────────────────────
+
+use std::sync::atomic::AtomicU32;
+
+/// Current keyboard height in logical points, stored as `f32` bits.
+///
+/// Updated by the platform layer when the software keyboard shows/hides.
+/// Read with `keyboard_height()`.
+pub static KEYBOARD_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
+
+/// Get the current software keyboard height in logical points.
+///
+/// Returns 0.0 when the keyboard is hidden.
+pub fn keyboard_height() -> f32 {
+    f32::from_bits(KEYBOARD_HEIGHT_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the keyboard height (called from platform layer).
+pub fn set_keyboard_height(height: f32) {
+    let prev = f32::from_bits(KEYBOARD_HEIGHT_BITS.load(Ordering::Relaxed));
+    if (prev - height).abs() > 0.5 {
+        KEYBOARD_HEIGHT_BITS.store(height.to_bits(), Ordering::Release);
+        TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+    }
 }
 
 // ── Safe area insets ─────────────────────────────────────────────────────────

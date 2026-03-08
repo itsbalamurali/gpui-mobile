@@ -30,6 +30,8 @@ fn install_keyboard_callback() {
             pending.borrow_mut().push(text.to_string());
         });
     })));
+    // Mark dirty so the next frame picks up the focused field change.
+    gpui_mobile::TEXT_INPUT_DIRTY.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Approximate average character width in logical pixels for tap-to-cursor.
@@ -62,20 +64,37 @@ pub fn drain_pending_text(router: &mut Router) {
 
     PENDING_TEXT.with(|pending| {
         let texts: Vec<String> = pending.borrow_mut().drain(..).collect();
-        for text in texts {
+
+        // Count consecutive backspaces — if many arrive in one frame the user
+        // is holding the delete key, so clear the field entirely.
+        let backspace_count = texts.iter().filter(|t| t.as_str() == "\x08").count();
+
+        if backspace_count >= 6 {
             let field = match router.form.focused_field {
                 Some(0) => &mut router.form.full_name,
                 Some(1) => &mut router.form.email,
                 Some(2) => &mut router.form.phone,
-                _ => continue,
+                _ => return,
             };
-            match text.as_str() {
-                "\x08" => field.delete_at_cursor(),
-                "\x1b[D" => field.move_cursor_left(),
-                "\x1b[C" => field.move_cursor_right(),
-                "\x1b[H" => field.move_cursor_to_start(),
-                "\x1b[F" => field.move_cursor_to_end(),
-                other => field.insert_at_cursor(other),
+            field.text.clear();
+            field.cursor = 0;
+            field.selection = None;
+        } else {
+            for text in texts {
+                let field = match router.form.focused_field {
+                    Some(0) => &mut router.form.full_name,
+                    Some(1) => &mut router.form.email,
+                    Some(2) => &mut router.form.phone,
+                    _ => continue,
+                };
+                match text.as_str() {
+                    "\x08" => field.delete_at_cursor(),
+                    "\x1b[D" => field.move_cursor_left(),
+                    "\x1b[C" => field.move_cursor_right(),
+                    "\x1b[H" => field.move_cursor_to_start(),
+                    "\x1b[F" => field.move_cursor_to_end(),
+                    other => field.insert_at_cursor(other),
+                }
             }
         }
     });

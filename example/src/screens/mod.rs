@@ -13,6 +13,7 @@
 //! - **Shaders** — dynamic gradients, floating orbs, and ripple effects.
 
 pub mod about;
+pub mod chat;
 pub mod components;
 pub mod counter;
 pub mod feed;
@@ -50,6 +51,7 @@ pub enum Screen {
     WebViewBrowser,
     Swiper,
     Feed,
+    Chat,
 }
 
 impl Screen {
@@ -69,6 +71,7 @@ impl Screen {
             Screen::WebViewBrowser => "Browser",
             Screen::Swiper => "Discover",
             Screen::Feed => "Feed",
+            Screen::Chat => "Sarah Johnson",
         }
     }
 
@@ -224,6 +227,27 @@ pub struct Router {
     pub feed_pull_distance: f32,
     /// Whether the feed is currently "refreshing".
     pub feed_refreshing: bool,
+
+    // ── Chat state ────────────────────────────────────────────────────
+    /// Text currently being composed in the chat input.
+    pub chat_compose_text: String,
+    /// Messages sent by the user during this session.
+    pub chat_sent_messages: Vec<String>,
+    /// Whether the chat composer field is focused.
+    pub chat_focused: bool,
+    /// Which message index has the reaction picker open (None = no picker).
+    pub chat_reaction_picker: Option<usize>,
+    /// User-added reactions per message index.
+    pub chat_user_reactions: Vec<Vec<String>>,
+    /// Whether the mic is currently recording.
+    pub chat_mic_recording: bool,
+    /// Horizontal swipe offset per message (for revealing timestamps).
+    /// Positive = swiped left (sent messages), negative = swiped right (received).
+    pub chat_swipe_offset: f32,
+    /// Message index currently being swiped.
+    pub chat_swipe_msg: Option<usize>,
+    /// X position where the swipe started.
+    pub chat_swipe_start_x: Option<f32>,
 }
 
 /// Mutable state backing the Material Form demo screen.
@@ -313,6 +337,15 @@ impl Router {
             feed_pull_start_y: None,
             feed_pull_distance: 0.0,
             feed_refreshing: false,
+            chat_compose_text: String::new(),
+            chat_sent_messages: Vec::new(),
+            chat_focused: false,
+            chat_reaction_picker: None,
+            chat_user_reactions: Vec::new(),
+            chat_mic_recording: false,
+            chat_swipe_offset: 0.0,
+            chat_swipe_msg: None,
+            chat_swipe_start_x: None,
         }
     }
 
@@ -373,12 +406,17 @@ impl Router {
                     let _ = gpui_mobile::packages::webview::dismiss(handle);
                 }
             }
-            // Dismiss keyboard when leaving the form screen
+            // Dismiss keyboard when leaving form or chat screens
             if self.form.focused_field.is_some() {
                 self.form.focused_field = None;
                 self.form.full_name.selection = None;
                 self.form.email.selection = None;
                 self.form.phone.selection = None;
+                gpui_mobile::hide_keyboard();
+                gpui_mobile::set_text_input_callback(None);
+            }
+            if self.chat_focused {
+                self.chat_focused = false;
                 gpui_mobile::hide_keyboard();
                 gpui_mobile::set_text_input_callback(None);
             }
@@ -575,6 +613,7 @@ impl Router {
             Screen::WebViewBrowser => self.render_webview_browser_screen(cx).into_any_element(),
             Screen::Swiper => self.render_swiper_screen(cx).into_any_element(),
             Screen::Feed => self.render_feed_screen(cx).into_any_element(),
+            Screen::Chat => self.render_chat_screen(cx).into_any_element(),
             Screen::Animations | Screen::Shaders => unreachable!(),
         };
 
@@ -588,11 +627,19 @@ impl Router {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
+                    let mut changed = false;
                     if this.form.focused_field.is_some() {
                         this.form.focused_field = None;
                         this.form.full_name.selection = None;
                         this.form.email.selection = None;
                         this.form.phone.selection = None;
+                        changed = true;
+                    }
+                    if this.chat_focused {
+                        this.chat_focused = false;
+                        changed = true;
+                    }
+                    if changed {
                         gpui_mobile::hide_keyboard();
                         gpui_mobile::set_text_input_callback(None);
                         cx.notify();
@@ -695,6 +742,10 @@ impl Router {
 
     fn render_feed_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         feed::render(self, cx)
+    }
+
+    fn render_chat_screen(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        chat::render(self, cx)
     }
 
     // ── Demo screen content (rendered below the TopAppBar) ────────────────────

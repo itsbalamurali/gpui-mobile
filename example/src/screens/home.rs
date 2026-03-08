@@ -239,6 +239,19 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                         this.navigate_to(Screen::Feed);
                         cx.notify();
                     }),
+                ))
+                .child(nav_card(
+                    "💬",
+                    "Chat",
+                    "iMessage-style chat with reactions & images",
+                    BLUE,
+                    card_bg,
+                    text_color,
+                    sub_text,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.navigate_to(Screen::Chat);
+                        cx.notify();
+                    }),
                 )),
         )
 }
