@@ -247,8 +247,17 @@ fn drain_chat_pending_text() {
                     "\x08" => {
                         state.compose_text.pop();
                     }
+                    // Return/newline → send the message (like iMessage)
+                    "\n" | "\r" | "\r\n" => {
+                        if !state.compose_text.is_empty() {
+                            let msg = std::mem::take(&mut state.compose_text);
+                            state.sent_messages.push(msg);
+                        }
+                    }
                     other => {
-                        state.compose_text.push_str(other);
+                        // Strip any embedded newlines from pasted text
+                        let clean = other.replace('\n', " ").replace('\r', "");
+                        state.compose_text.push_str(&clean);
                     }
                 }
             }
@@ -263,7 +272,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
 
     let dark = router.dark_mode;
 
-    let (sent_messages, compose_text, focused, reaction_picker_msg, user_reactions, recording, swipe_offset) =
+    let (sent_messages, compose_text, focused, reaction_picker_msg, user_reactions, recording, swipe_msg, swipe_offset) =
         CHAT_STATE.with(|s| {
             let st = s.borrow();
             (
@@ -273,13 +282,17 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                 st.reaction_picker,
                 st.user_reactions.clone(),
                 st.mic_recording,
+                st.swipe_msg,
                 st.swipe_offset,
             )
         });
 
     let kb_height = gpui_mobile::keyboard_height();
-    let safe_bottom = router.safe_area.bottom;
-    let kb_padding = (kb_height - safe_bottom).max(0.0);
+    // Don't subtract safe_bottom — the chat screen has no bottom safe-area
+    // spacer (it's not a tab-root), and the iOS keyboard height already
+    // includes the safe area. Add a small margin so the composer doesn't
+    // sit flush against the keyboard.
+    let kb_padding = if kb_height > 0.0 { kb_height + 4.0 } else { 0.0 };
 
     div()
         .flex()
@@ -292,45 +305,21 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                 .id("chat-messages-scroll")
                 .flex_1()
                 .overflow_y_scroll()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|_this, event: &MouseDownEvent, _window, _cx| {
-                        CHAT_STATE.with(|s| {
-                            let mut st = s.borrow_mut();
-                            st.swipe_start_x = Some(event.position.x.as_f32());
-                            st.swipe_offset = 0.0;
-                        });
-                    }),
-                )
-                .on_mouse_move(
-                    cx.listener(|_this, event: &MouseMoveEvent, _window, cx| {
-                        let changed = CHAT_STATE.with(|s| {
-                            let mut st = s.borrow_mut();
-                            if let Some(start_x) = st.swipe_start_x {
-                                let dx = event.position.x.as_f32() - start_x;
-                                // Only activate swipe if horizontal movement > 10px
-                                if dx.abs() > 10.0 {
-                                    // Clamp to reasonable range with rubber-band
-                                    st.swipe_offset = dx.clamp(-80.0, 80.0);
-                                    return true;
-                                }
-                            }
-                            false
-                        });
-                        if changed {
-                            cx.notify();
-                        }
-                    }),
-                )
+                // Reset swipe on mouse up (fires for both taps and drag-end on iOS)
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|_this, _event: &MouseUpEvent, _window, cx| {
-                        CHAT_STATE.with(|s| {
+                        let had_offset = CHAT_STATE.with(|s| {
                             let mut st = s.borrow_mut();
+                            let had = st.swipe_offset.abs() > 0.1;
                             st.swipe_start_x = None;
                             st.swipe_offset = 0.0;
+                            st.swipe_msg = None;
+                            had
                         });
-                        cx.notify();
+                        if had_offset {
+                            cx.notify();
+                        }
                     }),
                 )
                 .child(render_messages(
@@ -338,6 +327,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     &sent_messages,
                     reaction_picker_msg,
                     &user_reactions,
+                    swipe_msg,
                     swipe_offset,
                     cx,
                 )),
@@ -355,14 +345,11 @@ fn render_messages(
     sent_messages: &[String],
     reaction_picker_msg: Option<usize>,
     user_reactions: &[Vec<String>],
+    swipe_msg: Option<usize>,
     swipe_offset: f32,
     cx: &mut gpui::Context<Router>,
 ) -> impl IntoElement {
     let mut container = div().flex().flex_col().px_3().pt_2().pb_2().gap_1();
-
-    // Compute per-message timestamps for swipe reveal.
-    // Static messages carry their own; we generate "Now" for sent ones.
-    let show_swipe_ts = swipe_offset.abs() > 15.0;
 
     let mut prev_is_me: Option<bool> = None;
     for (i, msg) in MESSAGES.iter().enumerate() {
@@ -394,13 +381,15 @@ fn render_messages(
                 .unwrap_or("9:41 AM")
         };
 
+        let msg_swipe = if swipe_msg == Some(i) { swipe_offset } else { 0.0 };
         container = container.child(render_bubble_interactive(
             msg,
             i,
             dark,
             reaction_picker_msg == Some(i),
             extra_reactions,
-            if show_swipe_ts { Some((swipe_offset, inline_ts)) } else { None },
+            msg_swipe,
+            inline_ts,
             cx,
         ));
         prev_is_me = Some(msg.is_me);
@@ -414,13 +403,14 @@ fn render_messages(
             &[] as &[String]
         };
         container = container.child(div().h(px(2.0)));
+        let msg_swipe = if swipe_msg == Some(sent_idx) { swipe_offset } else { 0.0 };
         container = container.child(render_sent_bubble_interactive(
             text,
             sent_idx,
             dark,
             reaction_picker_msg == Some(sent_idx),
             extra_reactions,
-            if show_swipe_ts { Some(swipe_offset) } else { None },
+            msg_swipe,
             cx,
         ));
     }
@@ -450,7 +440,8 @@ fn render_bubble_interactive(
     dark: bool,
     show_picker: bool,
     extra_reactions: &[String],
-    swipe: Option<(f32, &str)>, // (offset, timestamp)
+    swipe_offset: f32,
+    timestamp: &str,
     cx: &mut gpui::Context<Router>,
 ) -> impl IntoElement {
     let bubble_color = if msg.is_me {
@@ -476,6 +467,8 @@ fn render_bubble_interactive(
             div()
                 .w(px(max_width))
                 .h(px(180.0))
+                .rounded(px(18.0))
+                .overflow_hidden()
                 .bg(rgb(msg.image_color))
                 .flex()
                 .items_center()
@@ -527,8 +520,48 @@ fn render_bubble_interactive(
         }),
     );
 
-    // Wrapper
-    let mut outer = div().flex().flex_col().w_full();
+    // Wrapper with per-bubble swipe gesture
+    let is_me = msg.is_me;
+    let mut outer = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        // Per-bubble horizontal swipe — detect start in on_mouse_move
+        // (iOS defers on_mouse_down for drags).
+        .on_mouse_move(
+            cx.listener(move |_this, event: &MouseMoveEvent, _window, cx| {
+                let changed = CHAT_STATE.with(|s| {
+                    let mut st = s.borrow_mut();
+                    let x = event.position.x.as_f32();
+                    // If another bubble is being swiped, ignore
+                    if st.swipe_msg.is_some() && st.swipe_msg != Some(idx) {
+                        return false;
+                    }
+                    if st.swipe_start_x.is_none() {
+                        st.swipe_start_x = Some(x);
+                        st.swipe_msg = Some(idx);
+                        return false;
+                    }
+                    let start_x = st.swipe_start_x.unwrap();
+                    let dx = x - start_x;
+                    // Direction lock: sent → left only, received → right only
+                    let clamped = if is_me {
+                        dx.min(0.0).max(-70.0)
+                    } else {
+                        dx.max(0.0).min(70.0)
+                    };
+                    if clamped.abs() > 5.0 {
+                        st.swipe_msg = Some(idx);
+                        st.swipe_offset = clamped;
+                        return true;
+                    }
+                    false
+                });
+                if changed {
+                    cx.notify();
+                }
+            }),
+        );
     if msg.is_me {
         outer = outer.items_end();
     } else {
@@ -540,40 +573,67 @@ fn render_bubble_interactive(
         outer = outer.child(render_reaction_picker(idx, msg.is_me, dark, cx));
     }
 
-    // Swipe row: timestamp + bubble (or bubble + timestamp)
-    if let Some((offset, ts)) = swipe {
-        let ts_opacity = (offset.abs() - 15.0).max(0.0) / 40.0;
-        let ts_opacity = ts_opacity.min(1.0);
+    // Swipe: slide the bubble horizontally and reveal timestamp behind it.
+    // Sent messages slide left (negative offset reveals timestamp on right).
+    // Received messages slide right (positive offset reveals on left).
+    if swipe_offset.abs() > 1.0 {
+        // How far the bubble slides (clamped, with rubber-band feel)
+        let slide = if msg.is_me {
+            // Sent: swipe left to reveal → slide_x is negative
+            swipe_offset.min(0.0).max(-60.0)
+        } else {
+            // Received: swipe right to reveal → slide_x is positive
+            swipe_offset.max(0.0).min(60.0)
+        };
+
+        // Timestamp fades in as slide increases
+        let ts_opacity = ((slide.abs() - 8.0) / 30.0).clamp(0.0, 1.0);
 
         let mut swipe_row = div()
             .flex()
             .flex_row()
             .items_center()
             .w_full()
-            .gap(px(6.0));
+            .overflow_hidden();
 
         if msg.is_me {
-            // Sent: timestamp appears on the left when swiped left (offset < 0)
+            // Sent: bubble slides left, timestamp peeks in from the right
             swipe_row = swipe_row
                 .justify_end()
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(rgb(TIMESTAMP_COLOR))
-                        .opacity(ts_opacity)
-                        .child(ts.to_string()),
-                )
-                .child(bubble);
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .mr(px(slide)) // negative → moves row left
+                        .child(bubble)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TIMESTAMP_COLOR))
+                                .opacity(ts_opacity)
+                                .child(timestamp.to_string()),
+                        ),
+                );
         } else {
-            // Received: timestamp appears on the right when swiped right (offset > 0)
+            // Received: bubble slides right, timestamp peeks in from the left
             swipe_row = swipe_row
-                .child(bubble)
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(rgb(TIMESTAMP_COLOR))
-                        .opacity(ts_opacity)
-                        .child(ts.to_string()),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .ml(px(slide)) // positive → moves row right
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(TIMESTAMP_COLOR))
+                                .opacity(ts_opacity)
+                                .child(timestamp.to_string()),
+                        )
+                        .child(bubble),
                 );
         }
         outer = outer.child(swipe_row);
@@ -622,10 +682,42 @@ fn render_sent_bubble_interactive(
     dark: bool,
     show_picker: bool,
     extra_reactions: &[String],
-    swipe: Option<f32>,
+    swipe_offset: f32,
     cx: &mut gpui::Context<Router>,
 ) -> impl IntoElement {
-    let mut outer = div().flex().flex_col().w_full().items_end();
+    let mut outer = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .items_end()
+        // Per-bubble swipe (sent → left only)
+        .on_mouse_move(
+            cx.listener(move |_this, event: &MouseMoveEvent, _window, cx| {
+                let changed = CHAT_STATE.with(|s| {
+                    let mut st = s.borrow_mut();
+                    let x = event.position.x.as_f32();
+                    if st.swipe_msg.is_some() && st.swipe_msg != Some(idx) {
+                        return false;
+                    }
+                    if st.swipe_start_x.is_none() {
+                        st.swipe_start_x = Some(x);
+                        st.swipe_msg = Some(idx);
+                        return false;
+                    }
+                    let start_x = st.swipe_start_x.unwrap();
+                    let dx = (x - start_x).min(0.0).max(-70.0); // left only
+                    if dx.abs() > 5.0 {
+                        st.swipe_msg = Some(idx);
+                        st.swipe_offset = dx;
+                        return true;
+                    }
+                    false
+                });
+                if changed {
+                    cx.notify();
+                }
+            }),
+        );
 
     if show_picker {
         outer = outer.child(render_reaction_picker(idx, true, dark, cx));
@@ -661,26 +753,33 @@ fn render_sent_bubble_interactive(
             }),
         );
 
-    // Swipe to reveal timestamp
-    if let Some(offset) = swipe {
-        let ts_opacity = (offset.abs() - 15.0).max(0.0) / 40.0;
-        let ts_opacity = ts_opacity.min(1.0);
-
+    // Swipe: slide bubble left, timestamp peeks in from the right
+    let slide = swipe_offset; // already direction-locked by the handler
+    if slide.abs() > 1.0 {
+        let ts_opacity = ((slide.abs() - 8.0) / 30.0).clamp(0.0, 1.0);
         let swipe_row = div()
             .flex()
             .flex_row()
             .items_center()
             .w_full()
-            .gap(px(6.0))
+            .overflow_hidden()
             .justify_end()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(rgb(TIMESTAMP_COLOR))
-                    .opacity(ts_opacity)
-                    .child("Now"),
-            )
-            .child(bubble);
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .mr(px(slide))
+                    .child(bubble)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TIMESTAMP_COLOR))
+                            .opacity(ts_opacity)
+                            .child("Now"),
+                    ),
+            );
         outer = outer.child(swipe_row);
     } else {
         outer = outer.child(bubble);
