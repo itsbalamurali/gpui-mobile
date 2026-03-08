@@ -197,10 +197,12 @@ pub struct ChatState {
     pub swipe_offset: f32,
     pub swipe_msg: Option<usize>,
     pub swipe_start_x: Option<f32>,
-    /// Pending text chunks from the keyboard callback (replaces old CHAT_PENDING_TEXT).
+    /// Pending text chunks from the keyboard callback.
     pub pending_text: Vec<String>,
-    /// Whether the composer field was tapped (replaces old CHAT_FIELD_TAPPED).
+    /// Whether the composer field was tapped.
     pub field_tapped: bool,
+    /// Whether the + action menu is showing.
+    pub show_plus_menu: bool,
 }
 
 thread_local! {
@@ -272,7 +274,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
 
     let dark = router.dark_mode;
 
-    let (sent_messages, compose_text, focused, reaction_picker_msg, user_reactions, recording, swipe_msg, swipe_offset) =
+    let (sent_messages, compose_text, focused, reaction_picker_msg, user_reactions, recording, swipe_msg, swipe_offset, show_plus_menu) =
         CHAT_STATE.with(|s| {
             let st = s.borrow();
             (
@@ -284,6 +286,7 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                 st.mic_recording,
                 st.swipe_msg,
                 st.swipe_offset,
+                st.show_plus_menu,
             )
         });
 
@@ -332,6 +335,11 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     cx,
                 )),
         )
+        // ── Composer bar ─────────────────────────────────────────────────
+        // ── Plus menu (above composer) ────────────────────────────────
+        .when(show_plus_menu, |d| {
+            d.child(render_plus_menu(dark, cx))
+        })
         // ── Composer bar ─────────────────────────────────────────────────
         .child(render_composer(dark, &compose_text, focused, recording, cx))
         // ── Keyboard spacer ──────────────────────────────────────────────
@@ -942,6 +950,73 @@ fn reaction_pill(emoji: &str, count: u8, bg: u32) -> impl IntoElement {
 
 // ── Composer bar ────────────────────────────────────────────────────────────
 
+// ── Plus action menu ─────────────────────────────────────────────────────
+
+fn render_plus_menu(
+    dark: bool,
+    cx: &mut gpui::Context<Router>,
+) -> impl IntoElement {
+    let menu_bg = if dark { COMPOSER_BG_DARK } else { COMPOSER_BG_LIGHT };
+    let text_color = if dark { 0xFFFFFF } else { 0x000000 };
+
+    let actions: &[(&str, &str)] = &[
+        ("\u{1f4f7}", "Camera"),     // 📷
+        ("\u{1f5bc}\u{fe0f}", "Photos"),     // 🖼️
+        ("\u{1f4cd}", "Location"),   // 📍
+        ("\u{1f4ce}", "File"),       // 📎
+        ("\u{1f3a4}", "Audio"),      // 🎤
+        ("\u{1f464}", "Contact"),    // 👤
+    ];
+
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(12.0))
+        .bg(rgb(menu_bg))
+        .border_t_1()
+        .border_color(rgb(if dark { 0x38383A } else { 0xC6C6C8 }))
+        .children(actions.iter().enumerate().map(|(i, &(icon, label))| {
+            let label_owned = label.to_string();
+            div()
+                .id(format!("plus-action-{i}"))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.0))
+                .w(px(64.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(48.0))
+                        .h(px(48.0))
+                        .rounded(px(14.0))
+                        .bg(rgb(if dark { 0x3A3A3C } else { 0xE5E5EA }))
+                        .child(div().text_xl().child(icon.to_string())),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(text_color))
+                        .child(label.to_string()),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |_this, _event: &MouseDownEvent, _window, cx| {
+                        log::info!("Chat + menu: {}", label_owned);
+                        CHAT_STATE.with(|s| {
+                            s.borrow_mut().show_plus_menu = false;
+                        });
+                        cx.notify();
+                    }),
+                )
+        }))
+}
+
 fn render_composer(
     dark: bool,
     compose_text: &str,
@@ -972,9 +1047,10 @@ fn render_composer(
         .bg(rgb(composer_bg))
         .border_t_1()
         .border_color(rgb(if dark { 0x38383A } else { 0xC6C6C8 }))
-        // Camera / plus button
+        // Plus / actions button
         .child(
             div()
+                .id("chat-plus-btn")
                 .flex()
                 .items_center()
                 .justify_center()
@@ -987,6 +1063,16 @@ fn render_composer(
                         .text_sm()
                         .text_color(rgb(0xFFFFFF))
                         .child("+"),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_this, _event: &MouseDownEvent, _window, cx| {
+                        CHAT_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            st.show_plus_menu = !st.show_plus_menu;
+                        });
+                        cx.notify();
+                    }),
                 ),
         )
         // Text field

@@ -21,7 +21,7 @@
 <resources>
 
     <!-- Base application theme for the GPUI example app. -->
-    <style name="GpuiTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+    <style name="GpuiTheme" parent="@android:style/Theme.NoTitleBar">
         <!-- Match the app's dark theme surface color (0x121318) to eliminate
              any flash between the system splash and the first rendered frame. -->
         <item name="android:windowBackground">@color/gpui_surface</item>
@@ -41,8 +41,14 @@
         <!-- No title bar — we render our own UI chrome. -->
         <item name="android:windowNoTitle">true</item>
 
-        <!-- Fullscreen — hide status bar. -->
-        <item name="android:windowFullscreen">true</item>
+        <!-- NOT fullscreen — allow the status bar and navigation bar to show
+             so we can color them via setStatusBarColor / setNavigationBarColor. -->
+        <item name="android:windowFullscreen">false</item>
+
+        <!-- Draw behind the status bar so our content fills the screen,
+             and we can set the bar colors programmatically. -->
+        <item name="android:statusBarColor">@color/gpui_surface</item>
+        <item name="android:navigationBarColor">@color/gpui_surface</item>
 
         <!-- Disable default content transitions that could cause flicker. -->
         <item name="android:windowContentTransitions">false</item>
