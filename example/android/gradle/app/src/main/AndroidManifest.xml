@@ -66,6 +66,7 @@
     <application
         android:allowBackup="false"
         android:hardwareAccelerated="true"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:label="GPUI Android"
         android:roundIcon="@mipmap/ic_launcher_round"

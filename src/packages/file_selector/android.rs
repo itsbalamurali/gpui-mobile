@@ -5,11 +5,11 @@ use jni::objects::{JObject, JValue};
 const HELPER_CLASS: &str = "dev.gpui.mobile.GpuiFilePicker";
 
 pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, String> {
+    let mime_types = build_mime_string(options);
     jni_helpers::with_env(|env| {
         let activity = jni_helpers::activity(env)?;
         let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
 
-        let mime_types = build_mime_string(options);
         let j_mime = env.new_string(&mime_types).e()?;
 
         let result = env
@@ -38,11 +38,11 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
 }
 
 pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String> {
+    let mime_types = build_mime_string(options);
     jni_helpers::with_env(|env| {
         let activity = jni_helpers::activity(env)?;
         let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
 
-        let mime_types = build_mime_string(options);
         let j_mime = env.new_string(&mime_types).e()?;
 
         let result = env

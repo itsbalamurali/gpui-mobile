@@ -394,36 +394,55 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                         .gap_2()
                         .p_3()
                         .child(
-                            action_button("Pick File", BLUE, cx.listener(|this, _, _, cx| {
-                                let opts = gpui_mobile::packages::file_selector::OpenFileOptions::default();
-                                match gpui_mobile::packages::file_selector::open_file(&opts) {
-                                    Ok(Some(f)) => this.last_picked_file = Some(f.name),
-                                    Ok(None) => this.last_picked_file = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Pick File", BLUE, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        let opts = gpui_mobile::packages::file_selector::OpenFileOptions::default();
+                                        gpui_mobile::packages::file_selector::open_file(&opts)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(f)) => this.last_picked_file = Some(f.name),
+                                            Ok(None) => this.last_picked_file = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Pick Files", GREEN, cx.listener(|this, _, _, cx| {
-                                let opts = gpui_mobile::packages::file_selector::OpenFileOptions::default();
-                                match gpui_mobile::packages::file_selector::open_files(&opts) {
-                                    Ok(files) => {
-                                        this.last_picked_file = Some(format!("{} files", files.len()));
-                                    }
-                                    Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Pick Files", GREEN, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        let opts = gpui_mobile::packages::file_selector::OpenFileOptions::default();
+                                        gpui_mobile::packages::file_selector::open_files(&opts)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(files) => this.last_picked_file = Some(format!("{} files", files.len())),
+                                            Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Pick Dir", TEAL, cx.listener(|this, _, _, cx| {
-                                match gpui_mobile::packages::file_selector::get_directory_path(None) {
-                                    Ok(Some(d)) => this.last_picked_file = Some(d),
-                                    Ok(None) => this.last_picked_file = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Pick Dir", TEAL, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        gpui_mobile::packages::file_selector::get_directory_path(None)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(d)) => this.last_picked_file = Some(d),
+                                            Ok(None) => this.last_picked_file = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_file = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         ),
                 )
@@ -444,68 +463,101 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                         .gap_2()
                         .p_3()
                         .child(
-                            action_button("Gallery", MAUVE, cx.listener(|this, _, _, cx| {
-                                let opts = gpui_mobile::packages::image_picker::ImagePickerOptions {
-                                    source: gpui_mobile::packages::image_picker::ImageSource::Gallery,
-                                    ..Default::default()
-                                };
-                                match gpui_mobile::packages::image_picker::pick_image(&opts) {
-                                    Ok(Some(f)) => this.last_picked_image = Some(f.name),
-                                    Ok(None) => this.last_picked_image = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Gallery", MAUVE, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        let opts = gpui_mobile::packages::image_picker::ImagePickerOptions {
+                                            source: gpui_mobile::packages::image_picker::ImageSource::Gallery,
+                                            ..Default::default()
+                                        };
+                                        gpui_mobile::packages::image_picker::pick_image(&opts)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(f)) => this.last_picked_image = Some(f.name),
+                                            Ok(None) => this.last_picked_image = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Camera", PEACH, cx.listener(|this, _, _, cx| {
-                                let opts = gpui_mobile::packages::image_picker::ImagePickerOptions {
-                                    source: gpui_mobile::packages::image_picker::ImageSource::Camera,
-                                    ..Default::default()
-                                };
-                                match gpui_mobile::packages::image_picker::pick_image(&opts) {
-                                    Ok(Some(f)) => this.last_picked_image = Some(f.name),
-                                    Ok(None) => this.last_picked_image = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Camera", PEACH, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        let opts = gpui_mobile::packages::image_picker::ImagePickerOptions {
+                                            source: gpui_mobile::packages::image_picker::ImageSource::Camera,
+                                            ..Default::default()
+                                        };
+                                        gpui_mobile::packages::image_picker::pick_image(&opts)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(f)) => this.last_picked_image = Some(f.name),
+                                            Ok(None) => this.last_picked_image = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Multi", YELLOW, cx.listener(|this, _, _, cx| {
-                                match gpui_mobile::packages::image_picker::pick_multi_image(None, None, None) {
-                                    Ok(files) => {
-                                        this.last_picked_image = Some(format!("{} images", files.len()));
-                                    }
-                                    Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Multi", YELLOW, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        gpui_mobile::packages::image_picker::pick_multi_image(None, None, None)
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(files) => this.last_picked_image = Some(format!("{} images", files.len())),
+                                            Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Video", TEAL, cx.listener(|this, _, _, cx| {
-                                match gpui_mobile::packages::image_picker::pick_video(
-                                    gpui_mobile::packages::image_picker::ImageSource::Gallery,
-                                    gpui_mobile::packages::image_picker::CameraDevice::Rear,
-                                ) {
-                                    Ok(Some(f)) => this.last_picked_image = Some(f.name),
-                                    Ok(None) => this.last_picked_image = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Video", TEAL, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        gpui_mobile::packages::image_picker::pick_video(
+                                            gpui_mobile::packages::image_picker::ImageSource::Gallery,
+                                            gpui_mobile::packages::image_picker::CameraDevice::Rear,
+                                        )
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(f)) => this.last_picked_image = Some(f.name),
+                                            Ok(None) => this.last_picked_image = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         )
                         .child(
-                            action_button("Record", super::RED, cx.listener(|this, _, _, cx| {
-                                match gpui_mobile::packages::image_picker::pick_video(
-                                    gpui_mobile::packages::image_picker::ImageSource::Camera,
-                                    gpui_mobile::packages::image_picker::CameraDevice::Rear,
-                                ) {
-                                    Ok(Some(f)) => this.last_picked_image = Some(f.name),
-                                    Ok(None) => this.last_picked_image = Some("Cancelled".into()),
-                                    Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
-                                }
-                                cx.notify();
+                            action_button("Record", super::RED, cx.listener(|_this, _, _, cx| {
+                                cx.spawn(async |this, cx| {
+                                    let result = cx.background_executor().spawn(async {
+                                        gpui_mobile::packages::image_picker::pick_video(
+                                            gpui_mobile::packages::image_picker::ImageSource::Camera,
+                                            gpui_mobile::packages::image_picker::CameraDevice::Rear,
+                                        )
+                                    }).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        match result {
+                                            Ok(Some(f)) => this.last_picked_image = Some(f.name),
+                                            Ok(None) => this.last_picked_image = Some("Cancelled".into()),
+                                            Err(e) => this.last_picked_image = Some(format!("Error: {e}")),
+                                        }
+                                        cx.notify();
+                                    });
+                                }).detach();
                             })),
                         ),
                 )
@@ -815,23 +867,37 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     .gap_2()
                     .px_3()
                     .pb_3()
-                    .child(action_button("Request Cam", PEACH, cx.listener(|this, _, _, cx| {
-                        match gpui_mobile::packages::permission_handler::request_permission(
-                            gpui_mobile::packages::permission_handler::Permission::Camera,
-                        ) {
-                            Ok(s) => this.perm_status = Some(format!("Camera: {:?}", s)),
-                            Err(e) => this.perm_status = Some(format!("Error: {e}")),
-                        }
-                        cx.notify();
+                    .child(action_button("Request Cam", PEACH, cx.listener(|_this, _, _, cx| {
+                        cx.spawn(async |this, cx| {
+                            let result = cx.background_executor().spawn(async {
+                                gpui_mobile::packages::permission_handler::request_permission(
+                                    gpui_mobile::packages::permission_handler::Permission::Camera,
+                                )
+                            }).await;
+                            let _ = this.update(cx, |this, cx| {
+                                match result {
+                                    Ok(s) => this.perm_status = Some(format!("Camera: {:?}", s)),
+                                    Err(e) => this.perm_status = Some(format!("Error: {e}")),
+                                }
+                                cx.notify();
+                            });
+                        }).detach();
                     })))
-                    .child(action_button("Request Mic", TEAL, cx.listener(|this, _, _, cx| {
-                        match gpui_mobile::packages::permission_handler::request_permission(
-                            gpui_mobile::packages::permission_handler::Permission::Microphone,
-                        ) {
-                            Ok(s) => this.perm_status = Some(format!("Mic: {:?}", s)),
-                            Err(e) => this.perm_status = Some(format!("Error: {e}")),
-                        }
-                        cx.notify();
+                    .child(action_button("Request Mic", TEAL, cx.listener(|_this, _, _, cx| {
+                        cx.spawn(async |this, cx| {
+                            let result = cx.background_executor().spawn(async {
+                                gpui_mobile::packages::permission_handler::request_permission(
+                                    gpui_mobile::packages::permission_handler::Permission::Microphone,
+                                )
+                            }).await;
+                            let _ = this.update(cx, |this, cx| {
+                                match result {
+                                    Ok(s) => this.perm_status = Some(format!("Mic: {:?}", s)),
+                                    Err(e) => this.perm_status = Some(format!("Error: {e}")),
+                                }
+                                cx.notify();
+                            });
+                        }).detach();
                     })))
                     .child(action_button("Settings", SURFACE0, cx.listener(|this, _, _, cx| {
                         match gpui_mobile::packages::permission_handler::open_app_settings() {
