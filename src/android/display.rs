@@ -16,49 +16,15 @@
 //! crate.  When wired into a real GPUI workspace, swap the `super::*` imports
 //! for the canonical `gpui::*` equivalents.
 
-#![allow(unsafe_code)]
 
 use super::{Bounds, DevicePixels, Pixels, Point, Size};
 use anyhow::Result;
 use gpui::{self, DisplayId, PlatformDisplay};
+use ndk::native_window::NativeWindow;
 use std::fmt;
 
-// ── NDK bindings we need ──────────────────────────────────────────────────────
-
-/// Opaque `ANativeWindow` handle.
-#[repr(C)]
-pub struct ANativeWindow {
-    _priv: [u8; 0],
-}
-
-/// Opaque `AConfiguration` handle.
-#[repr(C)]
-pub struct AConfiguration {
-    _priv: [u8; 0],
-}
-
-unsafe extern "C" {
-    /// Returns the width of the window's backing buffer in pixels.
-    fn ANativeWindow_getWidth(window: *mut ANativeWindow) -> i32;
-    /// Returns the height of the window's backing buffer in pixels.
-    fn ANativeWindow_getHeight(window: *mut ANativeWindow) -> i32;
-    /// Acquires a reference to the window (prevents it from being freed).
-    fn ANativeWindow_acquire(window: *mut ANativeWindow);
-    /// Releases a reference to the window.
-    fn ANativeWindow_release(window: *mut ANativeWindow);
-
-    /// Creates a new `AConfiguration` object.
-    fn AConfiguration_new() -> *mut AConfiguration;
-    /// Deletes an `AConfiguration` object.
-    fn AConfiguration_delete(config: *mut AConfiguration);
-    /// Fills `config` from the current `AssetManager` / display context.
-    fn AConfiguration_fromAssetManager(
-        config: *mut AConfiguration,
-        asset_manager: *mut std::ffi::c_void,
-    );
-    /// Returns the screen density in DPI.
-    fn AConfiguration_getDensity(config: *mut AConfiguration) -> i32;
-}
+use ndk::asset::AssetManager;
+use ndk::configuration::Configuration;
 
 // Well-known Android density buckets (dp/inch).
 const DENSITY_DEFAULT: i32 = 160;
@@ -67,17 +33,15 @@ const DENSITY_DEFAULT: i32 = 160;
 
 /// A single logical display on Android.
 ///
-/// Wraps an `ANativeWindow` pointer and exposes the geometry / density
-/// information that GPUI needs to lay out and render content.
+/// Wraps an `ndk::native_window::NativeWindow` and exposes the geometry /
+/// density information that GPUI needs to lay out and render content.
 ///
-/// `AndroidDisplay` holds an `ANativeWindow_acquire` reference for its
-/// lifetime, ensuring the window is not freed while we hold it.
+/// `NativeWindow` is internally reference-counted (`ANativeWindow_acquire` /
+/// `ANativeWindow_release`), so cloning and dropping are handled automatically.
+#[derive(Clone)]
 pub struct AndroidDisplay {
-    /// Raw pointer to the underlying native window.
-    ///
-    /// We call `ANativeWindow_acquire` on construction and
-    /// `ANativeWindow_release` on drop.
-    window: *mut ANativeWindow,
+    /// The underlying native window, or `None` for headless displays.
+    window: Option<NativeWindow>,
 
     /// Display density expressed as a scale factor relative to 160 dpi
     /// (the Android "baseline" density).
@@ -92,73 +56,41 @@ pub struct AndroidDisplay {
     id: u64,
 }
 
-// SAFETY: `ANativeWindow` is internally reference-counted and its geometry
-// query functions are thread-safe for read-only access.
-unsafe impl Send for AndroidDisplay {}
-unsafe impl Sync for AndroidDisplay {}
-
 impl AndroidDisplay {
     // ── constructors ─────────────────────────────────────────────────────────
 
-    /// Create an `AndroidDisplay` from a raw `ANativeWindow` pointer.
+    /// Create an `AndroidDisplay` from an `ndk::native_window::NativeWindow`.
     ///
-    /// Acquires an extra reference to `window` so the caller may release
-    /// their own reference independently.
+    /// The `NativeWindow` is cloned (which internally calls `ANativeWindow_acquire`),
+    /// so the caller retains ownership of their handle.
     ///
     /// `density_dpi` — the screen density in dots-per-inch as returned by
     /// `AConfiguration_getDensity()`.  Pass `0` or a negative value to fall
     /// back to the baseline density (160 dpi).
-    ///
-    /// # Safety
-    ///
-    /// `window` must be a valid, non-null `ANativeWindow *` for the duration
-    /// of this call.
-    pub unsafe fn from_window(window: *mut ANativeWindow, density_dpi: i32) -> Result<Self> {
-        anyhow::ensure!(!window.is_null(), "ANativeWindow pointer must not be null");
-
-        // Acquire our own reference so the display outlives the caller's handle.
-        unsafe { ANativeWindow_acquire(window) };
-
+    pub fn from_window(window: &NativeWindow, density_dpi: i32) -> Self {
         let density = if density_dpi > 0 {
             density_dpi
         } else {
             DENSITY_DEFAULT
         };
         let scale_factor = density as f32 / DENSITY_DEFAULT as f32;
-        let id = window as u64;
+        let id = window.ptr().as_ptr() as u64;
 
-        Ok(Self {
-            window,
+        Self {
+            window: Some(window.clone()),
             scale_factor,
             id,
-        })
+        }
     }
 
     /// Create an `AndroidDisplay` and query density from an `AssetManager`.
-    ///
-    /// This is the most convenient constructor when you have access to the
-    /// `ANativeActivity` fields.
-    ///
-    /// # Safety
-    ///
-    /// Both `window` and `asset_manager` must be valid non-null pointers.
-    pub unsafe fn from_activity(
-        window: *mut ANativeWindow,
-        asset_manager: *mut std::ffi::c_void,
-    ) -> Result<Self> {
-        anyhow::ensure!(!window.is_null(), "ANativeWindow must not be null");
-        anyhow::ensure!(!asset_manager.is_null(), "AssetManager must not be null");
-
-        let density_dpi = unsafe {
-            let config = AConfiguration_new();
-            anyhow::ensure!(!config.is_null(), "AConfiguration_new() returned null");
-            AConfiguration_fromAssetManager(config, asset_manager);
-            let dpi = AConfiguration_getDensity(config);
-            AConfiguration_delete(config);
-            dpi
-        };
-
-        unsafe { Self::from_window(window, density_dpi) }
+    pub fn from_activity(
+        window: &NativeWindow,
+        asset_manager: &AssetManager,
+    ) -> Self {
+        let config = Configuration::from_asset_manager(asset_manager);
+        let density_dpi = config.density().unwrap_or(DENSITY_DEFAULT as u32) as i32;
+        Self::from_window(window, density_dpi)
     }
 
     /// Create a synthetic `AndroidDisplay` for headless / testing use.
@@ -167,7 +99,7 @@ impl AndroidDisplay {
     /// No native window is held.
     pub fn headless(width: i32, height: i32) -> Self {
         Self {
-            window: std::ptr::null_mut(),
+            window: None,
             scale_factor: 1.0,
             id: ((width as u64) << 32) | (height as u64),
         }
@@ -177,18 +109,18 @@ impl AndroidDisplay {
 
     /// Physical width of the display in device pixels.
     pub fn physical_width(&self) -> DevicePixels {
-        if self.window.is_null() {
-            return DevicePixels(0);
+        match &self.window {
+            Some(nw) => DevicePixels(nw.width()),
+            None => DevicePixels(0),
         }
-        DevicePixels(unsafe { ANativeWindow_getWidth(self.window) })
     }
 
     /// Physical height of the display in device pixels.
     pub fn physical_height(&self) -> DevicePixels {
-        if self.window.is_null() {
-            return DevicePixels(0);
+        match &self.window {
+            Some(nw) => DevicePixels(nw.height()),
+            None => DevicePixels(0),
         }
-        DevicePixels(unsafe { ANativeWindow_getHeight(self.window) })
     }
 
     /// Physical size of the display in device pixels.
@@ -268,42 +200,16 @@ impl AndroidDisplay {
 
     /// Returns `true` if this display is backed by a real `ANativeWindow`.
     pub fn is_real(&self) -> bool {
-        !self.window.is_null()
+        self.window.is_some()
     }
 
     // ── raw handle ────────────────────────────────────────────────────────────
 
-    /// Returns the underlying `ANativeWindow` pointer.
+    /// Returns a reference to the underlying `NativeWindow`, if present.
     ///
-    /// The caller must not release the returned pointer — `AndroidDisplay`
-    /// holds its own reference and will release it on drop.
-    ///
-    /// Returns `null` for headless displays.
-    pub fn native_window(&self) -> *mut ANativeWindow {
-        self.window
-    }
-}
-
-impl Drop for AndroidDisplay {
-    fn drop(&mut self) {
-        if !self.window.is_null() {
-            unsafe { ANativeWindow_release(self.window) };
-        }
-    }
-}
-
-impl Clone for AndroidDisplay {
-    /// Clones the display by acquiring an additional reference to the
-    /// underlying `ANativeWindow`.
-    fn clone(&self) -> Self {
-        if !self.window.is_null() {
-            unsafe { ANativeWindow_acquire(self.window) };
-        }
-        Self {
-            window: self.window,
-            scale_factor: self.scale_factor,
-            id: self.id,
-        }
+    /// Returns `None` for headless displays.
+    pub fn native_window(&self) -> Option<&NativeWindow> {
+        self.window.as_ref()
     }
 }
 

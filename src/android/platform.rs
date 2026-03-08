@@ -562,25 +562,19 @@ impl AndroidPlatform {
     // ── window management ─────────────────────────────────────────────────────
 
     /// Open a new window backed by `native_window`.
-    ///
-    /// # Safety
-    ///
-    /// `native_window` must be a valid non-null `ANativeWindow *` pointer.
-    pub unsafe fn open_window(
+    pub fn open_window(
         &self,
-        native_window: *mut crate::android::window::ANativeWindow,
+        native_window: ndk::native_window::NativeWindow,
         scale_factor: f32,
         transparent: bool,
     ) -> Result<Arc<AndroidWindow>> {
         let mut state = self.state.lock();
-        let window = unsafe {
-            AndroidWindow::new(
-                native_window,
-                &mut state.gpu_context,
-                scale_factor,
-                transparent,
-            )?
-        };
+        let window = AndroidWindow::new(
+            native_window,
+            &mut state.gpu_context,
+            scale_factor,
+            transparent,
+        )?;
         state.windows.push(Arc::clone(&window));
         log::info!(
             "AndroidPlatform::open_window — id={:#x} scale={:.1}",
@@ -633,23 +627,17 @@ impl AndroidPlatform {
         self.state.lock().displays.primary().cloned()
     }
 
-    /// Update the primary display from a new `ANativeWindow`.
+    /// Update the primary display from a new `NativeWindow`.
     ///
     /// Called when `APP_CMD_INIT_WINDOW` delivers a new surface.
-    ///
-    /// # Safety
-    ///
-    /// `native_window` must be a valid non-null pointer and `asset_manager`
-    /// must be a valid `AAssetManager *` pointer.
-    pub unsafe fn update_primary_display(
+    pub fn update_primary_display(
         &self,
-        native_window: *mut crate::android::display::ANativeWindow,
-        asset_manager: *mut std::ffi::c_void,
-    ) -> Result<()> {
-        let display = unsafe { AndroidDisplay::from_activity(native_window, asset_manager) }?;
+        native_window: &ndk::native_window::NativeWindow,
+        asset_manager: &ndk::asset::AssetManager,
+    ) {
+        let display = AndroidDisplay::from_activity(native_window, asset_manager);
         let mut state = self.state.lock();
         state.displays = DisplayList::single(display);
-        Ok(())
     }
 
     // ── clipboard ─────────────────────────────────────────────────────────────

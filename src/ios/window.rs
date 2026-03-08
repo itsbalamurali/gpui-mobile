@@ -898,6 +898,7 @@ impl IosWindow {
         if let Some(delta) = scroller.step() {
             let modifiers = self.modifiers.get();
             let position = gpui::point(gpui::px(delta.position_x), gpui::px(delta.position_y));
+            let fling_ended = !scroller.is_active();
 
             if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
                 callback(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
@@ -909,15 +910,31 @@ impl IosWindow {
                     modifiers,
                     touch_phase: gpui::TouchPhase::Moved,
                 }));
+
+                // If this was the last momentum frame, send Ended now.
+                if fling_ended {
+                    callback(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position,
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                            gpui::px(0.0),
+                            gpui::px(0.0),
+                        )),
+                        modifiers,
+                        touch_phase: gpui::TouchPhase::Ended,
+                    }));
+                }
             }
         } else {
             // Fling finished — emit one final Ended event so GPUI knows
             // the scroll gesture is truly complete.
-            let pos = self.mouse_position.get();
+            let position = gpui::point(
+                gpui::px(scroller.position_x()),
+                gpui::px(scroller.position_y()),
+            );
             let modifiers = self.modifiers.get();
             if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
                 callback(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                    position: pos,
+                    position,
                     delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(0.0))),
                     modifiers,
                     touch_phase: gpui::TouchPhase::Ended,

@@ -440,6 +440,7 @@ build_android() {
     cargo ndk \
         -t "$ndk_abi" \
         -o "$jni_libs_dir" \
+        --platform 31 \
         build \
         $cargo_profile_flag \
         2>&1

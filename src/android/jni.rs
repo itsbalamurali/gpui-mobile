@@ -314,19 +314,6 @@ pub fn shared_platform() -> Option<SharedPlatform> {
         .map(|arc| SharedPlatform::new(Arc::clone(arc)))
 }
 
-// ── NDK window bindings (still needed for direct ANativeWindow access) ────────
-
-/// Opaque `ANativeWindow` handle.
-#[repr(C)]
-pub struct ANativeWindow {
-    _priv: [u8; 0],
-}
-
-unsafe extern "C" {
-    fn ANativeWindow_getWidth(window: *mut ANativeWindow) -> i32;
-    fn ANativeWindow_getHeight(window: *mut ANativeWindow) -> i32;
-}
-
 // ── input event types ─────────────────────────────────────────────────────────
 
 /// Motion event action constants from the NDK.
@@ -585,29 +572,20 @@ pub fn run_event_loop(app: &AndroidApp) {
             log::info!("deferred: InitWindow (iter={})", iteration);
             if let Some(platform) = PLATFORM.get() {
                 if let Some(native_window) = app.native_window() {
-                    let raw_ptr = native_window.ptr().as_ptr() as *mut ANativeWindow;
-                    let width = unsafe { ANativeWindow_getWidth(raw_ptr) };
-                    let height = unsafe { ANativeWindow_getHeight(raw_ptr) };
+                    let width = native_window.width();
+                    let height = native_window.height();
                     log::info!("InitWindow: {}×{}", width, height);
 
-                    let native_win = raw_ptr as *mut crate::android::display::ANativeWindow;
-                    let asset_manager = app.asset_manager().ptr().as_ptr() as *mut std::ffi::c_void;
-                    if let Err(e) =
-                        unsafe { platform.update_primary_display(native_win, asset_manager) }
-                    {
-                        log::warn!("failed to update primary display: {e:#}");
-                    }
+                    platform.update_primary_display(&native_window, &app.asset_manager());
 
                     let scale_factor = platform
                         .primary_display()
                         .map(|d| d.scale_factor())
                         .unwrap_or(1.0);
 
-                    let win_ptr = raw_ptr as *mut crate::android::window::ANativeWindow;
-
                     if let Some(existing) = platform.primary_window() {
                         let mut gpu_ctx = platform.take_gpu_context();
-                        match unsafe { existing.init_window(win_ptr, &mut gpu_ctx) } {
+                        match existing.init_window(native_window, &mut gpu_ctx) {
                             Ok(()) => {
                                 platform.return_gpu_context(gpu_ctx);
                                 log::info!("InitWindow: reinitialised existing window");
@@ -628,7 +606,7 @@ pub fn run_event_loop(app: &AndroidApp) {
 
                         INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
                     } else {
-                        match unsafe { platform.open_window(win_ptr, scale_factor, false) } {
+                        match platform.open_window(native_window, scale_factor, false) {
                             Ok(win) => {
                                 log::info!(
                                     "window opened — id={:#x} scale={:.1}",

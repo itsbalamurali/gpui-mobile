@@ -45,6 +45,7 @@ use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, HasDisplayHandle, HasWindowHandle,
     RawDisplayHandle, RawWindowHandle,
 };
+use std::ptr::NonNull;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -85,57 +86,22 @@ struct MomentumState {
     pending_scroll_phase: gpui::TouchPhase,
 }
 
-// ── NDK / raw-window-handle bindings ─────────────────────────────────────────
-
-/// Opaque `ANativeWindow` handle (re-declared here for use with raw handles).
-#[repr(C)]
-pub struct ANativeWindow {
-    _priv: [u8; 0],
-}
-
-unsafe extern "C" {
-    fn ANativeWindow_acquire(window: *mut ANativeWindow);
-    fn ANativeWindow_release(window: *mut ANativeWindow);
-    fn ANativeWindow_getWidth(window: *mut ANativeWindow) -> i32;
-    fn ANativeWindow_getHeight(window: *mut ANativeWindow) -> i32;
-}
+// Re-export for use with raw-window-handle and the frame-rate helper.
+use ndk::native_window::NativeWindow;
 
 /// Request 120 Hz refresh rate from the native window.
 ///
-/// Uses `ANativeWindow_setFrameRate` (API 30+), loaded via `dlsym` so this
-/// is a no-op on older Android versions.
-unsafe fn request_high_frame_rate(window: *mut ANativeWindow) {
-    use std::ffi::c_void;
+/// Uses `ndk::NativeWindow::set_frame_rate_with_change_strategy` (API 31+).
+fn request_high_frame_rate(window: &NativeWindow) {
+    use ndk::native_window::{ChangeFrameRateStrategy, FrameRateCompatibility};
 
-    type SetFrameRateFn = unsafe extern "C" fn(*mut ANativeWindow, f32, i32) -> i32;
-
-    unsafe extern "C" {
-        fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
-    }
-
-    /// Pseudo-handle: search all loaded shared objects.
-    const RTLD_DEFAULT: *mut c_void = std::ptr::null_mut();
-
-    static FN_PTR: std::sync::OnceLock<Option<SetFrameRateFn>> = std::sync::OnceLock::new();
-    let func = FN_PTR.get_or_init(|| {
-        let name = c"ANativeWindow_setFrameRate";
-        let ptr = unsafe { dlsym(RTLD_DEFAULT, name.as_ptr().cast()) };
-        if ptr.is_null() {
-            log::info!("ANativeWindow_setFrameRate not available (pre-API 30)");
-            None
-        } else {
-            Some(unsafe { std::mem::transmute::<*mut c_void, SetFrameRateFn>(ptr) })
-        }
-    });
-
-    if let Some(set_frame_rate) = func {
-        // compatibility = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT (0)
-        let result = unsafe { set_frame_rate(window, 120.0, 0) };
-        if result == 0 {
-            log::info!("Requested 120 Hz frame rate");
-        } else {
-            log::warn!("ANativeWindow_setFrameRate returned {result}");
-        }
+    match window.set_frame_rate_with_change_strategy(
+        120.0,
+        FrameRateCompatibility::Default,
+        ChangeFrameRateStrategy::OnlyIfSeamless,
+    ) {
+        Ok(()) => log::info!("Requested 120 Hz frame rate"),
+        Err(e) => log::warn!("set_frame_rate_with_change_strategy failed: {e}"),
     }
 }
 
@@ -206,9 +172,10 @@ impl SafeAreaInsets {
 }
 
 struct WindowState {
-    /// Raw pointer to the `ANativeWindow`.  We hold an extra `acquire`
-    /// reference for the lifetime of this state.
-    native_window: *mut ANativeWindow,
+    /// The `NativeWindow` handle.  Reference-counted via `ndk::NativeWindow`
+    /// (Clone acquires, Drop releases).  `None` while the surface is
+    /// unavailable (between `term_window` and the next `init_window`).
+    native_window: Option<NativeWindow>,
 
     /// Shared GPU context (instance + adapter + device + queue).
     /// Created once and reused across window re-creations.
@@ -248,10 +215,7 @@ struct WindowState {
     active_status_callback: Option<ActiveStatusCallback>,
 }
 
-// SAFETY: The raw pointer is wrapped in a Mutex and only dereferenced
-// from methods that document their safety requirements.
-unsafe impl Send for WindowState {}
-unsafe impl Sync for WindowState {}
+
 
 // ── AndroidWindow ─────────────────────────────────────────────────────────────
 
@@ -279,7 +243,7 @@ unsafe impl Sync for AndroidWindow {}
 impl AndroidWindow {
     // ── constructors ─────────────────────────────────────────────────────────
 
-    /// Create an `AndroidWindow` from a raw `ANativeWindow *`.
+    /// Create an `AndroidWindow` from an `ndk::NativeWindow`.
     ///
     /// Initialises the wgpu surface and renderer immediately.
     ///
@@ -292,27 +256,16 @@ impl AndroidWindow {
     /// a 480 dpi device).
     ///
     /// `transparent` — whether to request a pre-multiplied alpha surface.
-    ///
-    /// # Safety
-    ///
-    /// `native_window` must be a valid, non-null `ANativeWindow *` that will
-    /// remain valid until `term_window` is called.
-    pub unsafe fn new(
-        native_window: *mut ANativeWindow,
+    pub fn new(
+        native_window: NativeWindow,
         gpu_context: &mut Option<WgpuContext>,
         scale_factor: f32,
         transparent: bool,
     ) -> Result<Arc<Self>> {
-        anyhow::ensure!(!native_window.is_null(), "ANativeWindow must not be null");
+        request_high_frame_rate(&native_window);
 
-        // Acquire our own reference.
-        unsafe { ANativeWindow_acquire(native_window) };
-
-        // Request 120 Hz refresh rate (no-op on API < 30).
-        unsafe { request_high_frame_rate(native_window) };
-
-        let width = unsafe { ANativeWindow_getWidth(native_window) };
-        let height = unsafe { ANativeWindow_getHeight(native_window) };
+        let width = native_window.width();
+        let height = native_window.height();
 
         log::info!(
             "AndroidWindow::new — {}×{} scale={:.1}",
@@ -321,16 +274,13 @@ impl AndroidWindow {
             scale_factor
         );
 
-        // Build raw-window-handle types so wgpu can create a surface.
-        let renderer = unsafe {
-            Self::create_renderer(native_window, gpu_context, width, height, transparent)
-        }
-        .context("failed to create gpui_wgpu renderer")?;
+        let renderer = Self::create_renderer(&native_window, gpu_context, width, height, transparent)
+            .context("failed to create gpui_wgpu renderer")?;
 
-        let id = native_window as u64;
+        let id = native_window.ptr().as_ptr() as u64;
 
         let state = Arc::new(Mutex::new(WindowState {
-            native_window,
+            native_window: Some(native_window),
             gpu_context: gpu_context.take(),
             renderer: Some(renderer),
             width,
@@ -361,7 +311,7 @@ impl AndroidWindow {
     /// No wgpu surface is created.
     pub fn headless(width: i32, height: i32, scale_factor: f32) -> Arc<Self> {
         let state = Arc::new(Mutex::new(WindowState {
-            native_window: std::ptr::null_mut(),
+            native_window: None,
             gpu_context: None,
             renderer: None,
             width,
@@ -389,49 +339,30 @@ impl AndroidWindow {
 
     // ── window lifecycle ──────────────────────────────────────────────────────
 
-    /// Called when `APP_CMD_INIT_WINDOW` fires and a new `ANativeWindow` is
+    /// Called when `APP_CMD_INIT_WINDOW` fires and a new `NativeWindow` is
     /// available (e.g. after returning from the background).
-    ///
-    /// # Safety
-    ///
-    /// `native_window` must be a valid non-null `ANativeWindow *`.
-    pub unsafe fn init_window(
+    pub fn init_window(
         &self,
-        native_window: *mut ANativeWindow,
+        native_window: NativeWindow,
         gpu_context: &mut Option<WgpuContext>,
     ) -> Result<()> {
-        anyhow::ensure!(!native_window.is_null(), "ANativeWindow must not be null");
+        request_high_frame_rate(&native_window);
 
-        unsafe { ANativeWindow_acquire(native_window) };
-
-        // Re-request 120 Hz after surface recreation.
-        unsafe { request_high_frame_rate(native_window) };
-
-        let width = unsafe { ANativeWindow_getWidth(native_window) };
-        let height = unsafe { ANativeWindow_getHeight(native_window) };
+        let width = native_window.width();
+        let height = native_window.height();
 
         let mut state = self.state.lock();
-
-        // Release previous native window if there was one.
-        if !state.native_window.is_null() {
-            unsafe { ANativeWindow_release(state.native_window) };
-        }
-        state.native_window = native_window;
-        state.width = width;
-        state.height = height;
-
         let transparent = state.transparent;
 
         // If a renderer already exists (kept alive across term_window), just
         // replace its surface.  This preserves the atlas and all cached
         // AtlasTextureIds so GPUI's scene cache remains valid.
         if state.renderer.is_some() {
-            let raw = unsafe { Self::raw_window(native_window) };
+            let raw = Self::raw_window(&native_window);
             let config = WgpuSurfaceConfig {
                 size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
                 transparent,
             };
-            // Clone the instance Arc so we can borrow renderer mutably.
             let instance = state.gpu_context.as_ref()
                 .ok_or_else(|| anyhow::anyhow!("gpu_context missing during surface replacement"))?
                 .instance.clone();
@@ -441,19 +372,15 @@ impl AndroidWindow {
         } else {
             // First init or after a full destroy — create a fresh renderer.
             let renderer = if state.gpu_context.is_some() {
-                unsafe {
-                    Self::create_renderer(
-                        native_window,
-                        &mut state.gpu_context,
-                        width,
-                        height,
-                        transparent,
-                    )
-                }?
+                Self::create_renderer(
+                    &native_window,
+                    &mut state.gpu_context,
+                    width,
+                    height,
+                    transparent,
+                )?
             } else {
-                let r = unsafe {
-                    Self::create_renderer(native_window, gpu_context, width, height, transparent)
-                }?;
+                let r = Self::create_renderer(&native_window, gpu_context, width, height, transparent)?;
                 state.gpu_context = gpu_context.take();
                 r
             };
@@ -461,6 +388,10 @@ impl AndroidWindow {
             log::info!("AndroidWindow::init_window — created new renderer {}×{}", width, height);
         }
 
+        // Store the new native window (drops previous one if any).
+        state.native_window = Some(native_window);
+        state.width = width;
+        state.height = height;
         state.is_active = true;
         self.active.store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -484,10 +415,7 @@ impl AndroidWindow {
         }
 
         // Release our reference on the native window.
-        if !state.native_window.is_null() {
-            unsafe { ANativeWindow_release(state.native_window) };
-            state.native_window = std::ptr::null_mut();
-        }
+        state.native_window = None;
 
         state.is_active = false;
         self.active.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -505,12 +433,13 @@ impl AndroidWindow {
         let (new_w, new_h, scale) = {
             let mut state = self.state.lock();
 
-            if state.native_window.is_null() {
-                return;
-            }
+            let nw = match state.native_window.as_ref() {
+                Some(nw) => nw,
+                None => return,
+            };
 
-            let new_w = unsafe { ANativeWindow_getWidth(state.native_window) };
-            let new_h = unsafe { ANativeWindow_getHeight(state.native_window) };
+            let new_w = nw.width();
+            let new_h = nw.height();
 
             if new_w == state.width && new_h == state.height {
                 log::debug!("handle_resize: no change ({}×{})", new_w, new_h);
@@ -959,66 +888,55 @@ impl AndroidWindow {
 
     // ── private helpers ───────────────────────────────────────────────────────
 
-    /// Build a raw-window-handle wrapper for the given `ANativeWindow`.
+    /// Build a raw-window-handle wrapper for the given `NativeWindow`.
     ///
-    /// # Safety
-    /// `native_window` must be a valid non-null pointer.
-    unsafe fn raw_window(native_window: *mut ANativeWindow) -> impl HasWindowHandle + HasDisplayHandle {
-        struct RawWindow {
-            window: RawWindowHandle,
-            display: RawDisplayHandle,
+    /// `ndk::NativeWindow` implements `HasWindowHandle` but not `HasDisplayHandle`,
+    /// so we wrap both into a single struct.
+    fn raw_window(native_window: &NativeWindow) -> impl HasWindowHandle + HasDisplayHandle + '_ {
+        struct RawWindow<'a> {
+            nw: &'a NativeWindow,
         }
 
-        impl HasWindowHandle for RawWindow {
+        impl HasWindowHandle for RawWindow<'_> {
             fn window_handle(
                 &self,
             ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
             {
-                Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(self.window) })
+                self.nw.window_handle()
             }
         }
 
-        impl HasDisplayHandle for RawWindow {
+        impl HasDisplayHandle for RawWindow<'_> {
             fn display_handle(
                 &self,
             ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
             {
-                Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(self.display) })
+                Ok(unsafe {
+                    raw_window_handle::DisplayHandle::borrow_raw(
+                        RawDisplayHandle::Android(AndroidDisplayHandle::new()),
+                    )
+                })
             }
         }
 
-        RawWindow {
-            window: RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(
-                std::ptr::NonNull::new(native_window as *mut std::ffi::c_void)
-                    .expect("native_window is non-null"),
-            )),
-            display: RawDisplayHandle::Android(AndroidDisplayHandle::new()),
-        }
+        RawWindow { nw: native_window }
     }
 
-    /// Create a `WgpuRenderer` for the given `ANativeWindow`.
-    ///
-    /// # Safety
-    ///
-    /// `native_window` must be a valid non-null `ANativeWindow *` for the
-    /// lifetime of the returned renderer.
-    unsafe fn create_renderer(
-        native_window: *mut ANativeWindow,
+    /// Create a `WgpuRenderer` for the given `NativeWindow`.
+    fn create_renderer(
+        native_window: &NativeWindow,
         gpu_context: &mut Option<WgpuContext>,
         width: i32,
         height: i32,
         transparent: bool,
     ) -> Result<WgpuRenderer> {
-        let raw = unsafe { Self::raw_window(native_window) };
+        let raw = Self::raw_window(native_window);
 
         let config = WgpuSurfaceConfig {
             size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
             transparent,
         };
 
-        // gpui_wgpu::WgpuRenderer::new takes &W where W: HasWindowHandle + HasDisplayHandle.
-        // The 4th argument is an optional CompositorGpuHint used by desktop compositors
-        // to prefer a specific GPU — not applicable on Android, so we pass None.
         WgpuRenderer::new(gpu_context, &raw, config, None)
     }
 }
@@ -1032,10 +950,7 @@ impl Drop for AndroidWindow {
             renderer.destroy();
         }
 
-        if !state.native_window.is_null() {
-            unsafe { ANativeWindow_release(state.native_window) };
-            state.native_window = std::ptr::null_mut();
-        }
+        state.native_window = None;
     }
 }
 
@@ -1098,16 +1013,15 @@ impl HasWindowHandle for AndroidPlatformWindow {
     ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
     {
         let state = self.window.state.lock();
-        if state.native_window.is_null() {
-            return Err(raw_window_handle::HandleError::Unavailable);
-        }
-        let ndk_handle = AndroidNdkWindowHandle::new(
-            std::ptr::NonNull::new(state.native_window as *mut std::ffi::c_void)
-                .expect("checked non-null above"),
+        let nw = state.native_window.as_ref()
+            .ok_or(raw_window_handle::HandleError::Unavailable)?;
+        // Build the handle from the raw pointer.  The pointer remains valid
+        // because AndroidWindow holds a NativeWindow reference for as long
+        // as this AndroidPlatformWindow (and thus `self`) is alive.
+        let handle = AndroidNdkWindowHandle::new(
+            NonNull::new(nw.ptr().as_ptr().cast()).unwrap(),
         );
-        let raw = RawWindowHandle::AndroidNdk(ndk_handle);
-        // SAFETY: The native_window pointer is valid for the lifetime of the
-        // WindowState (we hold an ANativeWindow_acquire reference).
+        let raw = RawWindowHandle::AndroidNdk(handle);
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
@@ -1316,6 +1230,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                     if let Some(delta) = ms.scroller.step() {
                         let position =
                             gpui::point(gpui::px(delta.position_x), gpui::px(delta.position_y));
+                        let fling_ended = !ms.scroller.is_active();
 
                         // Drop the lock before calling the input callback.
                         drop(ms);
@@ -1331,15 +1246,32 @@ impl PlatformWindow for AndroidPlatformWindow {
                                     modifiers: gpui::Modifiers::default(),
                                     touch_phase: gpui::TouchPhase::Moved,
                                 }));
+
+                            // If this was the last momentum frame (scroller
+                            // deactivated during step), send the Ended event
+                            // now so GPUI knows the gesture is complete.
+                            if fling_ended {
+                                let _ =
+                                    guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                        position,
+                                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                            gpui::px(0.0),
+                                            gpui::px(0.0),
+                                        )),
+                                        modifiers: gpui::Modifiers::default(),
+                                        touch_phase: gpui::TouchPhase::Ended,
+                                    }));
+                            }
                         }
                     } else {
                         // Fling finished — emit a zero-delta Ended event.
+                        let pos = gpui::point(gpui::px(ms.scroller.position_x()), gpui::px(ms.scroller.position_y()));
                         drop(ms);
 
                         if let Some(mut guard) = input_cb.try_lock() {
                             let _ =
                                 guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                                    position: gpui::point(gpui::px(0.0), gpui::px(0.0)),
+                                    position: pos,
                                     delta: gpui::ScrollDelta::Pixels(gpui::point(
                                         gpui::px(0.0),
                                         gpui::px(0.0),

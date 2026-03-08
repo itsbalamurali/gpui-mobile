@@ -332,12 +332,13 @@ impl MomentumScroller {
             }
         }
 
-        self.last_x += dx;
-        self.last_y += dy;
-
         Some(MomentumDelta {
             dx,
             dy,
+            // Keep position fixed at the finger-lift point.  GPUI uses
+            // this for hit-testing (`should_handle_scroll`), so a drifting
+            // position that goes off-screen would cause momentum events to
+            // be silently dropped.
             position_x: self.last_x,
             position_y: self.last_y,
         })
@@ -353,6 +354,16 @@ impl MomentumScroller {
     /// Whether a fling animation is currently active.
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// The X position (finger-lift point), for use in ScrollWheel events.
+    pub fn position_x(&self) -> f32 {
+        self.last_x
+    }
+
+    /// The Y position (finger-lift point), for use in ScrollWheel events.
+    pub fn position_y(&self) -> f32 {
+        self.last_y
     }
 }
 
