@@ -96,4 +96,6 @@ android {
 dependencies {
     // AndroidX core for NotificationCompat (used by GpuiNotifications)
     implementation("androidx.core:core:1.12.0")
+    // AndroidX Biometric for BiometricPrompt (used by GpuiAuthActivity)
+    implementation("androidx.biometric:biometric:1.1.0")
 }

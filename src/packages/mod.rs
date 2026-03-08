@@ -62,3 +62,21 @@ pub mod audio;
 
 #[cfg(feature = "video_player")]
 pub mod video_player;
+
+#[cfg(feature = "clipboard")]
+pub mod clipboard;
+
+#[cfg(feature = "in_app_review")]
+pub mod in_app_review;
+
+#[cfg(feature = "local_auth")]
+pub mod local_auth;
+
+#[cfg(feature = "contacts")]
+pub mod contacts;
+
+#[cfg(feature = "calendar")]
+pub mod calendar;
+
+#[cfg(feature = "maps_launcher")]
+pub mod maps_launcher;

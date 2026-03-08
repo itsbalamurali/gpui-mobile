@@ -32,6 +32,13 @@
     <!-- Notification permission (required on Android 13+ / API 33+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Contacts permission (for contacts package) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- Calendar permissions -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
     <!-- Camera permission (for image_picker camera source) -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -118,6 +125,13 @@
         <!-- Transparent helper Activity for runtime permission requests. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPermissionActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        />
+
+        <!-- Transparent helper Activity for biometric authentication (BiometricPrompt). -->
+        <activity
+            android:name="dev.gpui.mobile.GpuiAuthActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
         />
