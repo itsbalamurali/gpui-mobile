@@ -1,6 +1,6 @@
 use super::*;
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES, NO};
+use objc::runtime::{Class, Object, Sel, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl};
 use std::collections::HashMap;
 use std::sync::{mpsc, Mutex, Once};
@@ -20,8 +20,8 @@ struct SessionState {
     photo_output: *mut Object,    // AVCapturePhotoOutput
     video_output: *mut Object,    // AVCaptureMovieFileOutput (may be null)
     preview_layer: *mut Object,   // AVCaptureVideoPreviewLayer (may be null)
-    enable_audio: bool,
-    audio_input: *mut Object,     // AVCaptureDeviceInput for audio (may be null)
+    _enable_audio: bool,
+    _audio_input: *mut Object,    // AVCaptureDeviceInput for audio (may be null)
 }
 
 // SAFETY: all pointers are ObjC objects accessed on the main thread or under lock
@@ -105,7 +105,7 @@ extern "C" fn photo_did_finish(
                     // Get dimensions from CGImage
                     let cg_image: *mut Object = msg_send![photo, CGImageRepresentation];
                     let (width, height) = if !cg_image.is_null() {
-                        let w: usize = msg_send![class!(UIImage), imageWithCGImage: cg_image];
+                        let _: usize = msg_send![class!(UIImage), imageWithCGImage: cg_image];
                         // Use CGImageGetWidth/Height
                         let w: usize = CGImageGetWidth(cg_image);
                         let h: usize = CGImageGetHeight(cg_image);
@@ -441,8 +441,8 @@ pub fn create_camera(
             photo_output,
             video_output,
             preview_layer: std::ptr::null_mut(),
-            enable_audio,
-            audio_input,
+            _enable_audio: enable_audio,
+            _audio_input: audio_input,
         });
 
         Ok(CameraHandle { id })

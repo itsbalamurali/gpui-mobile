@@ -1,8 +1,7 @@
 use super::*;
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES, NO};
+use objc::runtime::{Object, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl};
-use std::sync::{mpsc, Mutex, Once};
+use std::sync::mpsc;
 
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
@@ -33,22 +32,6 @@ extern "C" {}
 
 #[link(name = "AppTrackingTransparency", kind = "framework")]
 extern "C" {}
-
-// ── Result channel for async permission requests ────────────────────────────
-
-static PERMISSION_RESULT: Mutex<Option<mpsc::Sender<PermissionStatus>>> = Mutex::new(None);
-
-fn set_permission_channel() -> mpsc::Receiver<PermissionStatus> {
-    let (tx, rx) = mpsc::channel();
-    *PERMISSION_RESULT.lock().unwrap() = Some(tx);
-    rx
-}
-
-fn send_permission_result(status: PermissionStatus) {
-    if let Some(tx) = PERMISSION_RESULT.lock().unwrap().take() {
-        let _ = tx.send(status);
-    }
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -106,7 +89,7 @@ fn av_status_to_permission(status: i64) -> PermissionStatus {
 
 unsafe fn check_photos_authorization() -> Result<PermissionStatus, String> {
     // PHAuthorizationStatus
-    let status: i64 = msg_send![class!(PHPhotoLibrary), authorizationStatusForAccessLevel: 0i64]; // PHAccessLevelReadWrite=1, but 0 for addOnly
+    let _status: i64 = msg_send![class!(PHPhotoLibrary), authorizationStatusForAccessLevel: 0i64]; // PHAccessLevelReadWrite=1, but 0 for addOnly
     // Fallback to the older API
     let status: i64 = msg_send![class!(PHPhotoLibrary), authorizationStatus];
     Ok(match status {

@@ -1,11 +1,16 @@
 package dev.gpui.mobile;
 
 import android.app.Activity;
+import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Build;
 import android.util.SparseArray;
+import android.view.Surface;
+import android.view.TextureView;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
@@ -20,7 +25,10 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class GpuiVideoPlayer {
 
+    private static final String TAG = "GpuiVideoPlayer";
+
     private static final SparseArray<MediaPlayer> sPlayers = new SparseArray<>();
+    private static final SparseArray<TextureView> sSurfaces = new SparseArray<>();
     private static int sNextId = 1;
     private static final Object sLock = new Object();
 
@@ -39,7 +47,7 @@ public final class GpuiVideoPlayer {
                 return id;
             }
         } catch (Exception e) {
-            android.util.Log.e("GpuiVideoPlayer", "create failed", e);
+            android.util.Log.e(TAG, "create failed", e);
             return -1;
         }
     }
@@ -65,7 +73,7 @@ public final class GpuiVideoPlayer {
             mp.prepare();
             return mp.getDuration() + "|" + mp.getVideoWidth() + "|" + mp.getVideoHeight();
         } catch (Exception e) {
-            android.util.Log.e("GpuiVideoPlayer", "setUrl failed", e);
+            android.util.Log.e(TAG, "setUrl failed", e);
             return null;
         }
     }
@@ -91,7 +99,7 @@ public final class GpuiVideoPlayer {
             mp.prepare();
             return mp.getDuration() + "|" + mp.getVideoWidth() + "|" + mp.getVideoHeight();
         } catch (Exception e) {
-            android.util.Log.e("GpuiVideoPlayer", "setFilePath failed", e);
+            android.util.Log.e(TAG, "setFilePath failed", e);
             return null;
         }
     }
@@ -108,7 +116,7 @@ public final class GpuiVideoPlayer {
             try {
                 mp.start();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "play failed", e);
+                android.util.Log.e(TAG, "play failed", e);
             }
         }
     }
@@ -125,7 +133,7 @@ public final class GpuiVideoPlayer {
             try {
                 mp.pause();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "pause failed", e);
+                android.util.Log.e(TAG, "pause failed", e);
             }
         }
     }
@@ -146,7 +154,7 @@ public final class GpuiVideoPlayer {
                     mp.seekTo((int) ms);
                 }
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "seek failed", e);
+                android.util.Log.e(TAG, "seek failed", e);
             }
         }
     }
@@ -163,7 +171,7 @@ public final class GpuiVideoPlayer {
             try {
                 mp.setVolume(volume, volume);
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "setVolume failed", e);
+                android.util.Log.e(TAG, "setVolume failed", e);
             }
         }
     }
@@ -184,7 +192,7 @@ public final class GpuiVideoPlayer {
                     mp.setPlaybackParams(params);
                 }
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "setSpeed failed", e);
+                android.util.Log.e(TAG, "setSpeed failed", e);
             }
         }
     }
@@ -201,7 +209,7 @@ public final class GpuiVideoPlayer {
             try {
                 mp.setLooping(looping);
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "setLooping failed", e);
+                android.util.Log.e(TAG, "setLooping failed", e);
             }
         }
     }
@@ -218,7 +226,7 @@ public final class GpuiVideoPlayer {
             try {
                 return mp.getCurrentPosition();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "getPosition failed", e);
+                android.util.Log.e(TAG, "getPosition failed", e);
             }
         }
         return 0;
@@ -236,7 +244,7 @@ public final class GpuiVideoPlayer {
             try {
                 return mp.getDuration();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "getDuration failed", e);
+                android.util.Log.e(TAG, "getDuration failed", e);
             }
         }
         return 0;
@@ -254,7 +262,7 @@ public final class GpuiVideoPlayer {
             try {
                 return mp.getVideoWidth();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "getWidth failed", e);
+                android.util.Log.e(TAG, "getWidth failed", e);
             }
         }
         return 0;
@@ -272,7 +280,7 @@ public final class GpuiVideoPlayer {
             try {
                 return mp.getVideoHeight();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "getHeight failed", e);
+                android.util.Log.e(TAG, "getHeight failed", e);
             }
         }
         return 0;
@@ -290,22 +298,146 @@ public final class GpuiVideoPlayer {
             try {
                 return mp.isPlaying();
             } catch (Exception e) {
-                android.util.Log.e("GpuiVideoPlayer", "isPlaying failed", e);
+                android.util.Log.e(TAG, "isPlaying failed", e);
             }
         }
         return false;
     }
 
     /**
+     * Show a native TextureView surface at the given position and size (in px).
+     * The MediaPlayer renders video frames to this surface.
+     *
+     * @param activity The current Activity.
+     * @param id       Player ID.
+     * @param x        Left position in pixels.
+     * @param y        Top position in pixels.
+     * @param width    Width in pixels.
+     * @param height   Height in pixels.
+     */
+    public static void showSurface(Activity activity, int id, int x, int y, int width, int height) {
+        MediaPlayer mp;
+        synchronized (sLock) {
+            mp = sPlayers.get(id);
+        }
+        if (mp == null) return;
+
+        final MediaPlayer fmp = mp;
+        final CountDownLatch latch = new CountDownLatch(1);
+
+        activity.runOnUiThread(() -> {
+            try {
+                // Remove existing surface if any
+                hideSurfaceInternal(id);
+
+                TextureView tv = new TextureView(activity);
+                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
+                params.leftMargin = x;
+                params.topMargin = y;
+                activity.addContentView(tv, params);
+
+                synchronized (sLock) {
+                    sSurfaces.put(id, tv);
+                }
+
+                tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                    @Override
+                    public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int w, int h) {
+                        Surface surface = new Surface(surfaceTexture);
+                        try {
+                            fmp.setSurface(surface);
+                        } catch (Exception e) {
+                            android.util.Log.e(TAG, "setSurface failed", e);
+                        }
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int w, int h) {}
+
+                    @Override
+                    public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                        try {
+                            fmp.setSurface(null);
+                        } catch (Exception ignored) {}
+                        return true;
+                    }
+
+                    @Override
+                    public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
+                });
+
+                // If texture is already available (reuse case)
+                if (tv.isAvailable()) {
+                    Surface surface = new Surface(tv.getSurfaceTexture());
+                    try {
+                        fmp.setSurface(surface);
+                    } catch (Exception e) {
+                        android.util.Log.e(TAG, "setSurface (immediate) failed", e);
+                    }
+                    latch.countDown();
+                }
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "showSurface failed", e);
+                latch.countDown();
+            }
+        });
+
+        try {
+            latch.await(java.util.concurrent.TimeUnit.SECONDS.toMillis(3),
+                        java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+    }
+
+    /**
+     * Hide (remove) the native video surface overlay.
+     *
+     * @param activity The current Activity.
+     * @param id       Player ID.
+     */
+    public static void hideSurface(Activity activity, int id) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        activity.runOnUiThread(() -> {
+            hideSurfaceInternal(id);
+            latch.countDown();
+        });
+        try {
+            latch.await(java.util.concurrent.TimeUnit.SECONDS.toMillis(2),
+                        java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+    }
+
+    private static void hideSurfaceInternal(int id) {
+        TextureView tv;
+        synchronized (sLock) {
+            tv = sSurfaces.get(id);
+            sSurfaces.remove(id);
+        }
+        if (tv != null) {
+            ViewGroup parent = (ViewGroup) tv.getParent();
+            if (parent != null) {
+                parent.removeView(tv);
+            }
+        }
+    }
+
+    /**
      * Release and remove the player.
      */
     public static void dispose(int id) {
+        // Remove surface first
+        hideSurfaceInternal(id);
+
         MediaPlayer mp;
         synchronized (sLock) {
             mp = sPlayers.get(id);
             sPlayers.remove(id);
         }
         if (mp != null) {
+            try {
+                mp.setSurface(null);
+            } catch (Exception ignored) {
+            }
             try {
                 mp.stop();
             } catch (Exception ignored) {

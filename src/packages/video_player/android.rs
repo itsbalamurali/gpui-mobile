@@ -280,6 +280,92 @@ pub fn is_playing(id: u32) -> Result<bool, String> {
     })
 }
 
+pub fn show_surface(id: u32, x: f32, y: f32, width: f32, height: f32) -> Result<(), String> {
+    jni_helpers::with_env(|env| {
+        let activity = jni_helpers::activity(env)?;
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
+
+        // Convert logical pixels to physical pixels using display density
+        let density = get_density(env);
+        let px = (x * density) as i32;
+        let py = (y * density) as i32;
+        let pw = (width * density) as i32;
+        let ph = (height * density) as i32;
+
+        env.call_static_method(
+            &cls,
+            jni::jni_str!("showSurface"),
+            jni::jni_sig!("(Landroid/app/Activity;IIIII)V"),
+            &[
+                JValue::Object(&activity),
+                JValue::Int(id as i32),
+                JValue::Int(px),
+                JValue::Int(py),
+                JValue::Int(pw),
+                JValue::Int(ph),
+            ],
+        )
+        .map_err(|e| {
+            let _ = env.exception_clear();
+            e.to_string()
+        })?;
+
+        std::mem::forget(activity);
+        Ok(())
+    })
+}
+
+pub fn hide_surface(id: u32) -> Result<(), String> {
+    jni_helpers::with_env(|env| {
+        let activity = jni_helpers::activity(env)?;
+        let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
+
+        env.call_static_method(
+            &cls,
+            jni::jni_str!("hideSurface"),
+            jni::jni_sig!("(Landroid/app/Activity;I)V"),
+            &[
+                JValue::Object(&activity),
+                JValue::Int(id as i32),
+            ],
+        )
+        .map_err(|e| {
+            let _ = env.exception_clear();
+            e.to_string()
+        })?;
+
+        std::mem::forget(activity);
+        Ok(())
+    })
+}
+
+fn get_density(env: &mut jni::Env<'_>) -> f32 {
+    let activity = match jni_helpers::activity(env) {
+        Ok(a) => a,
+        Err(_) => return 1.0,
+    };
+    let resources = env
+        .call_method(&activity, jni::jni_str!("getResources"), jni::jni_sig!("()Landroid/content/res/Resources;"), &[])
+        .and_then(|v| v.l());
+    let resources = match resources {
+        Ok(r) => r,
+        Err(_) => { std::mem::forget(activity); return 1.0; }
+    };
+    let metrics = env
+        .call_method(&resources, jni::jni_str!("getDisplayMetrics"), jni::jni_sig!("()Landroid/util/DisplayMetrics;"), &[])
+        .and_then(|v| v.l());
+    let metrics = match metrics {
+        Ok(m) => m,
+        Err(_) => { std::mem::forget(activity); return 1.0; }
+    };
+    let density = env
+        .get_field(&metrics, jni::jni_str!("density"), jni::jni_sig!("F"))
+        .and_then(|v| v.f())
+        .unwrap_or(1.0);
+    std::mem::forget(activity);
+    density
+}
+
 pub fn dispose(id: u32) -> Result<(), String> {
     jni_helpers::with_env(|env| {
         let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;

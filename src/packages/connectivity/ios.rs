@@ -27,9 +27,9 @@ pub fn check_connectivity() -> ConnectivityStatus {
             return ConnectivityStatus::None;
         }
 
-        let reachable = flags & kSCNetworkReachabilityFlagsReachable != 0;
-        let needs_connection = flags & kSCNetworkReachabilityFlagsConnectionRequired != 0;
-        let is_wwan = flags & kSCNetworkReachabilityFlagsIsWWAN != 0;
+        let reachable = flags & SC_NETWORK_REACHABILITY_FLAGS_REACHABLE != 0;
+        let needs_connection = flags & SC_NETWORK_REACHABILITY_FLAGS_CONNECTION_REQUIRED != 0;
+        let is_wwan = flags & SC_NETWORK_REACHABILITY_FLAGS_IS_WWAN != 0;
 
         if !reachable || needs_connection {
             ConnectivityStatus::None
@@ -42,9 +42,9 @@ pub fn check_connectivity() -> ConnectivityStatus {
 }
 
 // SCNetworkReachability constants
-const kSCNetworkReachabilityFlagsReachable: u32 = 1 << 1;
-const kSCNetworkReachabilityFlagsConnectionRequired: u32 = 1 << 2;
-const kSCNetworkReachabilityFlagsIsWWAN: u32 = 1 << 18;
+const SC_NETWORK_REACHABILITY_FLAGS_REACHABLE: u32 = 1 << 1;
+const SC_NETWORK_REACHABILITY_FLAGS_CONNECTION_REQUIRED: u32 = 1 << 2;
+const SC_NETWORK_REACHABILITY_FLAGS_IS_WWAN: u32 = 1 << 18;
 
 // Minimal C type definitions
 #[repr(C)]

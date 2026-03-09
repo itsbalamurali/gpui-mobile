@@ -170,6 +170,31 @@ impl VideoPlayer {
         { Err("not supported".into()) }
     }
 
+    /// Show the native video surface at the given position and size (in logical pixels).
+    ///
+    /// On iOS this adds an AVPlayerLayer as a sublayer of the key window.
+    /// On Android this adds a TextureView overlay positioned via FrameLayout params.
+    /// The surface is placed above the GPUI Metal/Vulkan layer so the video is visible.
+    /// Call [`hide_surface`] to remove it.
+    pub fn show_surface(&self, x: f32, y: f32, width: f32, height: f32) -> Result<(), String> {
+        #[cfg(target_os = "ios")]
+        { ios::show_surface(self.id, x, y, width, height) }
+        #[cfg(target_os = "android")]
+        { android::show_surface(self.id, x, y, width, height) }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        { let _ = (x, y, width, height); Err("not supported".into()) }
+    }
+
+    /// Hide (remove) the native video surface.
+    pub fn hide_surface(&self) -> Result<(), String> {
+        #[cfg(target_os = "ios")]
+        { ios::hide_surface(self.id) }
+        #[cfg(target_os = "android")]
+        { android::hide_surface(self.id) }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        { Ok(()) }
+    }
+
     /// Release player resources.
     ///
     /// Called automatically on [`Drop`], but can be invoked early to free

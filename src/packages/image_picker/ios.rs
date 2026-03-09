@@ -184,13 +184,7 @@ extern "C" fn uipicker_did_finish(
 
         if !image.is_null() {
             // Convert to JPEG data
-            let jpeg_data: *mut Object = msg_send![
-                class!(UIImageJPEGRepresentation),
-                UIImageJPEGRepresentation: image
-                compressionQuality: 0.9f64
-            ];
-
-            // Alternative: use UIImageJPEGRepresentation C function
+            // Use UIImageJPEGRepresentation C function
             let jpeg_data = uiimage_jpeg_representation(image, 0.9);
             if !jpeg_data.is_null() {
                 let uuid_str = uuid::Uuid::new_v4().to_string();

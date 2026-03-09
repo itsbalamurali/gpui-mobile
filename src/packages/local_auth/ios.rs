@@ -131,12 +131,6 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
         ];
 
         // Use a dispatch semaphore to block until the callback fires
-        let semaphore: *mut Object = msg_send![
-            class!(dispatch_semaphore_create),
-            dispatch_semaphore_create: 0i64
-        ];
-        // Actually, dispatch_semaphore_create is a C function, not an ObjC method.
-        // Use the C function directly.
         let semaphore = dispatch_semaphore_create(0);
 
         // We need to capture the result from the callback.

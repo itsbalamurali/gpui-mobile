@@ -65,7 +65,7 @@ fn get_wifi_ip_address() -> Option<String> {
                     if name == "en0" {
                         let addr = ifa.ifa_addr as *const sockaddr_in;
                         let ip = (*addr).sin_addr;
-                        let bytes = ip.to_be_bytes();
+                        let _bytes = ip.to_be_bytes();
                         // Network byte order to dotted-quad
                         let ip_str = format!(
                             "{}.{}.{}.{}",
@@ -108,10 +108,10 @@ extern "C" {
     fn CFStringCreateWithCString(alloc: CFAllocatorRef, c_str: *const i8, encoding: u32) -> CFStringRef;
 }
 
-const kCFStringEncodingUTF8: u32 = 0x08000100;
+const CF_STRING_ENCODING_UTF8: u32 = 0x08000100;
 
 unsafe fn cfstring_from_static(s: &[u8]) -> CFStringRef {
-    CFStringCreateWithCString(std::ptr::null(), s.as_ptr() as *const i8, kCFStringEncodingUTF8)
+    CFStringCreateWithCString(std::ptr::null(), s.as_ptr() as *const i8, CF_STRING_ENCODING_UTF8)
 }
 
 unsafe fn cfstring_to_string(cf: CFStringRef) -> Option<String> {
@@ -119,7 +119,7 @@ unsafe fn cfstring_to_string(cf: CFStringRef) -> Option<String> {
         return None;
     }
     // Try fast path
-    let ptr = CFStringGetCStringPtr(cf, kCFStringEncodingUTF8);
+    let ptr = CFStringGetCStringPtr(cf, CF_STRING_ENCODING_UTF8);
     if !ptr.is_null() {
         return Some(CStr::from_ptr(ptr).to_string_lossy().into_owned());
     }
@@ -127,7 +127,7 @@ unsafe fn cfstring_to_string(cf: CFStringRef) -> Option<String> {
     let len = CFStringGetLength(cf);
     let buf_size = len * 4 + 1; // UTF-8 worst case
     let mut buf = vec![0i8; buf_size as usize];
-    if CFStringGetCString(cf, buf.as_mut_ptr(), buf_size, kCFStringEncodingUTF8) {
+    if CFStringGetCString(cf, buf.as_mut_ptr(), buf_size, CF_STRING_ENCODING_UTF8) {
         Some(CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
     } else {
         None
