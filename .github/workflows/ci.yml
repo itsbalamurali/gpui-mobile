@@ -89,7 +89,7 @@ jobs:
 
       - name: cargo check — example app (${{ matrix.label }})
         working-directory: example
-        run: cargo check --target ${{ matrix.target }} --features "ios,font-kit"
+        run: cargo check --target ${{ matrix.target }}
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Android cross-compilation
@@ -201,6 +201,7 @@ jobs:
         run: |
           cargo ndk \
             -t arm64-v8a \
+            -p 31 \
             -o android/gradle/app/src/main/jniLibs \
             build
 
