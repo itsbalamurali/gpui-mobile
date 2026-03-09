@@ -30,7 +30,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -75,7 +75,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -134,7 +134,7 @@ jobs:
           cat .cargo/config.toml
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -187,7 +187,7 @@ jobs:
           java-version: 17
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
