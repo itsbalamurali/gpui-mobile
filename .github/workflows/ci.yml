@@ -22,7 +22,7 @@ jobs:
     name: Host Check & Tests
     runs-on: macos-14 # Apple Silicon runner — has Xcode + iOS SDKs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -67,7 +67,7 @@ jobs:
           - target: aarch64-apple-ios-sim
             label: simulator
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + iOS target
         uses: dtolnay/rust-toolchain@stable
@@ -75,7 +75,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -100,7 +100,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: "27.0.12077973"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + Android target
         uses: dtolnay/rust-toolchain@stable
@@ -134,7 +134,7 @@ jobs:
           cat .cargo/config.toml
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -160,7 +160,7 @@ jobs:
     env:
       ANDROID_NDK_VERSION: "27.0.12077973"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain + Android target
         uses: dtolnay/rust-toolchain@stable
@@ -181,13 +181,13 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
