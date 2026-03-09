@@ -30,40 +30,28 @@ tasks.register("clean", Delete::class) {
 
 // ── Convenience task: build Rust + APK in one go ────────────────────────────
 
-tasks.register("buildRustRelease") {
+tasks.register<Exec>("buildRustRelease") {
     group = "rust"
     description = "Compile the Rust native library for arm64-v8a using cargo-ndk."
-
-    doLast {
-        val projectRoot = rootProject.projectDir.parentFile.parentFile.parentFile // -> gpui/
-        exec {
-            workingDir = projectRoot
-            commandLine(
-                "cargo", "ndk",
-                "-t", "arm64-v8a",
-                "-o", "example/android_app/gradle/app/src/main/jniLibs",
-                "build", "--example", "android_app", "--release"
-            )
-        }
-    }
+    workingDir = rootProject.projectDir.parentFile.parentFile.parentFile // -> gpui/
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        "-o", "example/android_app/gradle/app/src/main/jniLibs",
+        "build", "--example", "android_app", "--release"
+    )
 }
 
-tasks.register("buildRustDebug") {
+tasks.register<Exec>("buildRustDebug") {
     group = "rust"
     description = "Compile the Rust native library for arm64-v8a (debug) using cargo-ndk."
-
-    doLast {
-        val projectRoot = rootProject.projectDir.parentFile.parentFile.parentFile
-        exec {
-            workingDir = projectRoot
-            commandLine(
-                "cargo", "ndk",
-                "-t", "arm64-v8a",
-                "-o", "example/android_app/gradle/app/src/main/jniLibs",
-                "build", "--example", "android_app"
-            )
-        }
-    }
+    workingDir = rootProject.projectDir.parentFile.parentFile.parentFile
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        "-o", "example/android_app/gradle/app/src/main/jniLibs",
+        "build", "--example", "android_app"
+    )
 }
 
 tasks.register("buildAll") {

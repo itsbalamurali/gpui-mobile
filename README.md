@@ -61,6 +61,16 @@ cd android/gradle && ./gradlew assembleDebug
 | Android (arm64) | ✅ | API 26+ | Vulkan (preferred), GL ES 3.0 |
 | Android (armv7/x86_64) | ⚠️ Untested | API 26+ | Vulkan / GL ES |
 
+## Screenshots
+
+Running on a Motorola Edge 50 Pro (Android, Vulkan):
+
+| Home | Counter | Settings | About |
+|------|---------|----------|-------|
+| ![Home](screenshots/home.png) | ![Counter](screenshots/counter.png) | ![Settings](screenshots/settings.png) | ![About](screenshots/about.png) |
+
+A demo video is available at [`screenshots/demo.mp4`](screenshots/demo.mp4).
+
 ## Example App
 
 The example app includes screens for Home, Counter, About, Settings, Components (Apple Glass + Material Design), Animations, and Shaders.
