@@ -33,6 +33,7 @@ pub enum LoopMode {
 
 /// Audio player instance (wraps a platform-specific player ID).
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct AudioPlayer {
     id: u32,
 }

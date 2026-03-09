@@ -70,7 +70,7 @@ pub fn is_location_service_enabled() -> Result<bool, String> {
 }
 
 /// Get the current position (one-shot).
-pub fn get_current_position(settings: &LocationSettings) -> Result<Position, String> {
+pub fn get_current_position(_settings: &LocationSettings) -> Result<Position, String> {
     #[cfg(target_os = "ios")]
     {
         ios::get_current_position(settings)

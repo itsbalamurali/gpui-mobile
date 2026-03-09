@@ -35,6 +35,7 @@ pub struct VideoInfo {
 /// Each `VideoPlayer` owns a platform-specific media player identified by an
 /// integer ID. Resources are released automatically on [`Drop`].
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct VideoPlayer {
     id: u32,
 }

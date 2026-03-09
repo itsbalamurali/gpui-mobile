@@ -91,13 +91,19 @@ pub struct VelocityTracker {
     count: usize,
 }
 
-impl VelocityTracker {
-    pub fn new() -> Self {
+impl Default for VelocityTracker {
+    fn default() -> Self {
         Self {
             samples: [None; MAX_SAMPLES],
             index: 0,
             count: 0,
         }
+    }
+}
+
+impl VelocityTracker {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Record a touch position.  Call on every move event.
@@ -122,12 +128,10 @@ impl VelocityTracker {
 
         // Collect recent samples within the velocity window.
         let mut recent: Vec<&Sample> = Vec::with_capacity(MAX_SAMPLES);
-        for slot in &self.samples {
-            if let Some(s) = slot {
-                let age = now.duration_since(s.time).as_secs_f64();
-                if age <= VELOCITY_WINDOW_SECS {
-                    recent.push(s);
-                }
+        for s in self.samples.iter().flatten() {
+            let age = now.duration_since(s.time).as_secs_f64();
+            if age <= VELOCITY_WINDOW_SECS {
+                recent.push(s);
             }
         }
 
@@ -244,8 +248,8 @@ pub struct MomentumScroller {
     last_time: Instant,
 }
 
-impl MomentumScroller {
-    pub fn new() -> Self {
+impl Default for MomentumScroller {
+    fn default() -> Self {
         Self {
             vx: 0.0,
             vy: 0.0,
@@ -254,6 +258,12 @@ impl MomentumScroller {
             active: false,
             last_time: Instant::now(),
         }
+    }
+}
+
+impl MomentumScroller {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Start a fling animation from the given velocity (px/s) and

@@ -52,6 +52,7 @@ pub enum TopAppBarVariant {
 // ── Icon entry ───────────────────────────────────────────────────────────────
 
 /// An icon button in the app bar (leading or trailing).
+#[allow(clippy::type_complexity)]
 struct AppBarIconEntry {
     /// Icon text — an emoji or short string.
     icon: String,

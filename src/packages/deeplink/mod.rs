@@ -18,6 +18,7 @@ pub fn set_deep_link_handler(handler: impl Fn(&str) + Send + 'static) {
 }
 
 /// Called internally when a deep link URL is received.
+#[allow(dead_code)]
 pub(crate) fn notify_deep_link(url: &str) {
     if let Some(cb) = CALLBACK.lock().unwrap().as_ref() {
         cb(url);

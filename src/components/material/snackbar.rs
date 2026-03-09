@@ -30,7 +30,7 @@ use gpui::{div, prelude::*, px, rgb};
 pub fn snackbar(dark: bool) -> impl IntoElement {
     let snack_bg = if dark { 0x332d41_u32 } else { 0x322f35 };
     let snack_text = if dark { 0xe6e1e5_u32 } else { 0xf4eff4 };
-    let action_color = if dark { 0xd0bcff_u32 } else { 0xd0bcff };
+    let action_color = 0xd0bcff_u32;
 
     div()
         .flex()

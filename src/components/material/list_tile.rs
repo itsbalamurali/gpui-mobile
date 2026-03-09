@@ -294,7 +294,6 @@ impl IntoElement for ListTile {
     fn into_element(self) -> Self::Element {
         let t = self.theme;
 
-        let has_subtitle = self.subtitle.is_some();
         let has_supporting = self.supporting.is_some();
 
         // Vertical padding based on density and number of lines
@@ -302,8 +301,6 @@ impl IntoElement for ListTile {
             ListTileDensity::Standard => {
                 if has_supporting {
                     12.0
-                } else if has_subtitle {
-                    8.0
                 } else {
                     8.0
                 }

@@ -41,6 +41,7 @@ use gpui::{div, prelude::*, px, rgb, AnyElement, MouseButton, MouseDownEvent, Wi
 /// Each item has an icon, a label, an active flag, and an on-click handler.
 /// The handler signature matches what GPUI's `on_mouse_down` expects, so
 /// you can use `cx.listener(...)` directly.
+#[allow(clippy::type_complexity)]
 struct NavigationItemEntry {
     /// Icon text — an emoji or short string displayed above the label.
     icon: String,

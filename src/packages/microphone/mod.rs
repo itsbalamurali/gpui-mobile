@@ -6,20 +6,15 @@ mod android;
 mod ios;
 
 /// Audio recording format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AudioFormat {
     /// AAC encoding (.m4a)
+    #[default]
     Aac,
     /// WAV encoding (.wav)
     Wav,
     /// AMR encoding (.amr) — Android only
     Amr,
-}
-
-impl Default for AudioFormat {
-    fn default() -> Self {
-        Self::Aac
-    }
 }
 
 /// Recording configuration.

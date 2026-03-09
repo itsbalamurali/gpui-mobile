@@ -62,6 +62,7 @@ const TEAL: u32 = 0x94e2d5;
 ///     0x89b4fa, 0xa6e3a1, card_bg, text_color, sub_text,
 /// );
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn stat_card(
     title: &str,
     value: &str,

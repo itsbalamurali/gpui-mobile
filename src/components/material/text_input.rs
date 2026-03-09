@@ -39,6 +39,7 @@ fn blend_rgb(a: u32, b: u32, t: f32) -> u32 {
 ///     .selection(field.normalized_selection())
 ///     .on_tap_notify(|event| { /* handle tap with position */ })
 /// ```
+#[allow(clippy::type_complexity)]
 pub struct TextInput<V: 'static> {
     id: ElementId,
     theme: MaterialTheme,
