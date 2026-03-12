@@ -207,6 +207,9 @@ pub fn ios_main() {
 ///
 /// This is called from both the Android and iOS entry points.  On both
 /// platforms, windows are fullscreen so `window_bounds` is `None`.
+///
+/// If the app was launched via a deeplink (e.g. `gpui://video_player`),
+/// the router starts on the corresponding screen.
 #[cfg(any(target_os = "ios", target_os = "android"))]
 fn open_main_window(cx: &mut App) {
     // Set up HTTP client so gpui::img() can fetch remote images (e.g. picsum.photos).
@@ -224,12 +227,29 @@ fn open_main_window(cx: &mut App) {
     cx.set_http_client(std::sync::Arc::new(http_client));
     log::info!("HTTP client configured successfully");
 
+    // Check if the app was launched via a deeplink and determine the initial screen.
+    let initial_screen = match gpui_mobile::packages::deeplink::get_initial_link() {
+        Ok(Some(url)) => {
+            log::info!("Deeplink: launched with URL: {url}");
+            screens::Screen::from_deeplink_url(&url).unwrap_or_default()
+        }
+        Ok(None) => {
+            log::info!("Deeplink: no initial link");
+            screens::Screen::default()
+        }
+        Err(e) => {
+            log::warn!("Deeplink: error getting initial link: {e}");
+            screens::Screen::default()
+        }
+    };
+    log::info!("Initial screen: {:?}", initial_screen);
+
     match cx.open_window(
         WindowOptions {
             window_bounds: None,
             ..Default::default()
         },
-        |_, cx| cx.new(|_| Router::new()),
+        |_, cx| cx.new(|_| Router::with_initial_screen(initial_screen)),
     ) {
         Ok(_handle) => {
             #[cfg(target_os = "android")]

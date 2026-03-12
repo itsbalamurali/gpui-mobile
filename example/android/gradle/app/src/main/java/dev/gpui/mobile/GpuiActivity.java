@@ -1,9 +1,12 @@
 package dev.gpui.mobile;
 
 import android.app.NativeActivity;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 
 import androidx.core.splashscreen.SplashScreen;
 
@@ -76,10 +79,43 @@ public class GpuiActivity extends NativeActivity {
     }
 
     /**
+     * Handle new intents delivered to this singleTask activity.
+     *
+     * When the app is already running and a deeplink is opened
+     * (e.g. `adb shell am start -d gpui://video_player`), this method
+     * receives the new intent. We update the activity's intent and
+     * notify the Rust side via JNI.
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+
+        Uri data = intent.getData();
+        if (data != null) {
+            String url = data.toString();
+            Log.i("GpuiActivity", "onNewIntent deeplink: " + url);
+            try {
+                nativeOnDeepLink(url);
+            } catch (UnsatisfiedLinkError e) {
+                Log.w("GpuiActivity", "nativeOnDeepLink not available yet");
+            }
+        }
+    }
+
+    /**
      * JNI bridge to check if the Rust NATIVE_INITIALIZED flag is set.
      *
      * The native implementation reads the AtomicBool in jni.rs and returns
      * its current value.
      */
     private static native boolean nativeIsInitialized();
+
+    /**
+     * JNI bridge to notify Rust of an incoming deeplink URL.
+     *
+     * Called from onNewIntent when the app receives a deeplink while
+     * already running.
+     */
+    private static native void nativeOnDeepLink(String url);
 }

@@ -59,6 +59,44 @@ pub enum Screen {
 }
 
 impl Screen {
+    /// Parse a screen from a deeplink URL path segment.
+    ///
+    /// Accepts URLs like `gpui://video_player`, `gpui://counter`,
+    /// `gpui://settings`, etc. The host or first path segment is
+    /// matched case-insensitively.
+    ///
+    /// Returns `None` for unrecognized paths or empty URLs.
+    pub fn from_deeplink_url(url: &str) -> Option<Self> {
+        // Parse: "gpui://video_player" → host = "video_player"
+        //        "gpui://video_player/foo" → host = "video_player"
+        let stripped = url
+            .strip_prefix("gpui://")
+            .or_else(|| url.strip_prefix("gpui:"))?;
+        let path = stripped.split('/').next().unwrap_or("").trim();
+        if path.is_empty() {
+            return None;
+        }
+        match path.to_ascii_lowercase().as_str() {
+            "home" => Some(Screen::Home),
+            "counter" => Some(Screen::Counter),
+            "settings" => Some(Screen::Settings),
+            "about" => Some(Screen::About),
+            "apple_glass" | "appleglass" => Some(Screen::AppleGlass),
+            "material" => Some(Screen::Material),
+            "form" => Some(Screen::Form),
+            "animations" => Some(Screen::Animations),
+            "shaders" => Some(Screen::Shaders),
+            "packages" | "packages_demo" => Some(Screen::PackagesDemo),
+            "webview" | "webview_browser" | "browser" => Some(Screen::WebViewBrowser),
+            "swiper" | "discover" => Some(Screen::Swiper),
+            "feed" => Some(Screen::Feed),
+            "chat" => Some(Screen::Chat),
+            "audio_player" | "audio" => Some(Screen::AudioPlayer),
+            "video_player" | "video" => Some(Screen::VideoPlayer),
+            _ => None,
+        }
+    }
+
     /// Human-readable title for the screen (used in the nav bar).
     pub fn title(&self) -> &'static str {
         match self {
@@ -159,6 +197,14 @@ pub struct Router {
 
 impl Router {
     pub fn new() -> Self {
+        Self::with_initial_screen(Screen::Home)
+    }
+
+    /// Create a router starting at the given screen.
+    ///
+    /// If the screen is not a tab-root, `Home` is pushed onto the
+    /// history stack so the back button works.
+    pub fn with_initial_screen(screen: Screen) -> Self {
         let safe_area = Self::query_safe_area();
 
         let user_name = if cfg!(target_os = "ios") {
@@ -169,12 +215,17 @@ impl Router {
             "Mobile"
         };
 
+        let mut history = Vec::new();
+        if !screen.is_tab_root() {
+            history.push(Screen::Home);
+        }
+
         Self {
-            current_screen: Screen::Home,
+            current_screen: screen,
             tap_count: 0,
             user_name: user_name.into(),
             dark_mode: true,
-            history: Vec::new(),
+            history,
             safe_area,
             animation_playground: None,
             shader_showcase: None,

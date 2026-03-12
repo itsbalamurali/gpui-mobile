@@ -1252,6 +1252,38 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeIsInitialized(
     }
 }
 
+/// JNI bridge: receive a deeplink URL from `GpuiActivity.onNewIntent()`.
+///
+/// When the app is already running and a deeplink is opened (e.g. via
+/// `adb shell am start -d gpui://video_player`), the Java side calls
+/// this to notify the Rust deeplink handler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnDeepLink(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    url: *mut std::ffi::c_void,
+) {
+    // We already have a JVM attached on this thread (UI thread).
+    // Use with_env to get a properly wrapped Env handle.
+    let url_raw = url as jni::sys::jobject;
+    let _ = with_env(|env| {
+        let url_obj = unsafe { JObject::from_raw(env, url_raw) };
+        let url_string = get_string(env, &url_obj);
+        // Don't let the JObject be dropped (it's owned by the JNI call frame).
+        std::mem::forget(url_obj);
+        if url_string.is_empty() {
+            return Ok(());
+        }
+        log::info!("nativeOnDeepLink: {}", url_string);
+
+        #[cfg(feature = "deeplink")]
+        {
+            crate::packages::deeplink::notify_deep_link(&url_string);
+        }
+        Ok(())
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

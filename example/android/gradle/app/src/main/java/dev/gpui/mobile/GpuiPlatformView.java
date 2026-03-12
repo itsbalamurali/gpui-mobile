@@ -56,11 +56,22 @@ public class GpuiPlatformView {
                 ViewGroup.LayoutParams.MATCH_PARENT
             ));
 
-            // Add to the activity's content view, behind the NativeActivity surface
+            // Add to the activity's content view on top of the NativeActivity surface.
+            // NativeActivity uses an internal SurfaceView for native rendering.
+            // addContentView adds to the end of the window's DecorView, which
+            // renders ON TOP of the NativeActivity's SurfaceView.
             activity.addContentView(rootContainer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             ));
+
+            // Log the view hierarchy for debugging
+            try {
+                View decorView = activity.getWindow().getDecorView();
+                logViewHierarchy(decorView, 0);
+            } catch (Exception e) {
+                Log.w(TAG, "Could not log view hierarchy: " + e.getMessage());
+            }
 
             Log.i(TAG, "Root container created and added to activity");
         });
@@ -423,5 +434,26 @@ public class GpuiPlatformView {
             rootContainer.dispatchTouchEvent(event);
             event.recycle();
         });
+    }
+
+    /**
+     * Log the view hierarchy from a root view for debugging.
+     */
+    private static void logViewHierarchy(View view, int depth) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        sb.append(view.getClass().getSimpleName());
+        sb.append(" [").append(view.getWidth()).append("x").append(view.getHeight()).append("]");
+        sb.append(" vis=").append(view.getVisibility() == View.VISIBLE ? "V" : view.getVisibility() == View.GONE ? "G" : "I");
+        if (view instanceof android.view.SurfaceView) {
+            sb.append(" (SurfaceView)");
+        }
+        Log.i(TAG, sb.toString());
+        if (view instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) view;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                logViewHierarchy(vg.getChildAt(i), depth + 1);
+            }
+        }
     }
 }
