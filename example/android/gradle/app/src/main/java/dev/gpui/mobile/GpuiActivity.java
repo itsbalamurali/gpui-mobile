@@ -4,9 +4,11 @@ import android.app.NativeActivity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.KeyEvent;
 
 import androidx.core.splashscreen.SplashScreen;
 
@@ -22,6 +24,11 @@ import androidx.core.splashscreen.SplashScreen;
  * that initialization is complete by setting NATIVE_INITIALIZED to true
  * (see src/android/jni.rs). This prevents the user from seeing an empty
  * or partially-rendered surface during startup.
+ *
+ * Also handles:
+ * - Deep link intents (onNewIntent)
+ * - Volume key routing to the MUSIC audio stream
+ * - Media button events via MediaSessionCompat
  */
 public class GpuiActivity extends NativeActivity {
 
@@ -59,6 +66,10 @@ public class GpuiActivity extends NativeActivity {
         // Keep the splash screen visible until the native side signals readiness.
         splash.setKeepOnScreenCondition(() -> !isNativeReady());
 
+        // Route volume keys to the MUSIC stream so they control media volume
+        // rather than the ringer/notification volume.
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+
         super.onCreate(savedInstanceState);
     }
 
@@ -76,6 +87,48 @@ public class GpuiActivity extends NativeActivity {
         } catch (UnsatisfiedLinkError e) {
             return false;
         }
+    }
+
+    /**
+     * Intercept key events to handle volume and media buttons.
+     *
+     * NativeActivity normally forwards ALL key events to the native side,
+     * which means volume keys would be consumed by the Rust event loop
+     * without actually adjusting the system volume. We intercept them here
+     * and let the system handle them instead.
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_VOLUME_UP:
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+            case KeyEvent.KEYCODE_VOLUME_MUTE:
+                // Let the system handle volume keys (adjusts STREAM_MUSIC).
+                // Don't pass to NativeActivity's native input handler.
+                return super.dispatchKeyEvent(event);
+
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_STOP:
+            case KeyEvent.KEYCODE_HEADSETHOOK:
+                // Route media buttons through the MediaSession.
+                // MediaButtonReceiver will dispatch to our session callback.
+                return super.dispatchKeyEvent(event);
+
+            default:
+                return super.dispatchKeyEvent(event);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        // Release media session when activity is destroyed.
+        GpuiMediaSession.release();
+        super.onDestroy();
     }
 
     /**
@@ -105,17 +158,11 @@ public class GpuiActivity extends NativeActivity {
 
     /**
      * JNI bridge to check if the Rust NATIVE_INITIALIZED flag is set.
-     *
-     * The native implementation reads the AtomicBool in jni.rs and returns
-     * its current value.
      */
     private static native boolean nativeIsInitialized();
 
     /**
      * JNI bridge to notify Rust of an incoming deeplink URL.
-     *
-     * Called from onNewIntent when the app receives a deeplink while
-     * already running.
      */
     private static native void nativeOnDeepLink(String url);
 }

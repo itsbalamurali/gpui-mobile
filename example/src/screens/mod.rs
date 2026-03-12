@@ -290,6 +290,10 @@ impl Router {
             if self.current_screen == Screen::VideoPlayer {
                 video_player::dismiss();
             }
+            // Pause audio when leaving audio player
+            if self.current_screen == Screen::AudioPlayer {
+                audio_player::dismiss();
+            }
             // Dismiss keyboard when leaving form or chat screens
             form::dismiss_form_keyboard();
             chat::dismiss_chat();
@@ -325,6 +329,10 @@ impl Router {
             // Dismiss video surface when leaving video player
             if self.current_screen == Screen::VideoPlayer {
                 video_player::dismiss();
+            }
+            // Pause audio when leaving audio player
+            if self.current_screen == Screen::AudioPlayer {
+                audio_player::dismiss();
             }
             // Dismiss keyboard when navigating back
             form::dismiss_form_keyboard();
@@ -483,7 +491,11 @@ impl Router {
             Screen::Feed => self.render_feed_screen(cx).into_any_element(),
             Screen::Chat => self.render_chat_screen(cx).into_any_element(),
             Screen::AudioPlayer => self.render_audio_player_screen(cx).into_any_element(),
-            Screen::VideoPlayer => self.render_video_player_screen(window, cx).into_any_element(),
+            Screen::VideoPlayer => {
+                // Video player has its own layout with fixed video area + scrollable controls.
+                // Rendered directly in render_current_screen to bypass the scroll wrapper.
+                return self.render_video_player_screen(window, cx).into_any_element();
+            }
             Screen::Animations | Screen::Shaders => unreachable!(),
         };
 

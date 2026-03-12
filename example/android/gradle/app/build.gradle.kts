@@ -100,4 +100,6 @@ dependencies {
     implementation("androidx.core:core-splashscreen:1.0.1")
     // AndroidX Biometric for BiometricPrompt (used by GpuiAuthActivity)
     implementation("androidx.biometric:biometric:1.1.0")
+    // AndroidX Media for MediaSessionCompat (used by GpuiMediaSession for system controls)
+    implementation("androidx.media:media:1.7.0")
 }

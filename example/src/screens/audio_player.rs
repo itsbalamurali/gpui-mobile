@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, rgb};
 use gpui_mobile::packages::audio::{AudioPlayer, LoopMode, PlayerState};
+use gpui_mobile::packages::media_session;
 
 use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_SUBTEXT, LIGHT_TEXT, MAUVE, RED, SURFACE0, SUBTEXT, TEXT, YELLOW};
 
@@ -56,6 +57,17 @@ pub fn reset_state() {
         // Drop the player (Drop impl calls dispose)
         st.player.take();
         *st = AudioState::default();
+    });
+}
+
+/// Called when navigating away from this screen — pauses playback.
+pub fn dismiss() {
+    AUDIO_STATE.with(|s| {
+        let st = s.borrow();
+        if let Some(ref p) = st.player {
+            let _ = p.pause();
+            let _ = media_session::set_playback_state(false, st.position_ms, st.speed);
+        }
     });
 }
 
@@ -667,6 +679,11 @@ fn loop_btn(
 
 fn load_track(index: usize, cx: &mut gpui::Context<Router>) {
     let url = TRACKS[index].1;
+    let title = TRACKS[index].0;
+
+    // Initialize media session on first use
+    let _ = media_session::init();
+
     AUDIO_STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.current_track = index;
@@ -699,6 +716,10 @@ fn load_track(index: usize, cx: &mut gpui::Context<Router>) {
                     let _ = player.set_speed(spd);
                     let _ = player.set_loop_mode(lm);
                     let _ = player.play();
+
+                    // Update media session
+                    let _ = media_session::set_metadata(title, "GPUI Audio", st.duration_ms);
+                    let _ = media_session::set_playback_state(true, 0, spd);
                 }
                 Err(e) => {
                     st.error = Some(format!("Failed to load: {}", e));
@@ -732,6 +753,7 @@ fn start_position_polling(cx: &mut gpui::Context<Router>) {
                 if let Some(ref p) = st.player {
                     let pos = p.position().ok();
                     let dur = p.duration().ok();
+                    let playing = p.is_playing().unwrap_or(false);
                     let idle = matches!(p.state(), Ok(PlayerState::Idle));
                     drop(st);
                     let mut st = s.borrow_mut();
@@ -743,6 +765,10 @@ fn start_position_polling(cx: &mut gpui::Context<Router>) {
                             st.duration_ms = dur;
                         }
                     }
+                    // Update media session with current position
+                    let _ = media_session::set_playback_state(
+                        playing, st.position_ms, st.speed,
+                    );
                     idle
                 } else {
                     true

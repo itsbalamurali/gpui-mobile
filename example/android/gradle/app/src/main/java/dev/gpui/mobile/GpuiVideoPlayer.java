@@ -1,34 +1,36 @@
 package dev.gpui.mobile;
 
 import android.app.Activity;
-import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Build;
 import android.util.SparseArray;
 import android.view.Surface;
-import android.view.TextureView;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
-import java.io.File;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Java helper for video playback using {@link MediaPlayer}.
  *
  * <p>All public methods are {@code static} and called from Rust via JNI.
  * Player instances are stored in a {@link SparseArray} keyed by integer ID.</p>
+ *
+ * <p>Uses {@link SurfaceView} instead of TextureView because NativeActivity
+ * does not provide hardware acceleration for views added via addContentView().
+ * TextureView requires HW accel and silently renders nothing without it.
+ * SurfaceView has its own compositor surface and works without HW accel.</p>
  */
 public final class GpuiVideoPlayer {
 
     private static final String TAG = "GpuiVideoPlayer";
 
     private static final SparseArray<MediaPlayer> sPlayers = new SparseArray<>();
-    private static final SparseArray<TextureView> sSurfaces = new SparseArray<>();
+    private static final SparseArray<SurfaceView> sSurfaces = new SparseArray<>();
     private static int sNextId = 1;
     private static final Object sLock = new Object();
 
@@ -313,7 +315,7 @@ public final class GpuiVideoPlayer {
     }
 
     /**
-     * Show a native TextureView surface at the given position and size (in px).
+     * Show a native SurfaceView at the given position and size (in px).
      * The MediaPlayer renders video frames to this surface.
      *
      * @param activity The current Activity.
@@ -338,51 +340,40 @@ public final class GpuiVideoPlayer {
                 // Remove existing surface if any
                 hideSurfaceInternal(id);
 
-                TextureView tv = new TextureView(activity);
+                SurfaceView sv = new SurfaceView(activity);
+                // Render above NativeActivity's own SurfaceView (wgpu/Vulkan).
+                sv.setZOrderOnTop(true);
+
                 FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
                 params.leftMargin = x;
                 params.topMargin = y;
-                activity.addContentView(tv, params);
+                activity.addContentView(sv, params);
 
                 synchronized (sLock) {
-                    sSurfaces.put(id, tv);
+                    sSurfaces.put(id, sv);
                 }
 
-                tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                sv.getHolder().addCallback(new SurfaceHolder.Callback() {
                     @Override
-                    public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int w, int h) {
-                        Surface surface = new Surface(surfaceTexture);
-                        try {
-                            fmp.setSurface(surface);
-                        } catch (Exception e) {
-                            android.util.Log.e(TAG, "setSurface failed", e);
-                        }
+                    public void surfaceCreated(SurfaceHolder holder) {
+                        attachSurfaceToPlayer(fmp, holder.getSurface());
                         latch.countDown();
                     }
 
                     @Override
-                    public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int w, int h) {}
+                    public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {}
 
                     @Override
-                    public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                    public void surfaceDestroyed(SurfaceHolder holder) {
                         try {
                             fmp.setSurface(null);
                         } catch (Exception ignored) {}
-                        return true;
                     }
-
-                    @Override
-                    public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
                 });
 
-                // If texture is already available (reuse case)
-                if (tv.isAvailable()) {
-                    Surface surface = new Surface(tv.getSurfaceTexture());
-                    try {
-                        fmp.setSurface(surface);
-                    } catch (Exception e) {
-                        android.util.Log.e(TAG, "setSurface (immediate) failed", e);
-                    }
+                // If surface is already valid
+                if (sv.getHolder().getSurface().isValid()) {
+                    attachSurfaceToPlayer(fmp, sv.getHolder().getSurface());
                     latch.countDown();
                 }
             } catch (Exception e) {
@@ -416,15 +407,15 @@ public final class GpuiVideoPlayer {
     }
 
     private static void hideSurfaceInternal(int id) {
-        TextureView tv;
+        SurfaceView sv;
         synchronized (sLock) {
-            tv = sSurfaces.get(id);
+            sv = sSurfaces.get(id);
             sSurfaces.remove(id);
         }
-        if (tv != null) {
-            ViewGroup parent = (ViewGroup) tv.getParent();
+        if (sv != null) {
+            ViewGroup parent = (ViewGroup) sv.getParent();
             if (parent != null) {
-                parent.removeView(tv);
+                parent.removeView(sv);
             }
         }
     }
@@ -458,14 +449,19 @@ public final class GpuiVideoPlayer {
     }
 
     /**
-     * Create a TextureView configured for video playback.
+     * Create a SurfaceView configured for video playback.
      *
-     * <p>The TextureView is wired to the MediaPlayer via a SurfaceTextureListener.
-     * The view is NOT added to the hierarchy — the caller (GpuiPlatformView) handles that.</p>
+     * <p>Uses SurfaceView with setZOrderOnTop(true) so the video surface
+     * renders above NativeActivity's own rendering surface (wgpu/Vulkan).
+     * TextureView cannot be used here because NativeActivity does not
+     * provide hardware acceleration for overlaid views.</p>
+     *
+     * <p>The view is NOT added to the hierarchy — the caller
+     * (GpuiPlatformView) handles that.</p>
      *
      * @param activity The current Activity.
      * @param id       Player ID.
-     * @return A configured TextureView, or an empty FrameLayout if the player is not found.
+     * @return A configured SurfaceView, or an empty FrameLayout if the player is not found.
      */
     public static android.view.View createVideoSurface(Activity activity, int id) {
         MediaPlayer mp;
@@ -478,46 +474,49 @@ public final class GpuiVideoPlayer {
         }
 
         final MediaPlayer fmp = mp;
-        TextureView tv = new TextureView(activity);
+        SurfaceView sv = new SurfaceView(activity);
+        // Render above NativeActivity's own SurfaceView.
+        sv.setZOrderOnTop(true);
 
-        tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+        sv.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int w, int h) {
-                attachSurfaceToPlayer(fmp, new Surface(surfaceTexture));
+            public void surfaceCreated(SurfaceHolder holder) {
+                android.util.Log.i(TAG, "createVideoSurface: surfaceCreated for player " + id);
+                attachSurfaceToPlayer(fmp, holder.getSurface());
             }
 
             @Override
-            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int w, int h) {}
+            public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
+                android.util.Log.i(TAG, "createVideoSurface: surfaceChanged " + w + "x" + h);
+            }
 
             @Override
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                android.util.Log.i(TAG, "createVideoSurface: surfaceDestroyed for player " + id);
                 try {
                     fmp.setSurface(null);
                 } catch (Exception ignored) {}
-                return true;
             }
-
-            @Override
-            public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
         });
 
-        // If texture is already available (reuse case)
-        if (tv.isAvailable()) {
-            attachSurfaceToPlayer(fmp, new Surface(tv.getSurfaceTexture()));
+        // If surface is already valid (shouldn't happen before layout, but be safe)
+        if (sv.getHolder().getSurface().isValid()) {
+            attachSurfaceToPlayer(fmp, sv.getHolder().getSurface());
         }
 
         // Track this surface
         synchronized (sLock) {
-            sSurfaces.put(id, tv);
+            sSurfaces.put(id, sv);
         }
 
-        return tv;
+        android.util.Log.i(TAG, "createVideoSurface: SurfaceView created for player " + id);
+        return sv;
     }
 
     /**
      * Attach a surface to the MediaPlayer, then re-seek to force a video frame
      * to render. Without the re-seek, frames decoded before the surface was
-     * attached are discarded and the TextureView stays black.
+     * attached are discarded and the view stays black.
      */
     private static void attachSurfaceToPlayer(MediaPlayer mp, Surface surface) {
         try {

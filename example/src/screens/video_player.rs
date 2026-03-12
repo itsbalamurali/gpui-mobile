@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use gpui::{div, prelude::*, px, rgb};
 use gpui_mobile::packages::video_player::VideoPlayer;
+use gpui_mobile::packages::media_session;
 
 use super::{Router, BLUE, GREEN, LIGHT_CARD_BG, LIGHT_SUBTEXT, LIGHT_TEXT, MAUVE, RED, SURFACE0, SUBTEXT, TEXT, YELLOW};
 
@@ -70,10 +71,15 @@ pub fn reset_state() {
     });
 }
 
-/// Called when navigating away from this screen — hides the native surface overlay.
+/// Called when navigating away from this screen — pauses playback and hides the native surface.
 pub fn dismiss() {
     VIDEO_STATE.with(|s| {
         let mut st = s.borrow_mut();
+        // Pause playback so audio doesn't continue in background
+        if let Some(ref p) = st.player {
+            let _ = p.pause();
+            let _ = media_session::set_playback_state(false, st.position_ms, st.speed);
+        }
         if st.surface_visible {
             if let Some(ref mut p) = st.player {
                 let _ = p.hide_surface();
@@ -131,11 +137,12 @@ pub fn render(router: &Router, window: &mut gpui::Window, cx: &mut gpui::Context
     const VIDEO_AREA_HEIGHT: f32 = 220.0;
 
     // Update native surface position when visible.
-    // Position: safe_top + topAppBar(56) + scroll_container_offset(0) + py_4(16)
+    // The video area is fixed at the top of the content area (below app bar).
+    // Position: safe_top + topAppBar(56)
     if has_player && surface_visible {
-        let surface_y = safe_area.top + 56.0 + 16.0; // safe area + app bar + padding
-        let surface_x = 16.0; // px_4
-        let surface_w = viewport_width - 32.0; // full width minus 2 * px_4
+        let surface_y = safe_area.top + 56.0; // safe area + app bar
+        let surface_x = 0.0; // full width
+        let surface_w = viewport_width;
 
         VIDEO_STATE.with(|s| {
             let mut st = s.borrow_mut();
@@ -145,52 +152,72 @@ pub fn render(router: &Router, window: &mut gpui::Window, cx: &mut gpui::Context
         });
     }
 
+    // Layout: fixed video area at top + scrollable controls below.
+    // The video SurfaceView is a native overlay positioned absolutely on screen,
+    // so it must NOT be inside a scroll container (it doesn't scroll with GPUI content).
     div()
         .flex()
         .flex_col()
-        .w_full()
-        .gap_4()
-        .px_4()
-        .py_4()
-        // ── Native video surface placeholder ────────────
-        .when(has_player, |d| {
-            d.child(
-                div()
-                    .w_full()
-                    .h(px(VIDEO_AREA_HEIGHT))
-                    .rounded_xl()
-                    .bg(rgb(0x000000))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(!surface_visible, |d| {
-                        d.child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(sub_text))
-                                .child("Tap to show video"),
-                        )
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|_this, _, _, cx| {
-                            VIDEO_STATE.with(|s| {
-                                let mut st = s.borrow_mut();
-                                if !st.surface_visible {
-                                    st.surface_visible = true;
-                                } else {
-                                    // Toggle off
-                                    if let Some(ref mut p) = st.player {
-                                        let _ = p.hide_surface();
-                                    }
-                                    st.surface_visible = false;
+        .flex_1()
+        // ── Fixed video area at top ─────────────────────
+        .child(
+            div()
+                .w_full()
+                .h(px(VIDEO_AREA_HEIGHT))
+                .bg(rgb(0x000000))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(!has_player, |d| {
+                    d.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(sub_text))
+                            .child("Select a video below"),
+                    )
+                })
+                .when(has_player && !surface_visible, |d| {
+                    d.child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(sub_text))
+                            .child("Tap to show video"),
+                    )
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_this, _, _, cx| {
+                        VIDEO_STATE.with(|s| {
+                            let mut st = s.borrow_mut();
+                            if st.player.is_none() { return; }
+                            if !st.surface_visible {
+                                st.surface_visible = true;
+                            } else {
+                                // Toggle off
+                                if let Some(ref mut p) = st.player {
+                                    let _ = p.hide_surface();
                                 }
-                            });
-                            cx.notify();
-                        }),
-                    ),
-            )
-        })
+                                st.surface_visible = false;
+                            }
+                        });
+                        cx.notify();
+                    }),
+                ),
+        )
+        // ── Scrollable controls area ────────────────────
+        .child(
+            div()
+                .id("video-controls-scroll")
+                .flex_1()
+                .overflow_y_scroll()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .gap_4()
+                        .px_4()
+                        .py_4()
         // ── Video list ──────────────────────────────────
         .child(
             div()
@@ -606,7 +633,9 @@ pub fn render(router: &Router, window: &mut gpui::Window, cx: &mut gpui::Context
                             .child(error.unwrap_or_default()),
                     ),
             )
-        })
+        }),
+                ), // close .child(inner flex_col div)
+        ) // close .child(scroll container)
 }
 
 fn vol_btn(
@@ -673,6 +702,11 @@ fn spd_btn(
 
 fn load_video(index: usize, cx: &mut gpui::Context<Router>) {
     let url = VIDEOS[index].1;
+    let title = VIDEOS[index].0;
+
+    // Initialize media session on first use
+    let _ = media_session::init();
+
     VIDEO_STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.current_video = index;
@@ -710,6 +744,10 @@ fn load_video(index: usize, cx: &mut gpui::Context<Router>) {
                     let _ = player.set_looping(lp);
                     let _ = player.play();
                     st.surface_visible = true;
+
+                    // Update media session
+                    let _ = media_session::set_metadata(title, "GPUI Video", info.duration_ms);
+                    let _ = media_session::set_playback_state(true, 0, spd);
                 }
                 Err(e) => {
                     st.error = Some(format!("Failed to load: {}", e));
@@ -742,6 +780,7 @@ fn start_position_polling(cx: &mut gpui::Context<Router>) {
                 if let Some(ref p) = st.player {
                     let pos = p.position().ok();
                     let dur = p.duration().ok();
+                    let playing = p.is_playing().unwrap_or(false);
                     drop(st);
                     let mut st = s.borrow_mut();
                     if let Some(pos) = pos {
@@ -752,6 +791,10 @@ fn start_position_polling(cx: &mut gpui::Context<Router>) {
                             st.duration_ms = dur;
                         }
                     }
+                    // Update media session with current position
+                    let _ = media_session::set_playback_state(
+                        playing, st.position_ms, st.speed,
+                    );
                     false
                 } else {
                     true

@@ -63,6 +63,9 @@ pub mod audio;
 #[cfg(feature = "video_player")]
 pub mod video_player;
 
+#[cfg(feature = "media_session")]
+pub mod media_session;
+
 #[cfg(feature = "clipboard")]
 pub mod clipboard;
 

@@ -1284,6 +1284,52 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnDeepLink(
     });
 }
 
+/// JNI bridge: receive a media action from `GpuiMediaSession` system controls.
+///
+/// Actions: "play", "pause", "stop", "next", "previous"
+#[cfg(feature = "media_session")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaAction(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    action: *mut std::ffi::c_void,
+) {
+    let action_raw = action as jni::sys::jobject;
+    let _ = with_env(|env| {
+        let action_obj = unsafe { JObject::from_raw(env, action_raw) };
+        let action_str = get_string(env, &action_obj);
+        std::mem::forget(action_obj);
+
+        let media_action = match action_str.as_str() {
+            "play" => crate::packages::media_session::MediaAction::Play,
+            "pause" => crate::packages::media_session::MediaAction::Pause,
+            "stop" => crate::packages::media_session::MediaAction::Stop,
+            "next" => crate::packages::media_session::MediaAction::Next,
+            "previous" => crate::packages::media_session::MediaAction::Previous,
+            other => {
+                log::warn!("nativeMediaAction: unknown action '{}'", other);
+                return Ok(());
+            }
+        };
+
+        log::info!("nativeMediaAction: {:?}", media_action);
+        crate::packages::media_session::notify_action(media_action);
+        Ok(())
+    });
+}
+
+/// JNI bridge: receive a seek request from `GpuiMediaSession` system controls.
+#[cfg(feature = "media_session")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaSeek(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    position_ms: i64,
+) {
+    log::info!("nativeMediaSeek: {}ms", position_ms);
+    crate::packages::media_session::notify_seek(position_ms as u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
