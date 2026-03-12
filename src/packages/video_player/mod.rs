@@ -102,8 +102,9 @@ impl VideoPlayer {
         #[cfg(target_os = "android")]
         let id = android::create_player()?;
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
-        let id: u32 = return Err("VideoPlayer is not supported on this platform".into());
+        return Err("VideoPlayer is not supported on this platform".into());
 
+        #[cfg(any(target_os = "ios", target_os = "android"))]
         Ok(VideoPlayer {
             id,
             surface_handle: None,
@@ -310,28 +311,35 @@ impl VideoPlayer {
 
     /// Show the native video surface at the given position and size (in logical pixels).
     ///
-    /// Creates a platform view of type "video_player" via the platform view
-    /// registry. The native view (TextureView on Android, AVPlayerLayer-backed
-    /// UIView on iOS) is managed by the platform view system.
+    /// On the first call, creates a platform view of type "video_player" via the
+    /// platform view registry. On subsequent calls, updates the bounds of the
+    /// existing view without recreating it.
     ///
     /// Use [`platform_view_handle`] to get an `Arc<PlatformViewHandle>` for
     /// embedding in a GPUI element via `platform_view_element()`.
     pub fn show_surface(&mut self, x: f32, y: f32, width: f32, height: f32) -> Result<(), String> {
-        // Hide existing surface if any
-        self.hide_surface()?;
+        let bounds = PlatformViewBounds {
+            x,
+            y,
+            width,
+            height,
+        };
 
+        // If surface already exists, just update bounds
+        if let Some(ref handle) = self.surface_handle {
+            handle.set_bounds(bounds);
+            handle.set_visible(true);
+            return Ok(());
+        }
+
+        // First call — create the platform view
         ensure_factory_registered();
 
         let mut creation_params = std::collections::HashMap::new();
         creation_params.insert("player_id".to_string(), self.id.to_string());
 
         let params = PlatformViewParams {
-            bounds: PlatformViewBounds {
-                x,
-                y,
-                width,
-                height,
-            },
+            bounds,
             creation_params,
         };
 

@@ -69,7 +69,15 @@ public final class GpuiVideoPlayer {
 
         try {
             mp.reset();
-            mp.setDataSource(activity, Uri.parse(url));
+            // Use the String overload for http/https URLs to avoid
+            // ContentResolver trying to resolve them as content:// URIs.
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            if ("http".equals(scheme) || "https".equals(scheme)) {
+                mp.setDataSource(url);
+            } else {
+                mp.setDataSource(activity, uri);
+            }
             mp.prepare();
             return mp.getDuration() + "|" + mp.getVideoWidth() + "|" + mp.getVideoHeight();
         } catch (Exception e) {
@@ -475,12 +483,7 @@ public final class GpuiVideoPlayer {
         tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int w, int h) {
-                Surface surface = new Surface(surfaceTexture);
-                try {
-                    fmp.setSurface(surface);
-                } catch (Exception e) {
-                    android.util.Log.e(TAG, "createVideoSurface: setSurface failed", e);
-                }
+                attachSurfaceToPlayer(fmp, new Surface(surfaceTexture));
             }
 
             @Override
@@ -500,12 +503,7 @@ public final class GpuiVideoPlayer {
 
         // If texture is already available (reuse case)
         if (tv.isAvailable()) {
-            Surface surface = new Surface(tv.getSurfaceTexture());
-            try {
-                fmp.setSurface(surface);
-            } catch (Exception e) {
-                android.util.Log.e(TAG, "createVideoSurface: setSurface (immediate) failed", e);
-            }
+            attachSurfaceToPlayer(fmp, new Surface(tv.getSurfaceTexture()));
         }
 
         // Track this surface
@@ -514,6 +512,30 @@ public final class GpuiVideoPlayer {
         }
 
         return tv;
+    }
+
+    /**
+     * Attach a surface to the MediaPlayer, then re-seek to force a video frame
+     * to render. Without the re-seek, frames decoded before the surface was
+     * attached are discarded and the TextureView stays black.
+     */
+    private static void attachSurfaceToPlayer(MediaPlayer mp, Surface surface) {
+        try {
+            mp.setSurface(surface);
+            android.util.Log.i(TAG, "attachSurfaceToPlayer: surface attached, isPlaying=" + mp.isPlaying()
+                    + " pos=" + mp.getCurrentPosition() + " dur=" + mp.getDuration()
+                    + " w=" + mp.getVideoWidth() + " h=" + mp.getVideoHeight());
+            // Re-seek to current position to force the decoder to output a
+            // frame to the newly attached surface.
+            int pos = mp.getCurrentPosition();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                mp.seekTo(pos, MediaPlayer.SEEK_CLOSEST);
+            } else {
+                mp.seekTo(pos);
+            }
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "attachSurfaceToPlayer failed", e);
+        }
     }
 
     // Prevent instantiation.

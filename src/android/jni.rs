@@ -802,7 +802,8 @@ pub fn run_event_loop(app: &AndroidApp) {
         }
 
         // Yield CPU to avoid starving system threads and causing ANR.
-        std::thread::sleep(Duration::from_millis(2));
+        // Keep this short — at 120Hz the frame budget is only 8.3ms.
+        std::thread::sleep(Duration::from_micros(500));
     }
 
     log::info!("run_event_loop: exiting main loop");
