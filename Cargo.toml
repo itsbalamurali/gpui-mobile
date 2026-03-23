@@ -80,7 +80,7 @@ block               = "0.1"
 
 # wgpu renderer (Metal backend on iOS) — local fork from Zed with Android surface replacement
 gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
-wgpu = "28.0"
+wgpu = "29.0"
 
 # Text / font stack
 pathfinder_geometry = "0.5"
