@@ -3,9 +3,9 @@ use crate::CompositorGpuHint;
 use crate::{WgpuAtlas, WgpuContext};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point,
-    PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, SubpixelSprite,
-    Underline, get_gamma_correction_ratios,
+    get_gamma_correction_ratios, AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs,
+    MonochromeSprite, Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene,
+    Shadow, Size, SubpixelSprite, Underline,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -96,7 +96,7 @@ struct WgpuBindGroupLayouts {
 pub struct WgpuRenderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
     surface_config: wgpu::SurfaceConfiguration,
     surface_configured: bool,
     pipelines: WgpuPipelines,
@@ -396,7 +396,7 @@ impl WgpuRenderer {
         Ok(Self {
             device,
             queue,
-            surface,
+            surface: Some(surface),
             surface_config,
             surface_configured: true,
             pipelines,
@@ -893,7 +893,9 @@ impl WgpuRenderer {
             self.surface_config.width = clamped_width.max(1);
             self.surface_config.height = clamped_height.max(1);
             if self.surface_configured {
-                self.surface.configure(&self.device, &self.surface_config);
+                if let Some(surface) = self.surface.as_ref() {
+                    surface.configure(&self.device, &self.surface_config);
+                }
             }
 
             // Invalidate intermediate textures - they will be lazily recreated
@@ -946,7 +948,9 @@ impl WgpuRenderer {
         if new_alpha_mode != self.surface_config.alpha_mode {
             self.surface_config.alpha_mode = new_alpha_mode;
             if self.surface_configured {
-                self.surface.configure(&self.device, &self.surface_config);
+                if let Some(surface) = self.surface.as_ref() {
+                    surface.configure(&self.device, &self.surface_config);
+                }
             }
             self.pipelines = Self::create_pipelines(
                 &self.device,
@@ -1013,7 +1017,11 @@ impl WgpuRenderer {
 
         self.atlas.before_frame();
 
-        let frame = match self.surface.get_current_texture() {
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+
+        let frame = match surface.get_current_texture() {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface_configured = false;
@@ -1540,15 +1548,33 @@ impl WgpuRenderer {
     }
 
     /// Mark the surface as unconfigured so rendering is skipped until a new
-    /// surface is provided via `replace_surface`.  This does NOT drop the
-    /// renderer — the device, queue, atlas, and pipelines stay alive.
+    /// surface is provided via `replace_surface`.
+    ///
+    /// On Android we must also drop the old `wgpu::Surface` eagerly. Keeping
+    /// it alive across `TerminateWindow` leaves the old `ANativeWindow`
+    /// connected, which makes the next surface creation fail with
+    /// `ERROR_NATIVE_WINDOW_IN_USE_KHR`.
     pub fn unconfigure_surface(&mut self) {
+        if let Err(e) = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        }) {
+            warn!("Failed to poll device while releasing surface: {e:?}");
+        }
+
+        if let Some(ref texture) = self.path_intermediate_texture {
+            texture.destroy();
+        }
+        if let Some(ref texture) = self.path_msaa_texture {
+            texture.destroy();
+        }
+
         self.surface_configured = false;
-        // Drop intermediate textures since they reference the old surface size.
         self.path_intermediate_texture = None;
         self.path_intermediate_view = None;
         self.path_msaa_texture = None;
         self.path_msaa_view = None;
+        self.surface = None;
     }
 
     /// Replace the wgpu surface with a new one (e.g. after Android destroys
@@ -1564,6 +1590,8 @@ impl WgpuRenderer {
         config: WgpuSurfaceConfig,
         instance: &wgpu::Instance,
     ) -> anyhow::Result<()> {
+        self.unconfigure_surface();
+
         let window_handle = window
             .window_handle()
             .map_err(|e| anyhow::anyhow!("Failed to get window handle: {e}"))?;
@@ -1597,7 +1625,7 @@ impl WgpuRenderer {
         self.surface_config.alpha_mode = alpha_mode;
         surface.configure(&self.device, &self.surface_config);
 
-        self.surface = surface;
+        self.surface = Some(surface);
         self.surface_configured = true;
 
         // Invalidate intermediate textures — they'll be recreated lazily.
@@ -1609,8 +1637,12 @@ impl WgpuRenderer {
         Ok(())
     }
 
+    pub fn has_surface(&self) -> bool {
+        self.surface_configured && self.surface.is_some()
+    }
+
     pub fn destroy(&mut self) {
-        // wgpu resources are automatically cleaned up when dropped
+        self.unconfigure_surface();
     }
 }
 
