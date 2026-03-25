@@ -1,9 +1,15 @@
 use anyhow::{Context as _, Result};
 use collections::FxHashMap;
 use etagere::{BucketedAtlasAllocator, size2};
+#[cfg(not(target_os = "android"))]
 use gpui::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTextureList, AtlasTile, Bounds, DevicePixels,
     PlatformAtlas, Point, Size,
+};
+#[cfg(target_os = "android")]
+use gpui::{
+    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTextureList, AtlasTile, Bounds, DevicePixels,
+    PlatformAtlas, Point, Size, point,
 };
 use parking_lot::Mutex;
 use std::{borrow::Cow, ops, sync::Arc};
@@ -67,6 +73,30 @@ impl WgpuAtlas {
     }
 }
 
+#[cfg(target_os = "android")]
+fn normalize_atlas_key(key: &AtlasKey) -> Cow<'_, AtlasKey> {
+    if let AtlasKey::Glyph(params) = key
+        && !params.is_emoji
+        && !params.subpixel_rendering
+        && params.subpixel_variant != point(0, 0)
+    {
+        // Android grayscale text intentionally ignores scroll-driven subpixel
+        // variants. If the atlas key keeps the fractional variant, the same
+        // glyph churns through distinct cache entries during scroll and causes
+        // both raster/upload spikes and visible text flicker.
+        let mut normalized = params.clone();
+        normalized.subpixel_variant = point(0, 0);
+        return Cow::Owned(AtlasKey::Glyph(normalized));
+    }
+
+    Cow::Borrowed(key)
+}
+
+#[cfg(not(target_os = "android"))]
+fn normalize_atlas_key(key: &AtlasKey) -> Cow<'_, AtlasKey> {
+    Cow::Borrowed(key)
+}
+
 impl PlatformAtlas for WgpuAtlas {
     fn get_or_insert_with<'a>(
         &self,
@@ -74,7 +104,8 @@ impl PlatformAtlas for WgpuAtlas {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
         let mut lock = self.0.lock();
-        if let Some(tile) = lock.tiles_by_key.get(key) {
+        let normalized_key = normalize_atlas_key(key);
+        if let Some(tile) = lock.tiles_by_key.get(normalized_key.as_ref()) {
             Ok(Some(tile.clone()))
         } else {
             profiling::scope!("new tile");
@@ -85,15 +116,21 @@ impl PlatformAtlas for WgpuAtlas {
                 .allocate(size, key.texture_kind())
                 .context("failed to allocate")?;
             lock.upload_texture(tile.texture_id, tile.bounds, &bytes);
-            lock.tiles_by_key.insert(key.clone(), tile.clone());
+            lock.tiles_by_key
+                .insert(normalized_key.into_owned(), tile.clone());
             Ok(Some(tile))
         }
     }
 
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
+        let normalized_key = normalize_atlas_key(key);
 
-        let Some(id) = lock.tiles_by_key.remove(key).map(|tile| tile.texture_id) else {
+        let Some(id) = lock
+            .tiles_by_key
+            .remove(normalized_key.as_ref())
+            .map(|tile| tile.texture_id)
+        else {
             return;
         };
 

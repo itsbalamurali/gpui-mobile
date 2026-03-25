@@ -82,6 +82,41 @@ impl CosmicTextSystem {
     }
 }
 
+#[cfg(target_os = "android")]
+fn default_text_rendering_mode() -> TextRenderingMode {
+    // Mobile Vulkan drivers are more likely to regress on the dual-source
+    // blending path used for LCD subpixel AA. Prefer the grayscale glyph path
+    // on Android for stability and lower cost.
+    TextRenderingMode::Grayscale
+}
+
+#[cfg(not(target_os = "android"))]
+fn default_text_rendering_mode() -> TextRenderingMode {
+    TextRenderingMode::Subpixel
+}
+
+#[cfg(target_os = "android")]
+fn glyph_subpixel_offset(params: &RenderGlyphParams) -> Vector {
+    if !params.subpixel_rendering {
+        // Snap grayscale glyphs to a single raster variant. Otherwise
+        // scroll-driven fractional positions churn the glyph cache every frame.
+        return Vector::new(0.0, 0.0);
+    }
+
+    Vector::new(
+        params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
+        params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
+    )
+}
+
+#[cfg(not(target_os = "android"))]
+fn glyph_subpixel_offset(params: &RenderGlyphParams) -> Vector {
+    Vector::new(
+        params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
+        params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
+    )
+}
+
 impl PlatformTextSystem for CosmicTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         self.0.write().add_fonts(fonts)
@@ -184,7 +219,7 @@ impl PlatformTextSystem for CosmicTextSystem {
         _font_id: FontId,
         _font_size: Pixels,
     ) -> TextRenderingMode {
-        TextRenderingMode::Subpixel
+        default_text_rendering_mode()
     }
 }
 
@@ -314,10 +349,7 @@ impl CosmicTextSystemState {
         let font_ref = loaded_font.font.as_swash();
         let pixel_size = f32::from(params.font_size);
 
-        let subpixel_offset = Vector::new(
-            params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
-            params.subpixel_variant.y as f32 / SUBPIXEL_VARIANTS_Y as f32 / params.scale_factor,
-        );
+        let subpixel_offset = glyph_subpixel_offset(params);
 
         let mut scaler = self
             .swash_scale_context
