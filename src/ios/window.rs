@@ -20,7 +20,7 @@ use gpui::{
     PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
-use gpui_wgpu::{WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
+use gpui_wgpu::{GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use objc::{
     class,
     declare::ClassDecl,
@@ -29,7 +29,9 @@ use objc::{
     sel, sel_impl,
 };
 use parking_lot::Mutex;
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
+use raw_window_handle::{
+    HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -40,6 +42,39 @@ use std::{
 };
 
 const GPUI_WINDOW_IVAR: &str = "gpui_window_ptr";
+
+/// Lightweight window handle for wgpu surface creation.
+/// Stores the raw UIView pointer needed by wgpu to create a Metal surface.
+/// Implements the traits required by `WgpuRenderer::new`.
+#[derive(Debug, Clone, Copy)]
+struct RawIosWindow {
+    view: *mut c_void,
+}
+
+unsafe impl Send for RawIosWindow {}
+unsafe impl Sync for RawIosWindow {}
+
+impl HasWindowHandle for RawIosWindow {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+    {
+        let view =
+            NonNull::new(self.view).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = UiKitWindowHandle::new(view);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl HasDisplayHandle for RawIosWindow {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+    {
+        let handle = UiKitDisplayHandle::new();
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(handle.into()) })
+    }
+}
 
 static METAL_VIEW_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
 static VC_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
@@ -575,35 +610,32 @@ impl IosWindow {
             let config = WgpuSurfaceConfig {
                 size: size(DevicePixels(pixel_w), DevicePixels(pixel_h)),
                 transparent: false,
+                preferred_present_mode: None,
             };
 
-            let metal_instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            let metal_instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::METAL,
                 flags: wgpu::InstanceFlags::default(),
-                ..Default::default()
+                backend_options: wgpu::BackendOptions::default(),
+                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+                display: None,
             });
 
-            // Build raw-window-handle types for the surface.
-            let window_handle = ios_window
+            let raw_window = RawIosWindow {
+                view: ios_window.view as *mut c_void,
+            };
+
+            // Build a temporary surface for WgpuContext initialisation
+            // (adapter selection needs a surface to test compatibility).
+            let window_handle = raw_window
                 .window_handle()
                 .expect("iOS window handle unavailable");
-            let display_handle = ios_window
-                .display_handle()
-                .expect("iOS display handle unavailable");
 
             let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: display_handle.as_raw(),
+                raw_display_handle: None,
                 raw_window_handle: window_handle.as_raw(),
             };
 
-            // Create a temporary surface just for WgpuContext initialisation
-            // (adapter selection needs a surface to test compatibility).
-            // Then use WgpuRenderer::new() which creates its own surface
-            // from the window handles — it reuses the Metal instance from
-            // the pre-populated WgpuContext.
-            //
-            // `new_with_surface` is private in upstream gpui_wgpu, so we
-            // go through the public `WgpuRenderer::new()` path instead.
             let surface_result = metal_instance.create_surface_unsafe(target);
             match surface_result {
                 Ok(surface) => match WgpuContext::new(metal_instance, &surface, None) {
@@ -611,10 +643,11 @@ impl IosWindow {
                         // Pre-populate gpu_context so WgpuRenderer::new()
                         // reuses our Metal-backed context (and its instance)
                         // instead of creating a Vulkan+GL one.
-                        let mut gpu_context: Option<WgpuContext> = Some(context);
+                        let gpu_context: GpuContext =
+                            Rc::new(RefCell::new(Some(context)));
                         drop(surface); // no longer needed — new() creates its own
 
-                        match WgpuRenderer::new(&mut gpu_context, &ios_window, config, None) {
+                        match WgpuRenderer::new(gpu_context, &raw_window, config, None) {
                             Ok(renderer) => {
                                 log::info!("iOS wgpu renderer created (Metal)");
                                 *ios_window.renderer.lock() = Some(renderer);

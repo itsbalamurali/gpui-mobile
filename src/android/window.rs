@@ -39,12 +39,13 @@ use gpui::{
     PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
     RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
 };
-use gpui_wgpu::{WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
+use gpui_wgpu::{wgpu, GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use parking_lot::Mutex;
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, HasDisplayHandle, HasWindowHandle,
     RawDisplayHandle, RawWindowHandle,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -52,6 +53,42 @@ use std::sync::Arc;
 
 use super::{AndroidKeyEvent, Bounds, DevicePixels, Pixels, Point, Size, TouchPoint};
 use crate::momentum::{MomentumScroller, VelocityTracker};
+
+/// Lightweight, owned window handle for wgpu surface creation.
+/// Stores the raw ANativeWindow pointer and implements the traits
+/// required by `WgpuRenderer::new` (`Clone + Debug + Send + Sync + 'static`).
+#[derive(Debug, Clone, Copy)]
+struct RawAndroidWindow {
+    nw_ptr: *mut std::ffi::c_void,
+}
+
+unsafe impl Send for RawAndroidWindow {}
+unsafe impl Sync for RawAndroidWindow {}
+
+impl HasWindowHandle for RawAndroidWindow {
+    fn window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+    {
+        let ptr =
+            NonNull::new(self.nw_ptr).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let handle = AndroidNdkWindowHandle::new(ptr);
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
+    }
+}
+
+impl HasDisplayHandle for RawAndroidWindow {
+    fn display_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+    {
+        Ok(unsafe {
+            raw_window_handle::DisplayHandle::borrow_raw(RawDisplayHandle::Android(
+                AndroidDisplayHandle::new(),
+            ))
+        })
+    }
+}
 
 /// Shared momentum scrolling state, accessible from both the touch callback
 /// (which starts/cancels flings and records velocity samples) and the
@@ -179,7 +216,7 @@ struct WindowState {
 
     /// Shared GPU context (instance + adapter + device + queue).
     /// Created once and reused across window re-creations.
-    gpu_context: Option<WgpuContext>,
+    gpu_context: GpuContext,
 
     /// The wgpu renderer from `gpui_wgpu`.  `None` while the surface is unavailable.
     renderer: Option<WgpuRenderer>,
@@ -256,7 +293,7 @@ impl AndroidWindow {
     /// `transparent` — whether to request a pre-multiplied alpha surface.
     pub fn new(
         native_window: NativeWindow,
-        gpu_context: &mut Option<WgpuContext>,
+        gpu_context: GpuContext,
         scale_factor: f32,
         transparent: bool,
     ) -> Result<Arc<Self>> {
@@ -273,14 +310,14 @@ impl AndroidWindow {
         );
 
         let renderer =
-            Self::create_renderer(&native_window, gpu_context, width, height, transparent)
+            Self::create_renderer(&native_window, Rc::clone(&gpu_context), width, height, transparent)
                 .context("failed to create gpui_wgpu renderer")?;
 
         let id = native_window.ptr().as_ptr() as u64;
 
         let state = Arc::new(Mutex::new(WindowState {
             native_window: Some(native_window),
-            gpu_context: gpu_context.take(),
+            gpu_context,
             renderer: Some(renderer),
             width,
             height,
@@ -311,7 +348,7 @@ impl AndroidWindow {
     pub fn headless(width: i32, height: i32, scale_factor: f32) -> Arc<Self> {
         let state = Arc::new(Mutex::new(WindowState {
             native_window: None,
-            gpu_context: None,
+            gpu_context: Rc::new(RefCell::new(None)),
             renderer: None,
             width,
             height,
@@ -343,7 +380,7 @@ impl AndroidWindow {
     pub fn init_window(
         &self,
         native_window: NativeWindow,
-        gpu_context: &mut Option<WgpuContext>,
+        gpu_context: GpuContext,
     ) -> Result<()> {
         request_high_frame_rate(&native_window);
 
@@ -361,9 +398,11 @@ impl AndroidWindow {
             let config = WgpuSurfaceConfig {
                 size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
                 transparent,
+                preferred_present_mode: Some(wgpu::PresentMode::Mailbox),
             };
             let instance = state
                 .gpu_context
+                .borrow()
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("gpu_context missing during surface replacement"))?
                 .instance
@@ -380,20 +419,16 @@ impl AndroidWindow {
             );
         } else {
             // First init or after a full destroy — create a fresh renderer.
-            let renderer = if state.gpu_context.is_some() {
-                Self::create_renderer(
-                    &native_window,
-                    &mut state.gpu_context,
-                    width,
-                    height,
-                    transparent,
-                )?
+            let ctx = if state.gpu_context.borrow().is_some() {
+                Rc::clone(&state.gpu_context)
             } else {
-                let r =
-                    Self::create_renderer(&native_window, gpu_context, width, height, transparent)?;
-                state.gpu_context = gpu_context.take();
-                r
+                // Use the context from the platform; store it in our state too.
+                state.gpu_context = Rc::clone(&gpu_context);
+                gpu_context
             };
+            let renderer = Self::create_renderer(
+                &native_window, ctx, width, height, transparent,
+            )?;
             state.renderer = Some(renderer);
             log::info!(
                 "AndroidWindow::init_window — created new renderer {}×{}",
@@ -914,41 +949,25 @@ impl AndroidWindow {
     /// Build a raw-window-handle wrapper for the given `NativeWindow`.
     ///
     /// `ndk::NativeWindow` implements `HasWindowHandle` but not `HasDisplayHandle`,
-    /// so we wrap both into a single struct.
-    fn raw_window(native_window: &NativeWindow) -> impl HasWindowHandle + HasDisplayHandle + '_ {
-        struct RawWindow<'a> {
-            nw: &'a NativeWindow,
-        }
-
-        impl HasWindowHandle for RawWindow<'_> {
-            fn window_handle(
-                &self,
-            ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
-            {
-                self.nw.window_handle()
-            }
-        }
-
-        impl HasDisplayHandle for RawWindow<'_> {
-            fn display_handle(
-                &self,
-            ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
-            {
-                Ok(unsafe {
-                    raw_window_handle::DisplayHandle::borrow_raw(RawDisplayHandle::Android(
-                        AndroidDisplayHandle::new(),
-                    ))
-                })
-            }
-        }
-
-        RawWindow { nw: native_window }
+    /// so we wrap both into a single owned struct that satisfies the
+    /// `Clone + Debug + Send + Sync + 'static` bounds required by `WgpuRenderer::new`.
+    fn raw_window(native_window: &NativeWindow) -> RawAndroidWindow {
+        let ptr = native_window
+            .window_handle()
+            .expect("NativeWindow handle unavailable")
+            .as_raw();
+        // Extract the raw pointer from the RawWindowHandle
+        let nw_ptr = match ptr {
+            RawWindowHandle::AndroidNdk(h) => h.a_native_window.as_ptr(),
+            _ => panic!("Expected AndroidNdk window handle"),
+        };
+        RawAndroidWindow { nw_ptr }
     }
 
     /// Create a `WgpuRenderer` for the given `NativeWindow`.
     fn create_renderer(
         native_window: &NativeWindow,
-        gpu_context: &mut Option<WgpuContext>,
+        gpu_context: GpuContext,
         width: i32,
         height: i32,
         transparent: bool,
@@ -958,6 +977,7 @@ impl AndroidWindow {
         let config = WgpuSurfaceConfig {
             size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
             transparent,
+            preferred_present_mode: Some(wgpu::PresentMode::Mailbox),
         };
 
         WgpuRenderer::new(gpu_context, &raw, config, None)

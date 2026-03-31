@@ -62,7 +62,7 @@ futures      = "0.3"
 raw-window-handle = "0.6"
 
 # ── GPUI core crate (provides Platform trait, event types, geometry, etc.) ───
-gpui = { git = "https://github.com/zed-industries/zed", rev = "4dd42a0f77b11d0bed2a072919bcd9180b9a577c", package = "gpui", default-features = false }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "56104fb17e6c5849900a4c282f42d1bfea294121", package = "gpui", default-features = false }
 
 # ── iOS ──────────────────────────────────────────────────────────────────────
 
@@ -78,9 +78,9 @@ core-text           = "=21.0.0"
 uuid                = { version = "1", features = ["v4", "v5"] }
 block               = "0.1"
 
-# wgpu renderer (Metal backend on iOS) — local fork from Zed with Android surface replacement
-gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
-wgpu = "28.0"
+# wgpu renderer (Metal backend on iOS/Android)
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "56104fb17e6c5849900a4c282f42d1bfea294121", package = "gpui_wgpu", features = ["font-kit"] }
+wgpu = { git = "https://github.com/zed-industries/wgpu.git", branch = "v29" }
 
 # Text / font stack
 pathfinder_geometry = "0.5"
@@ -104,8 +104,8 @@ android-activity = { version = "0.6", features = ["native-activity"] }
 # Logging to logcat
 android_logger = "0.15"
 
-# gpui_wgpu — local fork from Zed repo with Android surface replacement support
-gpui_wgpu = { path = "crates/gpui_wgpu", features = ["font-kit"] }
+# wgpu renderer (Vulkan backend on Android)
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "56104fb17e6c5849900a4c282f42d1bfea294121", package = "gpui_wgpu", features = ["font-kit"] }
 
 # rustc-hash is required by the PlatformKeyboardMapper trait signature
 rustc-hash = "2"

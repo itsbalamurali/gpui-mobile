@@ -637,14 +637,12 @@ pub fn run_event_loop(app: &AndroidApp) {
                         .unwrap_or(1.0);
 
                     if let Some(existing) = platform.primary_window() {
-                        let mut gpu_ctx = platform.take_gpu_context();
-                        match existing.init_window(native_window, &mut gpu_ctx) {
+                        let gpu_ctx = platform.gpu_context();
+                        match existing.init_window(native_window, gpu_ctx) {
                             Ok(()) => {
-                                platform.return_gpu_context(gpu_ctx);
                                 log::info!("InitWindow: reinitialised existing window");
                             }
                             Err(e) => {
-                                platform.return_gpu_context(gpu_ctx);
                                 log::error!("failed to reinit window surface: {e:#}");
                             }
                         }

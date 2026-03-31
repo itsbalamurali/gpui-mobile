@@ -1,9 +1,0 @@
-[package]
-name = "gpui_util"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-log = { version = "0.4", features = ["kv_unstable_serde", "serde"] }
-anyhow = "1"

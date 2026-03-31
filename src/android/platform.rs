@@ -43,6 +43,7 @@ use gpui::{
 use gpui_wgpu::CosmicTextSystem;
 use parking_lot::Mutex;
 use std::{
+    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
@@ -58,7 +59,7 @@ use super::{
     window::{AndroidWindow, WindowList},
     AndroidBackend,
 };
-use gpui_wgpu::WgpuContext;
+use gpui_wgpu::{GpuContext, WgpuContext};
 
 // ── stub: clipboard ───────────────────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ struct AndroidPlatformState {
 
     // ── rendering ─────────────────────────────────────────────────────────────
     /// Shared wgpu device + queue.  `None` until the first window is opened.
-    gpu_context: Option<WgpuContext>,
+    gpu_context: GpuContext,
 
     // ── windows / displays ────────────────────────────────────────────────────
     windows: WindowList,
@@ -392,7 +393,7 @@ impl AndroidPlatform {
         Self {
             state: Mutex::new(AndroidPlatformState {
                 dispatcher,
-                gpu_context: None,
+                gpu_context: Rc::new(RefCell::new(None)),
                 windows: WindowList::default(),
                 displays,
                 text_system,
@@ -571,7 +572,7 @@ impl AndroidPlatform {
         let mut state = self.state.lock();
         let window = AndroidWindow::new(
             native_window,
-            &mut state.gpu_context,
+            Rc::clone(&state.gpu_context),
             scale_factor,
             transparent,
         )?;
@@ -599,20 +600,9 @@ impl AndroidPlatform {
         self.state.lock().windows.len()
     }
 
-    /// Take the shared GPU context out of the platform state.
-    ///
-    /// Used when reinitialising an existing window's surface — the window's
-    /// `init_window` needs a `&mut Option<WgpuContext>` to potentially reuse
-    /// or create the GPU context.
-    pub fn take_gpu_context(&self) -> Option<WgpuContext> {
-        self.state.lock().gpu_context.take()
-    }
-
-    /// Return the GPU context to the platform state after reinit.
-    pub fn return_gpu_context(&self, ctx: Option<WgpuContext>) {
-        if ctx.is_some() {
-            self.state.lock().gpu_context = ctx;
-        }
+    /// Get a clone of the shared GPU context handle.
+    pub fn gpu_context(&self) -> GpuContext {
+        Rc::clone(&self.state.lock().gpu_context)
     }
 
     // ── display management ────────────────────────────────────────────────────
