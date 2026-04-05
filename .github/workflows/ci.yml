@@ -106,7 +106,7 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Set up Android SDK + NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
 
@@ -166,7 +166,7 @@ jobs:
         run: cargo install cargo-ndk
 
       - name: Set up Android SDK + NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
 
