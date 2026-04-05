@@ -34,6 +34,8 @@ unsafe fn nsurl_from_str(url: &str) -> Result<*mut AnyObject, String> {
         return Err("Failed to create NSString from URL".into());
     }
     let nsurl: *mut AnyObject = msg_send![class!(NSURL), URLWithString: ns_string];
+    // ns_string was alloc+init (retained); release now that URLWithString: has consumed it
+    let _: () = msg_send![ns_string, release];
     if nsurl.is_null() {
         return Err(format!("Failed to parse URL: {url}"));
     }

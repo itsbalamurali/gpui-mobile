@@ -65,6 +65,7 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
         let calendars: *mut AnyObject =
             msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if calendars.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
@@ -93,6 +94,7 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
             });
         }
 
+        let _: () = msg_send![store, release];
         Ok(result)
     }
 }
@@ -115,6 +117,7 @@ pub fn get_events(
         let all_calendars: *mut AnyObject =
             msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if all_calendars.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
@@ -135,6 +138,7 @@ pub fn get_events(
         }
 
         if target_calendar.is_null() {
+            let _: () = msg_send![store, release];
             return Err(format!("Calendar not found: {}", calendar_id));
         }
 
@@ -148,11 +152,13 @@ pub fn get_events(
             calendars: calendar_array
         ];
         if predicate.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
         let events: *mut AnyObject = msg_send![store, eventsMatchingPredicate: predicate];
         if events.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
@@ -187,6 +193,7 @@ pub fn get_events(
             });
         }
 
+        let _: () = msg_send![store, release];
         Ok(result)
     }
 }
@@ -200,6 +207,7 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
 
         let ek_event: *mut AnyObject = msg_send![class!(EKEvent), eventWithEventStore: store];
         if ek_event.is_null() {
+            let _: () = msg_send![store, release];
             return Err("Failed to create EKEvent".into());
         }
 
@@ -254,13 +262,16 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
             if !error.is_null() {
                 let desc: *mut AnyObject = msg_send![error, localizedDescription];
                 let err_str = nsstring_to_string(desc);
+                let _: () = msg_send![store, release];
                 return Err(format!("Failed to save event: {}", err_str));
             }
+            let _: () = msg_send![store, release];
             return Err("Failed to save event".into());
         }
 
         let event_identifier: *mut AnyObject = msg_send![ek_event, eventIdentifier];
         let id_str = nsstring_to_string(event_identifier);
+        let _: () = msg_send![store, release];
         if id_str.is_empty() {
             Err("Event saved but no identifier returned".into())
         } else {
@@ -279,6 +290,7 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
         let ns_event_id = nsstring_from_str(event_id);
         let event: *mut AnyObject = msg_send![store, eventWithIdentifier: ns_event_id];
         if event.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(false);
         }
 
@@ -293,11 +305,14 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
             if !error.is_null() {
                 let desc: *mut AnyObject = msg_send![error, localizedDescription];
                 let err_str = nsstring_to_string(desc);
+                let _: () = msg_send![store, release];
                 return Err(format!("Failed to delete event: {}", err_str));
             }
+            let _: () = msg_send![store, release];
             return Err("Failed to delete event".into());
         }
 
+        let _: () = msg_send![store, release];
         Ok(true)
     }
 }

@@ -76,6 +76,9 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
+                // playerWithPlayerItem: returns an autoreleased object; retain it
+                // since it will be stored across run-loop iterations.
+                let _: () = msg_send![p, retain];
                 entry.player = p;
                 entry.started = false;
                 Ok(p)
@@ -114,6 +117,9 @@ pub fn set_file_path(id: u32, path: &str) -> Result<Option<u64>, String> {
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
+                // playerWithPlayerItem: returns an autoreleased object; retain it
+                // since it will be stored across run-loop iterations.
+                let _: () = msg_send![p, retain];
                 entry.player = p;
                 entry.started = false;
                 Ok(p)

@@ -125,9 +125,11 @@ unsafe fn user_defaults() -> *mut AnyObject {
 
 unsafe fn nsstring(s: &str) -> *mut AnyObject {
     let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns, initWithBytes: s.as_ptr()
+    let ns: *mut AnyObject = msg_send![ns, initWithBytes: s.as_ptr()
                   length: s.len()
-                  encoding: 4u64] // NSUTF8StringEncoding
+                  encoding: 4u64]; // NSUTF8StringEncoding
+                                   // autorelease so callers don't need to manage the lifetime manually
+    msg_send![ns, autorelease]
 }
 
 unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {

@@ -723,6 +723,9 @@ impl IosWindow {
                 let frame_key = unsafe { make_nsstring("UIKeyboardFrameEndUserInfoKey") };
                 let frame_value: *mut AnyObject =
                     unsafe { msg_send![user_info, objectForKey: frame_key] };
+                unsafe {
+                    let _: () = msg_send![frame_key, release];
+                }
                 if frame_value.is_null() {
                     return;
                 }
@@ -743,12 +746,14 @@ impl IosWindow {
                 queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*show_block
             ];
+            let _: () = msg_send![show_name, release];
             let _: *mut AnyObject = msg_send![notification_center,
                 addObserverForName: hide_name
                 object: std::ptr::null::<AnyObject>()
                 queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*hide_block
             ];
+            let _: () = msg_send![hide_name, release];
 
             // Leak the blocks so they live for the app lifetime.
             std::mem::forget(show_block);
