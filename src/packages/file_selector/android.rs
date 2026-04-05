@@ -25,8 +25,6 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(None);
         }
@@ -58,8 +56,6 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(vec![]);
         }
@@ -73,7 +69,6 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             files.push(SelectedFile { path, name });
         }
-        std::mem::forget(arr);
         Ok(files)
     })
 }
@@ -106,8 +101,6 @@ pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(None);
         }
@@ -134,8 +127,6 @@ pub fn get_directory_path(_initial_directory: Option<&str>) -> Result<Option<Str
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(None);

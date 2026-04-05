@@ -151,9 +151,7 @@ pub fn get_string(env: &mut jni::Env<'_>, obj: &JObject<'_>) -> String {
         return String::new();
     }
     let jstr = unsafe { JString::from_raw(env, obj.as_raw()) };
-    let result = jstr.to_string();
-    std::mem::forget(jstr);
-    result
+    jstr.to_string()
 }
 
 /// Extension trait for converting `jni::errors::Result<T>` to `Result<T, String>`.
@@ -218,7 +216,6 @@ pub fn find_app_class<'local>(
         })?;
 
     log::debug!("find_app_class: loaded {class_name}");
-    std::mem::forget(act);
     Ok(unsafe { jni::objects::JClass::from_raw(env, loaded.as_raw()) })
 }
 
@@ -1053,6 +1050,7 @@ pub fn init_platform(app: &AndroidApp) -> &'static Arc<AndroidPlatform> {
 /// contend with the Android UI thread and intermittently deadlock.
 /// By caching the last applied style we skip the JNI calls entirely when
 /// nothing changed — which is the common case.
+#[allow(clippy::type_complexity)]
 static LAST_CHROME_STYLE: std::sync::Mutex<
     Option<(Option<u32>, Option<u32>, crate::StatusBarContentStyle)>,
 > = std::sync::Mutex::new(None);
@@ -1238,6 +1236,9 @@ pub fn hide_keyboard_android() {
 ///
 /// The AndroidX SplashScreen API calls this via `setKeepOnScreenCondition`
 /// to hold the splash visible until GPUI is ready.
+///
+/// # Safety
+/// Must only be called from the JVM on a valid JNI thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeIsInitialized(
     _env: *mut std::ffi::c_void,
@@ -1255,6 +1256,9 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeIsInitialized(
 /// When the app is already running and a deeplink is opened (e.g. via
 /// `adb shell am start -d gpui://video_player`), the Java side calls
 /// this to notify the Rust deeplink handler.
+///
+/// # Safety
+/// Must only be called from the JVM on a valid JNI thread with a valid `url` jobject.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnDeepLink(
     _env: *mut std::ffi::c_void,
@@ -1268,7 +1272,6 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnDeepLink(
         let url_obj = unsafe { JObject::from_raw(env, url_raw) };
         let url_string = get_string(env, &url_obj);
         // Don't let the JObject be dropped (it's owned by the JNI call frame).
-        std::mem::forget(url_obj);
         if url_string.is_empty() {
             return Ok(());
         }
@@ -1285,6 +1288,9 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiActivity_nativeOnDeepLink(
 /// JNI bridge: receive a media action from `GpuiMediaSession` system controls.
 ///
 /// Actions: "play", "pause", "stop", "next", "previous"
+///
+/// # Safety
+/// Must only be called from the JVM on a valid JNI thread with a valid `action` jobject.
 #[cfg(feature = "media_session")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaAction(
@@ -1296,7 +1302,6 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaAction
     let _ = with_env(|env| {
         let action_obj = unsafe { JObject::from_raw(env, action_raw) };
         let action_str = get_string(env, &action_obj);
-        std::mem::forget(action_obj);
 
         let media_action = match action_str.as_str() {
             "play" => crate::packages::media_session::MediaAction::Play,
@@ -1317,6 +1322,9 @@ pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaAction
 }
 
 /// JNI bridge: receive a seek request from `GpuiMediaSession` system controls.
+///
+/// # Safety
+/// Must only be called from the JVM on a valid JNI thread.
 #[cfg(feature = "media_session")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiMediaSession_nativeMediaSeek(

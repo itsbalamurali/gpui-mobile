@@ -189,14 +189,12 @@ pub fn current_platform(headless: bool) -> Rc<dyn gpui::Platform> {
 ///
 /// On Android the Vulkan back-end is strongly preferred; GL-ES is the
 /// fallback for devices that don't expose Vulkan 1.1.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum AndroidBackend {
     #[default]
     Vulkan,
     Gles,
 }
-
 
 impl std::fmt::Display for AndroidBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

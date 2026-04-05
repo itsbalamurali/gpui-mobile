@@ -56,8 +56,6 @@ pub fn check_permission(permission: Permission) -> Result<PermissionStatus, Stri
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         Ok(int_to_status(status))
     })
 }
@@ -85,8 +83,6 @@ pub fn request_permission(permission: Permission) -> Result<PermissionStatus, St
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         Ok(int_to_status(status))
     })
@@ -120,8 +116,6 @@ pub fn request_permissions(
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             // Fallback: request one by one
@@ -157,10 +151,7 @@ pub fn service_status(permission: Permission) -> Result<ServiceStatus, String> {
             Permission::LocationWhenInUse | Permission::LocationAlways => 0i32,
             Permission::Bluetooth => 1i32,
             _ => {
-                return {
-                    std::mem::forget(activity);
-                    Ok(ServiceStatus::NotApplicable)
-                }
+                return Ok(ServiceStatus::NotApplicable);
             }
         };
 
@@ -176,8 +167,6 @@ pub fn service_status(permission: Permission) -> Result<ServiceStatus, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         Ok(if enabled {
             ServiceStatus::Enabled
@@ -205,7 +194,6 @@ pub fn open_app_settings() -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }
@@ -234,7 +222,6 @@ pub fn should_show_request_rationale(permission: Permission) -> Result<bool, Str
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }

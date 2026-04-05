@@ -19,6 +19,7 @@ pub struct AndroidPlatformView {
     view_type: String,
     /// JNI global reference to the Android View object.
     /// 0 means no view (disposed or not yet created).
+    #[allow(dead_code)]
     java_view_ref: std::sync::atomic::AtomicUsize,
     disposed: AtomicBool,
     bounds: std::sync::Mutex<PlatformViewBounds>,

@@ -23,8 +23,6 @@ pub fn create_player() -> Result<u32, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if id <= 0 {
             return Err("GpuiVideoPlayer.create failed".into());
         }
@@ -55,7 +53,6 @@ pub fn set_url(id: u32, url: &str) -> Result<VideoInfo, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         parse_video_info(env, &result)
     })
 }
@@ -83,7 +80,6 @@ pub fn set_file_path(id: u32, path: &str) -> Result<VideoInfo, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         parse_video_info(env, &result)
     })
 }

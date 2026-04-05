@@ -16,7 +16,7 @@ pub fn is_available() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .e()?;
-        std::mem::forget(activity);
+
         Ok(result)
     })
 }
@@ -34,7 +34,7 @@ pub fn request_review() -> Result<(), String> {
             )
             .and_then(|v| v.z())
             .e()?;
-        std::mem::forget(activity);
+
         if success {
             Ok(())
         } else {
@@ -57,7 +57,7 @@ pub fn open_store_listing(app_id: &str) -> Result<(), String> {
             )
             .and_then(|v| v.z())
             .e()?;
-        std::mem::forget(activity);
+
         if success {
             Ok(())
         } else {

@@ -22,7 +22,6 @@ pub fn set_text(text: &str) -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }
@@ -44,8 +43,6 @@ pub fn get_text() -> Result<Option<String>, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(None);
@@ -78,7 +75,6 @@ pub fn has_text() -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }

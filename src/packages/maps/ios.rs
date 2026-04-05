@@ -1,6 +1,5 @@
 use super::{LatLng, MapMarker, MapType};
 
-
 // Note: MKMapView integration requires MapKit framework.
 // These are placeholder implementations that log the operations.
 

@@ -24,8 +24,6 @@ pub fn get_initial_link() -> Result<Option<String>, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(None);
         }

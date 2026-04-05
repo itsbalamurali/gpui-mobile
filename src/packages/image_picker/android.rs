@@ -35,8 +35,6 @@ pub fn pick_image(options: &ImagePickerOptions) -> Result<Option<PickedFile>, St
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(None);
         }
@@ -69,8 +67,6 @@ pub fn pick_multi_image(
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(vec![]);
         }
@@ -84,7 +80,6 @@ pub fn pick_multi_image(
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             files.push(PickedFile { path, name });
         }
-        std::mem::forget(arr);
         Ok(files)
     })
 }
@@ -122,8 +117,6 @@ pub fn pick_video(
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(None);

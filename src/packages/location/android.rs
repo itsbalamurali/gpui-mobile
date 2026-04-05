@@ -22,7 +22,6 @@ pub fn is_location_service_enabled() -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }
@@ -46,8 +45,6 @@ pub fn get_current_position(settings: &LocationSettings) -> Result<Position, Str
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Err("Failed to get current position".into());
@@ -75,8 +72,6 @@ pub fn get_last_known_position() -> Result<Option<Position>, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(None);

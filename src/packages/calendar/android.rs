@@ -22,8 +22,6 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(vec![]);
         }
@@ -83,8 +81,6 @@ pub fn get_events(
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(vec![]);
@@ -160,8 +156,6 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Err("Failed to create event".into());
         }
@@ -196,7 +190,6 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }

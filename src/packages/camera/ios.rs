@@ -235,7 +235,6 @@ unsafe fn nsstring(s: &str) -> *mut Object {
     ]
 }
 
-
 fn resolution_to_preset(resolution: ResolutionPreset) -> &'static str {
     match resolution {
         ResolutionPreset::Low => "AVCaptureSessionPresetLow",

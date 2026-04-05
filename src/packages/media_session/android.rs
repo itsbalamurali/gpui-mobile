@@ -19,7 +19,6 @@ pub fn init() -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }

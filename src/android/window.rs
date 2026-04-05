@@ -251,6 +251,12 @@ struct WindowState {
     active_status_callback: Option<ActiveStatusCallback>,
 }
 
+// SAFETY: `WindowState` is only ever accessed while holding the
+// `Mutex<WindowState>` lock, and all GPU work (including any use of
+// `GpuContext = Rc<RefCell<Option<WgpuContext>>>`) happens exclusively on the
+// Android main thread.  The `Rc` never escapes to another thread.
+unsafe impl Send for WindowState {}
+
 // ── AndroidWindow ─────────────────────────────────────────────────────────────
 
 /// A GPUI window on Android.
@@ -1002,6 +1008,7 @@ impl Drop for AndroidWindow {
 /// GPUI expects `Box<dyn PlatformWindow>` from `Platform::open_window`.  This
 /// struct provides the trait implementation by delegating to the underlying
 /// `AndroidWindow` methods.
+#[allow(clippy::type_complexity)]
 pub struct AndroidPlatformWindow {
     window: Arc<AndroidWindow>,
     display: Option<Rc<dyn PlatformDisplay>>,

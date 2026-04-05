@@ -26,8 +26,6 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(vec![]);
         }
@@ -58,7 +56,6 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             }
         }
 
-        std::mem::forget(arr);
         Ok(cameras)
     })
 }
@@ -91,8 +88,6 @@ pub fn create_camera(
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if handle_id < 0 {
             return Err("Failed to create camera session".into());

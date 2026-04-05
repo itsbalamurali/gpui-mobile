@@ -20,7 +20,6 @@ pub fn initialize() -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }
@@ -62,7 +61,6 @@ pub fn show(notification: &Notification) -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }
@@ -83,7 +81,6 @@ pub fn cancel(id: i32) -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }
@@ -104,7 +101,6 @@ pub fn cancel_all() -> Result<(), String> {
             e.to_string()
         })?;
 
-        std::mem::forget(activity);
         Ok(())
     })
 }

@@ -22,8 +22,6 @@ pub fn get_contacts() -> Result<Vec<Contact>, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(Vec::new());
         }
@@ -54,8 +52,6 @@ pub fn search_contacts(query: &str) -> Result<Vec<Contact>, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if result.is_null() {
             return Ok(Vec::new());
         }
@@ -85,8 +81,6 @@ pub fn get_contact(id: &str) -> Result<Option<Contact>, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(None);

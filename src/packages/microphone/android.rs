@@ -17,7 +17,7 @@ pub fn is_available() -> bool {
             )
             .and_then(|v| v.z())
             .e()?;
-        std::mem::forget(activity);
+
         Ok(result)
     })
     .unwrap_or(false)
@@ -55,8 +55,6 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Err("Failed to start recording".into());

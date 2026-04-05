@@ -22,8 +22,6 @@ pub fn create() -> Result<u32, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
-
         if id < 0 {
             return Err("Failed to create audio player".into());
         }
@@ -54,8 +52,6 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if duration < 0 {
             Ok(None)

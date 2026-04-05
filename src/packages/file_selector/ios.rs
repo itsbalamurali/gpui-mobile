@@ -213,7 +213,6 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             // Merge all type groups into one array
             let mut all_types: Vec<*mut Object> = Vec::new();
             for group in &options.accept_type_groups {
-                
                 let arr = type_group_to_uttypes(group);
                 let count: usize = msg_send![arr, count];
                 for i in 0..count {

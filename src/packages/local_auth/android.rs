@@ -22,7 +22,6 @@ pub fn is_device_supported() -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }
@@ -45,7 +44,6 @@ pub fn can_authenticate() -> Result<bool, String> {
                 e.to_string()
             })?;
 
-        std::mem::forget(activity);
         Ok(result)
     })
 }
@@ -67,8 +65,6 @@ pub fn get_available_biometrics() -> Result<Vec<BiometricType>, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         if result.is_null() {
             return Ok(vec![]);
@@ -108,8 +104,6 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
                 env.exception_clear();
                 e.to_string()
             })?;
-
-        std::mem::forget(activity);
 
         Ok(int_to_auth_result(result))
     })
