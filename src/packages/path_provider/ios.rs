@@ -1,12 +1,12 @@
-use objc::runtime::Object;
-use objc::{msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, sel};
 use std::ffi::CStr;
 use std::path::PathBuf;
 
 pub fn temporary_directory() -> Result<PathBuf, String> {
     unsafe {
         extern "C" {
-            fn NSTemporaryDirectory() -> *mut Object;
+            fn NSTemporaryDirectory() -> *mut AnyObject;
         }
         let path = NSTemporaryDirectory();
         nsstring_to_pathbuf(path)
@@ -33,7 +33,7 @@ fn search_path_directory(directory: u64) -> Result<PathBuf, String> {
                 directory: u64,
                 domain_mask: u64,
                 expand_tilde: bool,
-            ) -> *mut Object; // NSArray<NSString*>
+            ) -> *mut AnyObject; // NSArray<NSString*>
         }
 
         let array = NSSearchPathForDirectoriesInDomains(
@@ -49,12 +49,12 @@ fn search_path_directory(directory: u64) -> Result<PathBuf, String> {
             return Err("NSSearchPathForDirectoriesInDomains returned empty array".into());
         }
 
-        let first: *mut Object = msg_send![array, objectAtIndex: 0u64];
+        let first: *mut AnyObject = msg_send![array, objectAtIndex: 0u64];
         nsstring_to_pathbuf(first)
     }
 }
 
-unsafe fn nsstring_to_pathbuf(ns: *mut Object) -> Result<PathBuf, String> {
+unsafe fn nsstring_to_pathbuf(ns: *mut AnyObject) -> Result<PathBuf, String> {
     if ns.is_null() {
         return Err("NSString is nil".into());
     }

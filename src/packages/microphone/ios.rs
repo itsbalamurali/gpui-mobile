@@ -1,13 +1,13 @@
 use super::{AudioFormat, Recording, RecordingConfig};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::sync::Mutex;
 
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 
 struct RecorderState {
-    recorder: *mut Object, // AVAudioRecorder
+    recorder: *mut AnyObject, // AVAudioRecorder
     path: String,
     start_time: std::time::Instant,
 }
@@ -41,13 +41,13 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
 
         // Create NSURL
         let ns_path = nsstring(&path_str);
-        let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_path];
+        let file_url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_path];
         if file_url.is_null() {
             return Err("Failed to create file URL".into());
         }
 
         // Build settings dictionary
-        let keys: [*mut Object; 4] = [
+        let keys: [*mut AnyObject; 4] = [
             nsstring("AVFormatIDKey"),
             nsstring("AVSampleRateKey"),
             nsstring("AVNumberOfChannelsKey"),
@@ -60,31 +60,31 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
             AudioFormat::Amr => 1935764850, // kAudioFormatAMR (not well supported on iOS)
         };
 
-        let values: [*mut Object; 4] = [
+        let values: [*mut AnyObject; 4] = [
             number_with_int(format_id),
             number_with_float(config.sample_rate as f64),
             number_with_int(config.channels as i32),
             number_with_int(config.bit_rate as i32),
         ];
 
-        let settings: *mut Object = msg_send![class!(NSDictionary),
+        let settings: *mut AnyObject = msg_send![class!(NSDictionary),
             dictionaryWithObjects: values.as_ptr()
             forKeys: keys.as_ptr()
             count: 4usize
         ];
 
         // Create AVAudioRecorder
-        let mut error: *mut Object = std::ptr::null_mut();
-        let recorder: *mut Object = msg_send![class!(AVAudioRecorder), alloc];
-        let recorder: *mut Object = msg_send![recorder,
+        let mut error: *mut AnyObject = std::ptr::null_mut();
+        let recorder: *mut AnyObject = msg_send![class!(AVAudioRecorder), alloc];
+        let recorder: *mut AnyObject = msg_send![recorder,
             initWithURL: file_url
             settings: settings
-            error: &mut error as *mut *mut Object
+            error: &mut error as *mut *mut AnyObject
         ];
 
         if recorder.is_null() || !error.is_null() {
             let err_msg = if !error.is_null() {
-                let desc: *mut Object = msg_send![error, localizedDescription];
+                let desc: *mut AnyObject = msg_send![error, localizedDescription];
                 objc_string_to_rust(desc)
             } else {
                 "Failed to create recorder".to_string()
@@ -96,16 +96,16 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
         let _: () = msg_send![recorder, setMeteringEnabled: true];
 
         // Activate audio session
-        let session: *mut Object = msg_send![class!(AVAudioSession), sharedInstance];
+        let session: *mut AnyObject = msg_send![class!(AVAudioSession), sharedInstance];
         let record_category = nsstring("AVAudioSessionCategoryRecord");
-        let mut session_error: *mut Object = std::ptr::null_mut();
+        let mut session_error: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![session,
             setCategory: record_category
-            error: &mut session_error as *mut *mut Object
+            error: &mut session_error as *mut *mut AnyObject
         ];
         let _: () = msg_send![session,
             setActive: true
-            error: &mut session_error as *mut *mut Object
+            error: &mut session_error as *mut *mut AnyObject
         ];
 
         // Start recording
@@ -133,11 +133,11 @@ pub fn stop_recording() -> Result<Recording, String> {
         let duration_ms = state.start_time.elapsed().as_millis() as u64;
 
         // Deactivate audio session
-        let session: *mut Object = msg_send![class!(AVAudioSession), sharedInstance];
-        let mut error: *mut Object = std::ptr::null_mut();
+        let session: *mut AnyObject = msg_send![class!(AVAudioSession), sharedInstance];
+        let mut error: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![session,
             setActive: false
-            error: &mut error as *mut *mut Object
+            error: &mut error as *mut *mut AnyObject
         ];
 
         Ok(Recording {
@@ -196,8 +196,8 @@ pub fn get_amplitude() -> Result<f64, String> {
 
 // Helpers
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns,
         initWithBytes: s.as_ptr() as *const std::ffi::c_void
         length: s.len()
@@ -205,15 +205,15 @@ unsafe fn nsstring(s: &str) -> *mut Object {
     ]
 }
 
-unsafe fn number_with_int(val: i32) -> *mut Object {
+unsafe fn number_with_int(val: i32) -> *mut AnyObject {
     msg_send![class!(NSNumber), numberWithInt: val]
 }
 
-unsafe fn number_with_float(val: f64) -> *mut Object {
+unsafe fn number_with_float(val: f64) -> *mut AnyObject {
     msg_send![class!(NSNumber), numberWithDouble: val]
 }
 
-unsafe fn objc_string_to_rust(ns: *mut Object) -> String {
+unsafe fn objc_string_to_rust(ns: *mut AnyObject) -> String {
     if ns.is_null() {
         return String::new();
     }

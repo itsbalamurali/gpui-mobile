@@ -10,11 +10,8 @@
 use gpui::{PlatformDispatcher, Priority, RunnableVariant, ThreadTaskTimings};
 use std::thread;
 
-use objc::{
-    class, msg_send,
-    runtime::{BOOL, YES},
-    sel, sel_impl,
-};
+use objc2::ffi::{BOOL, YES};
+use objc2::{class, msg_send, sel};
 use std::{ffi::c_void, ptr::NonNull, time::Duration};
 
 // GCD types - these are the same on iOS and macOS

@@ -2,9 +2,9 @@ use super::{
     CameraDescription, CameraHandle, CameraLensDirection, CapturedImage, ExposureMode, FlashMode,
     FocusMode, RecordedVideo, ResolutionPreset,
 };
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::ffi::{BOOL, YES};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
 use std::sync::{mpsc, Mutex, Once};
 
@@ -17,14 +17,14 @@ extern "C" {}
 // ── Session state ───────────────────────────────────────────────────────────
 
 struct SessionState {
-    session: *mut Object,       // AVCaptureSession
-    device: *mut Object,        // AVCaptureDevice
-    device_input: *mut Object,  // AVCaptureDeviceInput
-    photo_output: *mut Object,  // AVCapturePhotoOutput
-    video_output: *mut Object,  // AVCaptureMovieFileOutput (may be null)
-    preview_layer: *mut Object, // AVCaptureVideoPreviewLayer (may be null)
+    session: *mut AnyObject,       // AVCaptureSession
+    device: *mut AnyObject,        // AVCaptureDevice
+    device_input: *mut AnyObject,  // AVCaptureDeviceInput
+    photo_output: *mut AnyObject,  // AVCapturePhotoOutput
+    video_output: *mut AnyObject,  // AVCaptureMovieFileOutput (may be null)
+    preview_layer: *mut AnyObject, // AVCaptureVideoPreviewLayer (may be null)
     _enable_audio: bool,
-    _audio_input: *mut Object, // AVCaptureDeviceInput for audio (may be null)
+    _audio_input: *mut AnyObject, // AVCaptureDeviceInput for audio (may be null)
 }
 
 // SAFETY: all pointers are ObjC objects accessed on the main thread or under lock
@@ -50,7 +50,7 @@ fn next_id() -> usize {
 }
 
 /// Get the raw AVCaptureSession pointer for a given session ID.
-pub fn get_session_ptr(id: usize) -> Option<*mut Object> {
+pub fn get_session_ptr(id: usize) -> Option<*mut AnyObject> {
     let guard = sessions();
     guard
         .as_ref()
@@ -62,37 +62,37 @@ pub fn get_session_ptr(id: usize) -> Option<*mut Object> {
 static PHOTO_RESULT: Mutex<Option<mpsc::Sender<Result<CapturedImage, String>>>> = Mutex::new(None);
 
 static REGISTER_PHOTO_DELEGATE: Once = Once::new();
-static mut PHOTO_DELEGATE_CLASS: *const Class = std::ptr::null();
+static mut PHOTO_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 
-fn photo_delegate_class() -> &'static Class {
+fn photo_delegate_class() -> &'static AnyClass {
     REGISTER_PHOTO_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("GpuiPhotoCaptureDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new("GpuiPhotoCaptureDelegate", superclass).unwrap();
 
         unsafe {
             // captureOutput:didFinishProcessingPhoto:error:
             decl.add_method(
                 sel!(captureOutput:didFinishProcessingPhoto:error:),
                 photo_did_finish
-                    as extern "C" fn(&Object, Sel, *mut Object, *mut Object, *mut Object),
+                    as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
             );
         }
 
-        unsafe { PHOTO_DELEGATE_CLASS = decl.register() };
+        unsafe { PHOTO_DELEGATE_CLASS = decl.register() as *const AnyClass };
     });
     unsafe { &*PHOTO_DELEGATE_CLASS }
 }
 
 extern "C" fn photo_did_finish(
-    _this: &Object,
+    _this: &AnyObject,
     _sel: Sel,
-    _output: *mut Object,
-    photo: *mut Object,
-    error: *mut Object,
+    _output: *mut AnyObject,
+    photo: *mut AnyObject,
+    error: *mut AnyObject,
 ) {
     let result = unsafe {
         if !error.is_null() {
-            let desc: *mut Object = msg_send![error, localizedDescription];
+            let desc: *mut AnyObject = msg_send![error, localizedDescription];
             let cstr: *const std::ffi::c_char = msg_send![desc, UTF8String];
             let msg = if !cstr.is_null() {
                 std::ffi::CStr::from_ptr(cstr)
@@ -104,7 +104,7 @@ extern "C" fn photo_did_finish(
             Err(msg)
         } else {
             // Get JPEG data
-            let jpeg_data: *mut Object = msg_send![photo, fileDataRepresentation];
+            let jpeg_data: *mut AnyObject = msg_send![photo, fileDataRepresentation];
             if jpeg_data.is_null() {
                 Err("Failed to get photo data".to_string())
             } else {
@@ -117,7 +117,7 @@ extern "C" fn photo_did_finish(
 
                 if wrote == YES {
                     // Get dimensions from CGImage
-                    let cg_image: *mut Object = msg_send![photo, CGImageRepresentation];
+                    let cg_image: *mut AnyObject = msg_send![photo, CGImageRepresentation];
                     let (width, height) = if !cg_image.is_null() {
                         let _: usize = msg_send![class!(UIImage), imageWithCGImage: cg_image];
                         // Use CGImageGetWidth/Height
@@ -146,8 +146,8 @@ extern "C" fn photo_did_finish(
 }
 
 extern "C" {
-    fn CGImageGetWidth(image: *mut Object) -> usize;
-    fn CGImageGetHeight(image: *mut Object) -> usize;
+    fn CGImageGetWidth(image: *mut AnyObject) -> usize;
+    fn CGImageGetHeight(image: *mut AnyObject) -> usize;
 }
 
 // ── Video recording delegate ────────────────────────────────────────────────
@@ -155,12 +155,12 @@ extern "C" {
 static VIDEO_RESULT: Mutex<Option<mpsc::Sender<Result<RecordedVideo, String>>>> = Mutex::new(None);
 
 static REGISTER_VIDEO_DELEGATE: Once = Once::new();
-static mut VIDEO_DELEGATE_CLASS: *const Class = std::ptr::null();
+static mut VIDEO_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 
-fn video_delegate_class() -> &'static Class {
+fn video_delegate_class() -> &'static AnyClass {
     REGISTER_VIDEO_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("GpuiVideoRecordingDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new("GpuiVideoRecordingDelegate", superclass).unwrap();
 
         unsafe {
             // captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:
@@ -168,32 +168,32 @@ fn video_delegate_class() -> &'static Class {
                 sel!(captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:),
                 video_did_finish
                     as extern "C" fn(
-                        &Object,
+                        &AnyObject,
                         Sel,
-                        *mut Object,
-                        *mut Object,
-                        *mut Object,
-                        *mut Object,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                        *mut AnyObject,
                     ),
             );
         }
 
-        unsafe { VIDEO_DELEGATE_CLASS = decl.register() };
+        unsafe { VIDEO_DELEGATE_CLASS = decl.register() as *const AnyClass };
     });
     unsafe { &*VIDEO_DELEGATE_CLASS }
 }
 
 extern "C" fn video_did_finish(
-    _this: &Object,
+    _this: &AnyObject,
     _sel: Sel,
-    _output: *mut Object,
-    url: *mut Object,
-    _connections: *mut Object,
-    error: *mut Object,
+    _output: *mut AnyObject,
+    url: *mut AnyObject,
+    _connections: *mut AnyObject,
+    error: *mut AnyObject,
 ) {
     let result = unsafe {
         if !error.is_null() {
-            let desc: *mut Object = msg_send![error, localizedDescription];
+            let desc: *mut AnyObject = msg_send![error, localizedDescription];
             let cstr: *const std::ffi::c_char = msg_send![desc, UTF8String];
             let msg = if !cstr.is_null() {
                 std::ffi::CStr::from_ptr(cstr)
@@ -206,7 +206,7 @@ extern "C" fn video_did_finish(
         } else if url.is_null() {
             Err("No output URL".to_string())
         } else {
-            let path_obj: *mut Object = msg_send![url, path];
+            let path_obj: *mut AnyObject = msg_send![url, path];
             let cstr: *const std::ffi::c_char = msg_send![path_obj, UTF8String];
             if !cstr.is_null() {
                 let path = std::ffi::CStr::from_ptr(cstr)
@@ -226,8 +226,8 @@ extern "C" fn video_did_finish(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns,
         initWithBytes: s.as_ptr() as *const std::ffi::c_void
         length: s.len()
@@ -246,9 +246,9 @@ fn resolution_to_preset(resolution: ResolutionPreset) -> &'static str {
     }
 }
 
-unsafe fn find_device_by_name(name: &str) -> *mut Object {
+unsafe fn find_device_by_name(name: &str) -> *mut AnyObject {
     // Use AVCaptureDeviceDiscoverySession to find all cameras
-    let device_types: *mut Object = {
+    let device_types: *mut AnyObject = {
         let wide = nsstring("AVCaptureDeviceTypeBuiltInWideAngleCamera");
         let ultra = nsstring("AVCaptureDeviceTypeBuiltInUltraWideCamera");
         let tele = nsstring("AVCaptureDeviceTypeBuiltInTelephotoCamera");
@@ -261,7 +261,7 @@ unsafe fn find_device_by_name(name: &str) -> *mut Object {
     let media_type = nsstring("vide"); // AVMediaTypeVideo
     let position: i64 = 0; // AVCaptureDevicePositionUnspecified
 
-    let discovery: *mut Object = msg_send![class!(AVCaptureDeviceDiscoverySession),
+    let discovery: *mut AnyObject = msg_send![class!(AVCaptureDeviceDiscoverySession),
         discoverySessionWithDeviceTypes: device_types
         mediaType: media_type
         position: position
@@ -271,12 +271,12 @@ unsafe fn find_device_by_name(name: &str) -> *mut Object {
         return std::ptr::null_mut();
     }
 
-    let devices: *mut Object = msg_send![discovery, devices];
+    let devices: *mut AnyObject = msg_send![discovery, devices];
     let count: usize = msg_send![devices, count];
 
     for i in 0..count {
-        let device: *mut Object = msg_send![devices, objectAtIndex: i];
-        let unique_id: *mut Object = msg_send![device, uniqueID];
+        let device: *mut AnyObject = msg_send![devices, objectAtIndex: i];
+        let unique_id: *mut AnyObject = msg_send![device, uniqueID];
         let cstr: *const std::ffi::c_char = msg_send![unique_id, UTF8String];
         if !cstr.is_null() {
             let id = std::ffi::CStr::from_ptr(cstr).to_string_lossy();
@@ -295,7 +295,7 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
     unsafe {
         // AVCaptureDeviceType is an NSString typedef, not an ObjC class.
         // Use the string constants directly.
-        let device_types: *mut Object = {
+        let device_types: *mut AnyObject = {
             let wide = nsstring("AVCaptureDeviceTypeBuiltInWideAngleCamera");
             let ultra = nsstring("AVCaptureDeviceTypeBuiltInUltraWideCamera");
             let tele = nsstring("AVCaptureDeviceTypeBuiltInTelephotoCamera");
@@ -308,7 +308,7 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
         let media_type = nsstring("vide"); // AVMediaTypeVideo
         let position: i64 = 0; // AVCaptureDevicePositionUnspecified
 
-        let discovery: *mut Object = msg_send![class!(AVCaptureDeviceDiscoverySession),
+        let discovery: *mut AnyObject = msg_send![class!(AVCaptureDeviceDiscoverySession),
             discoverySessionWithDeviceTypes: device_types
             mediaType: media_type
             position: position
@@ -318,15 +318,15 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             return Ok(vec![]);
         }
 
-        let devices: *mut Object = msg_send![discovery, devices];
+        let devices: *mut AnyObject = msg_send![discovery, devices];
         let count: usize = msg_send![devices, count];
         let mut cameras = Vec::with_capacity(count);
 
         for i in 0..count {
-            let device: *mut Object = msg_send![devices, objectAtIndex: i];
+            let device: *mut AnyObject = msg_send![devices, objectAtIndex: i];
 
             // Get unique ID
-            let unique_id: *mut Object = msg_send![device, uniqueID];
+            let unique_id: *mut AnyObject = msg_send![device, uniqueID];
             let cstr: *const std::ffi::c_char = msg_send![unique_id, UTF8String];
             let name = if !cstr.is_null() {
                 std::ffi::CStr::from_ptr(cstr)
@@ -368,8 +368,8 @@ pub fn create_camera(
         }
 
         // Create session
-        let session: *mut Object = msg_send![class!(AVCaptureSession), alloc];
-        let session: *mut Object = msg_send![session, init];
+        let session: *mut AnyObject = msg_send![class!(AVCaptureSession), alloc];
+        let session: *mut AnyObject = msg_send![session, init];
         if session.is_null() {
             return Err("Failed to create AVCaptureSession".into());
         }
@@ -385,10 +385,10 @@ pub fn create_camera(
         }
 
         // Add video input
-        let mut error_ptr: *mut Object = std::ptr::null_mut();
-        let input: *mut Object = msg_send![class!(AVCaptureDeviceInput),
+        let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
+        let input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
             deviceInputWithDevice: device
-            error: &mut error_ptr as *mut *mut Object
+            error: &mut error_ptr as *mut *mut AnyObject
         ];
         if input.is_null() || !error_ptr.is_null() {
             let _: () = msg_send![session, commitConfiguration];
@@ -403,17 +403,17 @@ pub fn create_camera(
         let _: () = msg_send![session, addInput: input];
 
         // Add audio input if requested
-        let mut audio_input: *mut Object = std::ptr::null_mut();
+        let mut audio_input: *mut AnyObject = std::ptr::null_mut();
         if enable_audio {
             let audio_type = nsstring("soun"); // AVMediaTypeAudio
-            let audio_device: *mut Object = msg_send![class!(AVCaptureDevice),
+            let audio_device: *mut AnyObject = msg_send![class!(AVCaptureDevice),
                 defaultDeviceWithMediaType: audio_type
             ];
             if !audio_device.is_null() {
-                let mut audio_err: *mut Object = std::ptr::null_mut();
-                let a_input: *mut Object = msg_send![class!(AVCaptureDeviceInput),
+                let mut audio_err: *mut AnyObject = std::ptr::null_mut();
+                let a_input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
                     deviceInputWithDevice: audio_device
-                    error: &mut audio_err as *mut *mut Object
+                    error: &mut audio_err as *mut *mut AnyObject
                 ];
                 if !a_input.is_null() && audio_err.is_null() {
                     let can_add_audio: BOOL = msg_send![session, canAddInput: a_input];
@@ -426,8 +426,8 @@ pub fn create_camera(
         }
 
         // Add photo output
-        let photo_output: *mut Object = msg_send![class!(AVCapturePhotoOutput), alloc];
-        let photo_output: *mut Object = msg_send![photo_output, init];
+        let photo_output: *mut AnyObject = msg_send![class!(AVCapturePhotoOutput), alloc];
+        let photo_output: *mut AnyObject = msg_send![photo_output, init];
         let can_add_photo: BOOL = msg_send![session, canAddOutput: photo_output];
         if can_add_photo != YES {
             let _: () = msg_send![session, commitConfiguration];
@@ -436,8 +436,8 @@ pub fn create_camera(
         let _: () = msg_send![session, addOutput: photo_output];
 
         // Add video file output
-        let video_output: *mut Object = msg_send![class!(AVCaptureMovieFileOutput), alloc];
-        let video_output: *mut Object = msg_send![video_output, init];
+        let video_output: *mut AnyObject = msg_send![class!(AVCaptureMovieFileOutput), alloc];
+        let video_output: *mut AnyObject = msg_send![video_output, init];
         let can_add_video: BOOL = msg_send![session, canAddOutput: video_output];
         if can_add_video == YES {
             let _: () = msg_send![session, addOutput: video_output];
@@ -495,15 +495,15 @@ pub fn take_picture(handle: &CameraHandle) -> Result<CapturedImage, String> {
             .ok_or("Invalid camera handle")?;
 
         // Create photo settings
-        let settings: *mut Object = msg_send![class!(AVCapturePhotoSettings), photoSettings];
+        let settings: *mut AnyObject = msg_send![class!(AVCapturePhotoSettings), photoSettings];
         if settings.is_null() {
             return Err("Failed to create photo settings".into());
         }
 
         // Create delegate
         let delegate_cls = photo_delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
 
         // Capture
         let _: () = msg_send![state.photo_output,
@@ -540,12 +540,12 @@ pub fn start_video_recording(handle: &CameraHandle) -> Result<(), String> {
         let file_name = format!("video_{}.mov", uuid_str);
         let file_path = std::env::temp_dir().join(&file_name);
         let ns_path = nsstring(&file_path.to_string_lossy());
-        let file_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_path];
+        let file_url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_path];
 
         // Create delegate
         let delegate_cls = video_delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
 
         let _: () = msg_send![state.video_output,
             startRecordingToOutputFileURL: file_url
@@ -596,9 +596,9 @@ pub fn set_flash_mode(handle: &CameraHandle, mode: FlashMode) -> Result<(), Stri
             if has_torch != YES {
                 return Err("Device does not have a torch".into());
             }
-            let mut err: *mut Object = std::ptr::null_mut();
+            let mut err: *mut AnyObject = std::ptr::null_mut();
             let locked: BOOL =
-                msg_send![device, lockForConfiguration: &mut err as *mut *mut Object];
+                msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
             if locked != YES {
                 return Err("Failed to lock device for configuration".into());
             }
@@ -610,9 +610,9 @@ pub fn set_flash_mode(handle: &CameraHandle, mode: FlashMode) -> Result<(), Stri
             if has_torch == YES {
                 let torch_mode: i64 = msg_send![device, torchMode];
                 if torch_mode != 0 {
-                    let mut err: *mut Object = std::ptr::null_mut();
+                    let mut err: *mut AnyObject = std::ptr::null_mut();
                     let locked: BOOL =
-                        msg_send![device, lockForConfiguration: &mut err as *mut *mut Object];
+                        msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
                     if locked == YES {
                         let _: () = msg_send![device, setTorchMode: 0i64]; // AVCaptureTorchModeOff
                         let _: () = msg_send![device, unlockForConfiguration];
@@ -647,8 +647,8 @@ pub fn set_focus_mode(handle: &CameraHandle, mode: FocusMode) -> Result<(), Stri
             return Err("Focus mode not supported".into());
         }
 
-        let mut err: *mut Object = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut Object];
+        let mut err: *mut AnyObject = std::ptr::null_mut();
+        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
         if locked != YES {
             return Err("Failed to lock device for configuration".into());
         }
@@ -680,8 +680,8 @@ pub fn set_exposure_mode(handle: &CameraHandle, mode: ExposureMode) -> Result<()
             return Err("Exposure mode not supported".into());
         }
 
-        let mut err: *mut Object = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut Object];
+        let mut err: *mut AnyObject = std::ptr::null_mut();
+        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
         if locked != YES {
             return Err("Failed to lock device for configuration".into());
         }
@@ -725,8 +725,8 @@ pub fn set_zoom(handle: &CameraHandle, zoom: f64) -> Result<(), String> {
         let max_zoom: f64 = msg_send![device, maxAvailableVideoZoomFactor];
         let clamped = zoom.max(1.0).min(max_zoom);
 
-        let mut err: *mut Object = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut Object];
+        let mut err: *mut AnyObject = std::ptr::null_mut();
+        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
         if locked != YES {
             return Err("Failed to lock device for configuration".into());
         }
@@ -760,10 +760,10 @@ pub fn set_camera(handle: &CameraHandle, camera: &CameraDescription) -> Result<(
         let _: () = msg_send![session, removeInput: state.device_input];
 
         // Create new input
-        let mut error_ptr: *mut Object = std::ptr::null_mut();
-        let new_input: *mut Object = msg_send![class!(AVCaptureDeviceInput),
+        let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
+        let new_input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
             deviceInputWithDevice: new_device
-            error: &mut error_ptr as *mut *mut Object
+            error: &mut error_ptr as *mut *mut AnyObject
         ];
 
         if new_input.is_null() || !error_ptr.is_null() {

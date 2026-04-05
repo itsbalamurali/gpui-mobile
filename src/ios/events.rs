@@ -8,7 +8,8 @@
 
 use core_graphics::geometry::CGPoint;
 use gpui::{px, Pixels, Point, TouchPhase};
-use objc::{msg_send, runtime::Object, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{msg_send, sel};
 
 /// Touch phase from UIKit
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +48,7 @@ impl From<UITouchPhase> for TouchPhase {
 }
 
 /// Convert a UITouch to a mouse position
-pub fn touch_location_in_view(touch: *mut Object, view: *mut Object) -> Point<Pixels> {
+pub fn touch_location_in_view(touch: *mut AnyObject, view: *mut AnyObject) -> Point<Pixels> {
     unsafe {
         let location: CGPoint = msg_send![touch, locationInView: view];
         Point::new(px(location.x as f32), px(location.y as f32))
@@ -55,7 +56,7 @@ pub fn touch_location_in_view(touch: *mut Object, view: *mut Object) -> Point<Pi
 }
 
 /// Get the touch phase from a UITouch
-pub fn touch_phase(touch: *mut Object) -> UITouchPhase {
+pub fn touch_phase(touch: *mut AnyObject) -> UITouchPhase {
     unsafe {
         let phase: i64 = msg_send![touch, phase];
         UITouchPhase::from(phase)
@@ -63,7 +64,7 @@ pub fn touch_phase(touch: *mut Object) -> UITouchPhase {
 }
 
 /// Get the number of taps for a touch (for detecting double-tap, etc.)
-pub fn touch_tap_count(touch: *mut Object) -> u32 {
+pub fn touch_tap_count(touch: *mut AnyObject) -> u32 {
     unsafe {
         let count: i64 = msg_send![touch, tapCount];
         count as u32

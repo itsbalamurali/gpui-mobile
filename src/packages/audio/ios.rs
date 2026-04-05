@@ -1,6 +1,6 @@
 use super::{LoopMode, PlayerState};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 /// Tracks whether each player was explicitly started (to distinguish Paused from Ready).
 struct PlayerEntry {
-    player: *mut Object,
+    player: *mut AnyObject,
     started: bool,
 }
 
@@ -57,7 +57,7 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
         let ns_url = nsurl_from_str(url)?;
 
         // Create AVPlayerItem with URL
-        let player_item: *mut Object = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
+        let player_item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
         if player_item.is_null() {
             return Err("Failed to create AVPlayerItem".into());
         }
@@ -69,7 +69,7 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
                 let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: player_item];
                 Ok(entry.player)
             } else {
-                let p: *mut Object = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
+                let p: *mut AnyObject = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
@@ -90,12 +90,12 @@ pub fn set_file_path(id: u32, path: &str) -> Result<Option<u64>, String> {
     unsafe {
         // Build file:// URL from path
         let ns_string = nsstring_from_str(path);
-        let ns_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_string];
+        let ns_url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_string];
         if ns_url.is_null() {
             return Err("Failed to create file URL".into());
         }
 
-        let player_item: *mut Object = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
+        let player_item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
         if player_item.is_null() {
             return Err("Failed to create AVPlayerItem".into());
         }
@@ -105,7 +105,7 @@ pub fn set_file_path(id: u32, path: &str) -> Result<Option<u64>, String> {
                 let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: player_item];
                 Ok(entry.player)
             } else {
-                let p: *mut Object = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
+                let p: *mut AnyObject = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
@@ -342,25 +342,25 @@ fn cmtime_to_ms(time: CMTime) -> i64 {
 
 // ── ObjC string/URL helpers ─────────────────────────────────────────────────
 
-unsafe fn nsstring_from_str(s: &str) -> *mut Object {
+unsafe fn nsstring_from_str(s: &str) -> *mut AnyObject {
     let cls = class!(NSString);
     let bytes = s.as_ptr() as *const c_void;
     let len = s.len();
     // initWithBytes:length:encoding: — NSUTF8StringEncoding = 4
-    let ns_string: *mut Object = msg_send![cls, alloc];
-    let ns_string: *mut Object = msg_send![ns_string, initWithBytes:bytes length:len encoding:4u64];
+    let ns_string: *mut AnyObject = msg_send![cls, alloc];
+    let ns_string: *mut AnyObject = msg_send![ns_string, initWithBytes:bytes length:len encoding:4u64];
     ns_string
 }
 
-unsafe fn nsurl_from_str(url: &str) -> Result<*mut Object, String> {
+unsafe fn nsurl_from_str(url: &str) -> Result<*mut AnyObject, String> {
     let ns_string = nsstring_from_str(url);
     if ns_string.is_null() {
         return Err("Failed to create NSString".into());
     }
-    let ns_url: *mut Object = msg_send![class!(NSURL), URLWithString: ns_string];
+    let ns_url: *mut AnyObject = msg_send![class!(NSURL), URLWithString: ns_string];
     if ns_url.is_null() {
         // Maybe it's a file path
-        let ns_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_string];
+        let ns_url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_string];
         if ns_url.is_null() {
             return Err("Failed to create NSURL".into());
         }
@@ -370,8 +370,8 @@ unsafe fn nsurl_from_str(url: &str) -> Result<*mut Object, String> {
 }
 
 /// Get the duration in ms from an AVPlayer's currentItem.
-unsafe fn get_duration_from_player(player: *mut Object) -> u64 {
-    let item: *mut Object = msg_send![player, currentItem];
+unsafe fn get_duration_from_player(player: *mut AnyObject) -> u64 {
+    let item: *mut AnyObject = msg_send![player, currentItem];
     if item.is_null() {
         return 0;
     }

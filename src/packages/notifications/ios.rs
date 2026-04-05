@@ -1,9 +1,9 @@
 use super::Notification;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 /// Get the shared UNUserNotificationCenter instance.
-unsafe fn notification_center() -> *mut Object {
+unsafe fn notification_center() -> *mut AnyObject {
     msg_send![class!(UNUserNotificationCenter), currentNotificationCenter]
 }
 
@@ -21,7 +21,7 @@ pub fn initialize() -> Result<(), String> {
         // We pass a nil completion handler for simplicity — authorization is
         // granted asynchronously and the first show() call will work once the
         // user has responded to the system prompt.
-        let null_block: *mut Object = std::ptr::null_mut();
+        let null_block: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![
             center,
             requestAuthorizationWithOptions: options
@@ -40,8 +40,8 @@ pub fn show(notification: &Notification) -> Result<(), String> {
         }
 
         // Create UNMutableNotificationContent
-        let content: *mut Object = msg_send![class!(UNMutableNotificationContent), alloc];
-        let content: *mut Object = msg_send![content, init];
+        let content: *mut AnyObject = msg_send![class!(UNMutableNotificationContent), alloc];
+        let content: *mut AnyObject = msg_send![content, init];
         if content.is_null() {
             return Err("Failed to create UNMutableNotificationContent".into());
         }
@@ -55,14 +55,14 @@ pub fn show(notification: &Notification) -> Result<(), String> {
         let _: () = msg_send![content, setBody: body];
 
         // Set sound to default
-        let default_sound: *mut Object = msg_send![class!(UNNotificationSound), defaultSound];
+        let default_sound: *mut AnyObject = msg_send![class!(UNNotificationSound), defaultSound];
         let _: () = msg_send![content, setSound: default_sound];
 
         // Set userInfo with payload if present
         if let Some(ref payload) = notification.payload {
             let payload_str = nsstring(payload);
             let key = nsstring("payload");
-            let user_info: *mut Object = msg_send![
+            let user_info: *mut AnyObject = msg_send![
                 class!(NSDictionary),
                 dictionaryWithObject: payload_str
                 forKey: key
@@ -72,8 +72,8 @@ pub fn show(notification: &Notification) -> Result<(), String> {
 
         // Create a UNNotificationRequest with the notification ID as identifier
         let identifier = nsstring(&notification.id.to_string());
-        let null_trigger: *mut Object = std::ptr::null_mut();
-        let request: *mut Object = msg_send![
+        let null_trigger: *mut AnyObject = std::ptr::null_mut();
+        let request: *mut AnyObject = msg_send![
             class!(UNNotificationRequest),
             requestWithIdentifier: identifier
             content: content
@@ -85,7 +85,7 @@ pub fn show(notification: &Notification) -> Result<(), String> {
         }
 
         // Add the request to the notification center (nil completion handler)
-        let null_block: *mut Object = std::ptr::null_mut();
+        let null_block: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![
             center,
             addNotificationRequest: request
@@ -104,7 +104,7 @@ pub fn cancel(id: i32) -> Result<(), String> {
         }
 
         let identifier = nsstring(&id.to_string());
-        let array: *mut Object = msg_send![
+        let array: *mut AnyObject = msg_send![
             class!(NSArray),
             arrayWithObject: identifier
         ];
@@ -138,11 +138,11 @@ pub fn cancel_all() -> Result<(), String> {
 }
 
 /// Create an NSString from a Rust string slice.
-unsafe fn nsstring(s: &str) -> *mut Object {
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
     let cls = class!(NSString);
     let bytes = s.as_ptr();
     let len = s.len();
-    let obj: *mut Object = msg_send![cls, alloc];
+    let obj: *mut AnyObject = msg_send![cls, alloc];
     msg_send![
         obj,
         initWithBytes: bytes

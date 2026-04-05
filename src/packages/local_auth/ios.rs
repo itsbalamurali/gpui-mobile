@@ -1,6 +1,6 @@
 use super::{AuthResult, BiometricType};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::ffi::c_void;
 
 /// LAPolicy constants.
@@ -20,9 +20,9 @@ const LA_ERROR_BIOMETRY_NOT_AVAILABLE: i64 = -6;
 const LA_ERROR_BIOMETRY_NOT_ENROLLED: i64 = -7;
 const LA_ERROR_BIOMETRY_LOCKOUT: i64 = -8;
 
-unsafe fn create_la_context() -> *mut Object {
-    let context: *mut Object = msg_send![class!(LAContext), alloc];
-    let context: *mut Object = msg_send![context, init];
+unsafe fn create_la_context() -> *mut AnyObject {
+    let context: *mut AnyObject = msg_send![class!(LAContext), alloc];
+    let context: *mut AnyObject = msg_send![context, init];
     context
 }
 
@@ -37,7 +37,7 @@ pub fn is_device_supported() -> Result<bool, String> {
         let can_evaluate: bool = msg_send![
             context,
             canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
-            error: std::ptr::null_mut::<*mut Object>()
+            error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
         // Even if canEvaluatePolicy returns false (e.g. not enrolled), the device
@@ -59,7 +59,7 @@ pub fn can_authenticate() -> Result<bool, String> {
         let can_evaluate: bool = msg_send![
             context,
             canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
-            error: std::ptr::null_mut::<*mut Object>()
+            error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
         let _: () = msg_send![context, release];
@@ -78,7 +78,7 @@ pub fn get_available_biometrics() -> Result<Vec<BiometricType>, String> {
         let _can: bool = msg_send![
             context,
             canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
-            error: std::ptr::null_mut::<*mut Object>()
+            error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
         let biometry_type: i64 = msg_send![context, biometryType];
@@ -106,7 +106,7 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
         let can_evaluate: bool = msg_send![
             context,
             canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
-            error: std::ptr::null_mut::<*mut Object>()
+            error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
         if !can_evaluate {
@@ -120,9 +120,9 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
         }
 
         // Create NSString for reason
-        let reason_nsstring: *mut Object = msg_send![class!(NSString), alloc];
+        let reason_nsstring: *mut AnyObject = msg_send![class!(NSString), alloc];
         let reason_bytes = reason.as_bytes();
-        let reason_nsstring: *mut Object = msg_send![
+        let reason_nsstring: *mut AnyObject = msg_send![
             reason_nsstring,
             initWithBytes: reason_bytes.as_ptr() as *const c_void
             length: reason_bytes.len()
@@ -138,7 +138,7 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
 
         // Create the reply block.
         // The block signature is: void (^)(BOOL success, NSError *error)
-        let block = block::ConcreteBlock::new(move |success: bool, error: *mut Object| {
+        let block = block::ConcreteBlock::new(move |success: bool, error: *mut AnyObject| {
             let auth_result = if success {
                 AuthResult::Success
             } else if error.is_null() {
@@ -196,8 +196,8 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
 const DISPATCH_TIME_FOREVER: u64 = !0;
 
 extern "C" {
-    fn dispatch_semaphore_create(value: i64) -> *mut Object;
-    fn dispatch_semaphore_signal(dsema: *mut Object) -> i64;
-    fn dispatch_semaphore_wait(dsema: *mut Object, timeout: u64) -> i64;
+    fn dispatch_semaphore_create(value: i64) -> *mut AnyObject;
+    fn dispatch_semaphore_signal(dsema: *mut AnyObject) -> i64;
+    fn dispatch_semaphore_wait(dsema: *mut AnyObject, timeout: u64) -> i64;
     fn dispatch_release(object: *mut c_void);
 }

@@ -1,7 +1,7 @@
 use super::{OpenFileOptions, SaveFileOptions, SelectedFile, TypeGroup};
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::ffi::{BOOL, YES};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
 use std::sync::{mpsc, Mutex, Once};
 
 #[link(name = "UIKit", kind = "framework")]
@@ -29,43 +29,43 @@ fn send_result(paths: Vec<String>) {
 // ── ObjC delegate class ─────────────────────────────────────────────────────
 
 static REGISTER_DELEGATE: Once = Once::new();
-static mut DELEGATE_CLASS: *const Class = std::ptr::null();
+static mut DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 
-fn delegate_class() -> &'static Class {
+fn delegate_class() -> &'static AnyClass {
     REGISTER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("GpuiDocumentPickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new("GpuiDocumentPickerDelegate", superclass).unwrap();
 
         unsafe {
             // documentPicker:didPickDocumentsAtURLs:
             decl.add_method(
                 sel!(documentPicker:didPickDocumentsAtURLs:),
-                did_pick_documents as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+                did_pick_documents as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             // documentPickerWasCancelled:
             decl.add_method(
                 sel!(documentPickerWasCancelled:),
-                did_cancel as extern "C" fn(&Object, Sel, *mut Object),
+                did_cancel as extern "C" fn(&AnyObject, Sel, *mut AnyObject),
             );
         }
 
-        unsafe { DELEGATE_CLASS = decl.register() };
+        unsafe { DELEGATE_CLASS = decl.register() as *const AnyClass };
     });
     unsafe { &*DELEGATE_CLASS }
 }
 
 extern "C" fn did_pick_documents(
-    _this: &Object,
+    _this: &AnyObject,
     _sel: Sel,
-    _controller: *mut Object,
-    urls: *mut Object,
+    _controller: *mut AnyObject,
+    urls: *mut AnyObject,
 ) {
     unsafe {
         let count: usize = msg_send![urls, count];
         let mut paths = Vec::with_capacity(count);
         for i in 0..count {
-            let url: *mut Object = msg_send![urls, objectAtIndex: i];
-            let abs_string: *mut Object = msg_send![url, absoluteString];
+            let url: *mut AnyObject = msg_send![urls, objectAtIndex: i];
+            let abs_string: *mut AnyObject = msg_send![url, absoluteString];
             if !abs_string.is_null() {
                 let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
                 if !cstr.is_null() {
@@ -78,14 +78,14 @@ extern "C" fn did_pick_documents(
             }
         }
         // Dismiss the picker
-        let _: () = msg_send![_controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<Object>()];
+        let _: () = msg_send![_controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
         send_result(paths);
     }
 }
 
-extern "C" fn did_cancel(_this: &Object, _sel: Sel, controller: *mut Object) {
+extern "C" fn did_cancel(_this: &AnyObject, _sel: Sel, controller: *mut AnyObject) {
     unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<Object>()];
+        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
     }
     send_result(vec![]);
 }
@@ -93,8 +93,8 @@ extern "C" fn did_cancel(_this: &Object, _sel: Sel, controller: *mut Object) {
 // ── UTType helpers ──────────────────────────────────────────────────────────
 
 /// Convert a TypeGroup into an NSArray of UTType objects.
-unsafe fn type_group_to_uttypes(group: &TypeGroup) -> *mut Object {
-    let mut types: Vec<*mut Object> = Vec::new();
+unsafe fn type_group_to_uttypes(group: &TypeGroup) -> *mut AnyObject {
+    let mut types: Vec<*mut AnyObject> = Vec::new();
 
     // Prefer explicit UTIs
     for uti in &group.utis {
@@ -135,23 +135,23 @@ unsafe fn type_group_to_uttypes(group: &TypeGroup) -> *mut Object {
     nsarray_from_objects(&types)
 }
 
-unsafe fn uttype_from_identifier(ident: &str) -> *mut Object {
+unsafe fn uttype_from_identifier(ident: &str) -> *mut AnyObject {
     let ns_ident = nsstring(ident);
     msg_send![class!(UTType), typeWithIdentifier: ns_ident]
 }
 
-unsafe fn uttype_from_extension(ext: &str) -> *mut Object {
+unsafe fn uttype_from_extension(ext: &str) -> *mut AnyObject {
     let ns_ext = nsstring(ext);
     msg_send![class!(UTType), typeWithFilenameExtension: ns_ext]
 }
 
-unsafe fn uttype_from_mime(mime: &str) -> *mut Object {
+unsafe fn uttype_from_mime(mime: &str) -> *mut AnyObject {
     let ns_mime = nsstring(mime);
     msg_send![class!(UTType), typeWithMIMEType: ns_mime]
 }
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns,
         initWithBytes: s.as_ptr() as *const std::ffi::c_void
         length: s.len()
@@ -159,7 +159,7 @@ unsafe fn nsstring(s: &str) -> *mut Object {
     ]
 }
 
-unsafe fn nsarray_from_objects(objects: &[*mut Object]) -> *mut Object {
+unsafe fn nsarray_from_objects(objects: &[*mut AnyObject]) -> *mut AnyObject {
     msg_send![class!(NSArray),
         arrayWithObjects: objects.as_ptr()
         count: objects.len()
@@ -168,20 +168,20 @@ unsafe fn nsarray_from_objects(objects: &[*mut Object]) -> *mut Object {
 
 // ── Presentation helper ─────────────────────────────────────────────────────
 
-unsafe fn present_picker(picker: *mut Object) -> Result<(), String> {
-    let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-    let key_window: *mut Object = msg_send![app, keyWindow];
+unsafe fn present_picker(picker: *mut AnyObject) -> Result<(), String> {
+    let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+    let key_window: *mut AnyObject = msg_send![app, keyWindow];
     if key_window.is_null() {
         return Err("No key window available".into());
     }
-    let root_vc: *mut Object = msg_send![key_window, rootViewController];
+    let root_vc: *mut AnyObject = msg_send![key_window, rootViewController];
     if root_vc.is_null() {
         return Err("No root view controller".into());
     }
     let _: () = msg_send![root_vc,
         presentViewController: picker
         animated: YES
-        completion: std::ptr::null::<Object>()
+        completion: std::ptr::null::<AnyObject>()
     ];
     Ok(())
 }
@@ -211,12 +211,12 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             nsarray_from_objects(&[ut])
         } else {
             // Merge all type groups into one array
-            let mut all_types: Vec<*mut Object> = Vec::new();
+            let mut all_types: Vec<*mut AnyObject> = Vec::new();
             for group in &options.accept_type_groups {
                 let arr = type_group_to_uttypes(group);
                 let count: usize = msg_send![arr, count];
                 for i in 0..count {
-                    let obj: *mut Object = msg_send![arr, objectAtIndex: i];
+                    let obj: *mut AnyObject = msg_send![arr, objectAtIndex: i];
                     all_types.push(obj);
                 }
             }
@@ -225,8 +225,8 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
 
         // UIDocumentPickerViewController *picker =
         //   [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types];
-        let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initForOpeningContentTypes: content_types];
+        let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initForOpeningContentTypes: content_types];
         if picker.is_null() {
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
@@ -235,8 +235,8 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
 
         // Set delegate
         let delegate_cls = delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_picker(picker)?;
@@ -257,20 +257,20 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
             let ut = uttype_from_identifier("public.item");
             nsarray_from_objects(&[ut])
         } else {
-            let mut all_types: Vec<*mut Object> = Vec::new();
+            let mut all_types: Vec<*mut AnyObject> = Vec::new();
             for group in &options.accept_type_groups {
                 let arr = type_group_to_uttypes(group);
                 let count: usize = msg_send![arr, count];
                 for i in 0..count {
-                    let obj: *mut Object = msg_send![arr, objectAtIndex: i];
+                    let obj: *mut AnyObject = msg_send![arr, objectAtIndex: i];
                     all_types.push(obj);
                 }
             }
             nsarray_from_objects(&all_types)
         };
 
-        let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initForOpeningContentTypes: content_types];
+        let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initForOpeningContentTypes: content_types];
         if picker.is_null() {
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
@@ -278,8 +278,8 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
         let _: () = msg_send![picker, setAllowsMultipleSelection: YES];
 
         let delegate_cls = delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_picker(picker)?;
@@ -301,12 +301,12 @@ pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String
             let ut = uttype_from_identifier("public.data");
             nsarray_from_objects(&[ut])
         } else {
-            let mut all_types: Vec<*mut Object> = Vec::new();
+            let mut all_types: Vec<*mut AnyObject> = Vec::new();
             for group in &options.accept_type_groups {
                 let arr = type_group_to_uttypes(group);
                 let count: usize = msg_send![arr, count];
                 for i in 0..count {
-                    let obj: *mut Object = msg_send![arr, objectAtIndex: i];
+                    let obj: *mut AnyObject = msg_send![arr, objectAtIndex: i];
                     all_types.push(obj);
                 }
             }
@@ -314,15 +314,15 @@ pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String
         };
 
         // Use "move to" mode which lets user pick a save location
-        let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initForOpeningContentTypes: content_types];
+        let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initForOpeningContentTypes: content_types];
         if picker.is_null() {
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
 
         let delegate_cls = delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_picker(picker)?;
@@ -348,8 +348,8 @@ pub fn get_directory_path(initial_directory: Option<&str>) -> Result<Option<Stri
         let folder_type = uttype_from_identifier("public.folder");
         let content_types = nsarray_from_objects(&[folder_type]);
 
-        let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initForOpeningContentTypes: content_types];
+        let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initForOpeningContentTypes: content_types];
         if picker.is_null() {
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
@@ -357,7 +357,7 @@ pub fn get_directory_path(initial_directory: Option<&str>) -> Result<Option<Stri
         // Set initial directory if provided
         if let Some(dir) = initial_directory {
             let ns_dir = nsstring(dir);
-            let dir_url: *mut Object =
+            let dir_url: *mut AnyObject =
                 msg_send![class!(NSURL), fileURLWithPath: ns_dir isDirectory: YES];
             if !dir_url.is_null() {
                 let _: () = msg_send![picker, setDirectoryURL: dir_url];
@@ -365,8 +365,8 @@ pub fn get_directory_path(initial_directory: Option<&str>) -> Result<Option<Stri
         }
 
         let delegate_cls = delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_picker(picker)?;

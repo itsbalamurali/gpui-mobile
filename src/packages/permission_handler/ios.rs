@@ -1,6 +1,7 @@
 use super::*;
-use objc::runtime::{Object, BOOL, YES};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::ffi::{BOOL, YES};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::sync::mpsc;
 
 #[link(name = "AVFoundation", kind = "framework")]
@@ -35,8 +36,8 @@ extern "C" {}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns,
         initWithBytes: s.as_ptr() as *const std::ffi::c_void
         length: s.len()
@@ -109,8 +110,8 @@ unsafe fn check_photos_authorization() -> Result<PermissionStatus, String> {
 }
 
 unsafe fn check_location_authorization() -> Result<PermissionStatus, String> {
-    let mgr: *mut Object = msg_send![class!(CLLocationManager), alloc];
-    let mgr: *mut Object = msg_send![mgr, init];
+    let mgr: *mut AnyObject = msg_send![class!(CLLocationManager), alloc];
+    let mgr: *mut AnyObject = msg_send![mgr, init];
     let status: i32 = msg_send![mgr, authorizationStatus];
     Ok(match status {
         0 => PermissionStatus::Denied, // kCLAuthorizationStatusNotDetermined
@@ -150,9 +151,9 @@ unsafe fn check_notification_authorization() -> Result<PermissionStatus, String>
     // UNUserNotificationCenter is async, so we use a sync channel
     let (tx, rx) = mpsc::channel();
 
-    let center: *mut Object =
+    let center: *mut AnyObject =
         msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
-    let block = block::ConcreteBlock::new(move |settings: *mut Object| {
+    let block = block::ConcreteBlock::new(move |settings: *mut AnyObject| {
         let auth_status: i64 = msg_send![settings, authorizationStatus];
         let status = match auth_status {
             0 => PermissionStatus::Denied,  // UNAuthorizationStatusNotDetermined
@@ -296,8 +297,8 @@ unsafe fn request_photos_authorization() -> Result<PermissionStatus, String> {
 }
 
 unsafe fn request_location_when_in_use() -> Result<PermissionStatus, String> {
-    let mgr: *mut Object = msg_send![class!(CLLocationManager), alloc];
-    let mgr: *mut Object = msg_send![mgr, init];
+    let mgr: *mut AnyObject = msg_send![class!(CLLocationManager), alloc];
+    let mgr: *mut AnyObject = msg_send![mgr, init];
     let _: () = msg_send![mgr, requestWhenInUseAuthorization];
     // Location authorization is async via delegate; return current status after a brief wait
     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -305,8 +306,8 @@ unsafe fn request_location_when_in_use() -> Result<PermissionStatus, String> {
 }
 
 unsafe fn request_location_always() -> Result<PermissionStatus, String> {
-    let mgr: *mut Object = msg_send![class!(CLLocationManager), alloc];
-    let mgr: *mut Object = msg_send![mgr, init];
+    let mgr: *mut AnyObject = msg_send![class!(CLLocationManager), alloc];
+    let mgr: *mut AnyObject = msg_send![mgr, init];
     let _: () = msg_send![mgr, requestAlwaysAuthorization];
     std::thread::sleep(std::time::Duration::from_millis(500));
     check_location_authorization()
@@ -314,10 +315,10 @@ unsafe fn request_location_always() -> Result<PermissionStatus, String> {
 
 unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
-    let store: *mut Object = msg_send![class!(CNContactStore), alloc];
-    let store: *mut Object = msg_send![store, init];
+    let store: *mut AnyObject = msg_send![class!(CNContactStore), alloc];
+    let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut Object| {
+    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -338,10 +339,10 @@ unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
 
 unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
-    let store: *mut Object = msg_send![class!(EKEventStore), alloc];
-    let store: *mut Object = msg_send![store, init];
+    let store: *mut AnyObject = msg_send![class!(EKEventStore), alloc];
+    let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut Object| {
+    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -362,13 +363,13 @@ unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStat
 
 unsafe fn request_notification_authorization() -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
-    let center: *mut Object =
+    let center: *mut AnyObject =
         msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
 
     // UNAuthorizationOptionAlert | UNAuthorizationOptionBadge | UNAuthorizationOptionSound
     let options: u64 = (1 << 0) | (1 << 1) | (1 << 2);
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut Object| {
+    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -473,19 +474,19 @@ pub fn service_status(permission: Permission) -> Result<ServiceStatus, String> {
 pub fn open_app_settings() -> Result<bool, String> {
     unsafe {
         let url_string = nsstring("app-settings:");
-        let url: *mut Object = msg_send![class!(NSURL), URLWithString: url_string];
+        let url: *mut AnyObject = msg_send![class!(NSURL), URLWithString: url_string];
         if url.is_null() {
             return Err("Failed to create settings URL".into());
         }
 
-        let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+        let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
         let can_open: BOOL = msg_send![app, canOpenURL: url];
         if can_open != YES {
             return Ok(false);
         }
 
-        let empty_dict: *mut Object = msg_send![class!(NSDictionary), dictionary];
-        let nil: *mut Object = std::ptr::null_mut();
+        let empty_dict: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
+        let nil: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![app,
             openURL: url
             options: empty_dict

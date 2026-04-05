@@ -1,16 +1,16 @@
 use super::PackageInfo;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::ffi::CStr;
 
 pub fn get_package_info() -> Result<PackageInfo, String> {
     unsafe {
-        let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
+        let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
         if bundle.is_null() {
             return Err("Failed to get NSBundle.mainBundle".into());
         }
 
-        let info_dict: *mut Object = msg_send![bundle, infoDictionary];
+        let info_dict: *mut AnyObject = msg_send![bundle, infoDictionary];
         if info_dict.is_null() {
             return Err("Failed to get infoDictionary".into());
         }
@@ -34,9 +34,9 @@ pub fn get_package_info() -> Result<PackageInfo, String> {
     }
 }
 
-unsafe fn nsdict_string(dict: *mut Object, key: &str) -> Option<String> {
+unsafe fn nsdict_string(dict: *mut AnyObject, key: &str) -> Option<String> {
     let key_nsstring = nsstring(key);
-    let value: *mut Object = msg_send![dict, objectForKey: key_nsstring];
+    let value: *mut AnyObject = msg_send![dict, objectForKey: key_nsstring];
     if value.is_null() {
         return None;
     }
@@ -47,8 +47,8 @@ unsafe fn nsdict_string(dict: *mut Object, key: &str) -> Option<String> {
     Some(CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns_string: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns_string: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns_string, initWithBytes: s.as_ptr()
                          length: s.len()
                          encoding: 4u64] // NSUTF8StringEncoding

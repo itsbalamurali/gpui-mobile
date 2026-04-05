@@ -17,7 +17,8 @@ use gpui::{
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result,
     Task, ThermalState, WindowAppearance, WindowParams,
 };
-use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
@@ -169,12 +170,12 @@ impl Platform for IosPlatform {
     fn window_appearance(&self) -> WindowAppearance {
         unsafe {
             let style: i64 = {
-                let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-                let key_window: *mut Object = msg_send![app, keyWindow];
+                let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+                let key_window: *mut AnyObject = msg_send![app, keyWindow];
                 if key_window.is_null() {
                     return WindowAppearance::Light;
                 }
-                let trait_collection: *mut Object = msg_send![key_window, traitCollection];
+                let trait_collection: *mut AnyObject = msg_send![key_window, traitCollection];
                 msg_send![trait_collection, userInterfaceStyle]
             };
 
@@ -188,11 +189,11 @@ impl Platform for IosPlatform {
 
     fn open_url(&self, url: &str) {
         unsafe {
-            let url_string: *mut Object =
+            let url_string: *mut AnyObject =
                 msg_send![class!(NSString), stringWithUTF8String: url.as_ptr()];
-            let url: *mut Object = msg_send![class!(NSURL), URLWithString: url_string];
-            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-            let _: () = msg_send![app, openURL: url options: std::ptr::null::<Object>() completionHandler: std::ptr::null::<Object>()];
+            let url: *mut AnyObject = msg_send![class!(NSURL), URLWithString: url_string];
+            let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+            let _: () = msg_send![app, openURL: url options: std::ptr::null::<AnyObject>() completionHandler: std::ptr::null::<AnyObject>()];
         }
     }
 
@@ -269,8 +270,8 @@ impl Platform for IosPlatform {
 
     fn app_path(&self) -> Result<PathBuf> {
         unsafe {
-            let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
-            let path: *mut Object = msg_send![bundle, bundlePath];
+            let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
+            let path: *mut AnyObject = msg_send![bundle, bundlePath];
             let utf8: *const i8 = msg_send![path, UTF8String];
             if utf8.is_null() {
                 return Err(anyhow!("Failed to get bundle path"));
@@ -295,9 +296,9 @@ impl Platform for IosPlatform {
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
         unsafe {
-            let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
+            let pasteboard: *mut AnyObject = msg_send![class!(UIPasteboard), generalPasteboard];
             if let Some(text) = item.text() {
-                let ns_string: *mut Object =
+                let ns_string: *mut AnyObject =
                     msg_send![class!(NSString), stringWithUTF8String: text.as_ptr()];
                 let _: () = msg_send![pasteboard, setString: ns_string];
             }
@@ -306,8 +307,8 @@ impl Platform for IosPlatform {
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         unsafe {
-            let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
-            let string: *mut Object = msg_send![pasteboard, string];
+            let pasteboard: *mut AnyObject = msg_send![class!(UIPasteboard), generalPasteboard];
+            let string: *mut AnyObject = msg_send![pasteboard, string];
             if string.is_null() {
                 return None;
             }

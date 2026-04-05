@@ -22,7 +22,7 @@ reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "c15662
 log = "0.4"
 
 [target.'cfg(target_os = "ios")'.dependencies]
-objc = "0.2"
+objc2 = "0.5"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

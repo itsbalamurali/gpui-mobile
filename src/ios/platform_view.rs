@@ -11,13 +11,14 @@ use crate::platform_view::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "ios")]
-use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 /// iOS implementation of a platform view.
 ///
 /// Wraps a `UIView` instance. The view is created during construction but
 /// is NOT automatically added to the view hierarchy. Call
-/// `native_view_ptr()` to get the raw `*mut Object` pointer, then insert
+/// `native_view_ptr()` to get the raw `*mut AnyObject` pointer, then insert
 /// it into the appropriate superview from the iOS window code.
 ///
 /// TODO: The window/paint code should call `native_view_ptr()` and insert
@@ -29,7 +30,7 @@ pub struct IosPlatformView {
     /// Pointer to the Objective-C UIView instance.
     /// Null if disposed.
     #[cfg(target_os = "ios")]
-    native_view: std::sync::Mutex<*mut Object>,
+    native_view: std::sync::Mutex<*mut AnyObject>,
     disposed: AtomicBool,
     /// Whether this view has been inserted into the window's view hierarchy.
     inserted: AtomicBool,
@@ -74,14 +75,14 @@ impl IosPlatformView {
         view_type: &str,
         bounds: &PlatformViewBounds,
         params: &PlatformViewParams,
-    ) -> Result<*mut Object, String> {
+    ) -> Result<*mut AnyObject, String> {
         unsafe {
             let frame = core_graphics::geometry::CGRect::new(
                 &core_graphics::geometry::CGPoint::new(bounds.x as f64, bounds.y as f64),
                 &core_graphics::geometry::CGSize::new(bounds.width as f64, bounds.height as f64),
             );
 
-            let view: *mut Object = match view_type {
+            let view: *mut AnyObject = match view_type {
                 "video_player" => Self::create_video_player_view(frame, params)?,
                 "webview" => Self::create_webview_view(frame, params)?,
                 "camera_preview" => Self::create_camera_preview_view(frame, params)?,
@@ -112,14 +113,14 @@ impl IosPlatformView {
     #[cfg(target_os = "ios")]
     unsafe fn create_generic_view(
         frame: core_graphics::geometry::CGRect,
-    ) -> Result<*mut Object, String> {
+    ) -> Result<*mut AnyObject, String> {
         let uiview_class = class!(UIView);
-        let view: *mut Object = msg_send![uiview_class, alloc];
-        let view: *mut Object = msg_send![view, initWithFrame: frame];
+        let view: *mut AnyObject = msg_send![uiview_class, alloc];
+        let view: *mut AnyObject = msg_send![view, initWithFrame: frame];
         if view.is_null() {
             return Err("Failed to create UIView".into());
         }
-        let clear_color: *mut Object = msg_send![class!(UIColor), clearColor];
+        let clear_color: *mut AnyObject = msg_send![class!(UIColor), clearColor];
         let _: () = msg_send![view, setBackgroundColor: clear_color];
         Ok(view)
     }
@@ -129,16 +130,16 @@ impl IosPlatformView {
     unsafe fn create_video_player_view(
         frame: core_graphics::geometry::CGRect,
         params: &PlatformViewParams,
-    ) -> Result<*mut Object, String> {
+    ) -> Result<*mut AnyObject, String> {
         // Create a container UIView
         let uiview_class = class!(UIView);
-        let view: *mut Object = msg_send![uiview_class, alloc];
-        let view: *mut Object = msg_send![view, initWithFrame: frame];
+        let view: *mut AnyObject = msg_send![uiview_class, alloc];
+        let view: *mut AnyObject = msg_send![view, initWithFrame: frame];
         if view.is_null() {
             return Err("Failed to create UIView for video_player".into());
         }
 
-        let black_color: *mut Object = msg_send![class!(UIColor), blackColor];
+        let black_color: *mut AnyObject = msg_send![class!(UIColor), blackColor];
         let _: () = msg_send![view, setBackgroundColor: black_color];
 
         // If a player_id is provided, try to get the AVPlayer and create AVPlayerLayer
@@ -146,7 +147,7 @@ impl IosPlatformView {
             if let Ok(player_id) = player_id_str.parse::<u32>() {
                 // Get AVPlayer from the video_player package's PLAYERS map
                 if let Some(player_ptr) = crate::packages::video_player::ios_get_player(player_id) {
-                    let player_layer: *mut Object =
+                    let player_layer: *mut AnyObject =
                         msg_send![class!(AVPlayerLayer), playerLayerWithPlayer: player_ptr];
                     if !player_layer.is_null() {
                         let _: () = msg_send![player_layer, setFrame: frame];
@@ -154,7 +155,7 @@ impl IosPlatformView {
                         let gravity = Self::make_nsstring("AVLayerVideoGravityResizeAspect");
                         let _: () = msg_send![player_layer, setVideoGravity: gravity];
                         let _: () = msg_send![gravity, release];
-                        let view_layer: *mut Object = msg_send![view, layer];
+                        let view_layer: *mut AnyObject = msg_send![view, layer];
                         let _: () = msg_send![view_layer, addSublayer: player_layer];
                     }
                 }
@@ -169,9 +170,9 @@ impl IosPlatformView {
     unsafe fn create_webview_view(
         frame: core_graphics::geometry::CGRect,
         params: &PlatformViewParams,
-    ) -> Result<*mut Object, String> {
-        let config: *mut Object = msg_send![class!(WKWebViewConfiguration), alloc];
-        let config: *mut Object = msg_send![config, init];
+    ) -> Result<*mut AnyObject, String> {
+        let config: *mut AnyObject = msg_send![class!(WKWebViewConfiguration), alloc];
+        let config: *mut AnyObject = msg_send![config, init];
         if config.is_null() {
             return Err("Failed to create WKWebViewConfiguration".into());
         }
@@ -182,13 +183,13 @@ impl IosPlatformView {
             .map(|v| v == "true")
             .unwrap_or(true);
 
-        let prefs: *mut Object = msg_send![config, preferences];
+        let prefs: *mut AnyObject = msg_send![config, preferences];
         if !prefs.is_null() {
             let _: () = msg_send![prefs, setJavaScriptEnabled: js_enabled];
         }
 
-        let webview: *mut Object = msg_send![class!(WKWebView), alloc];
-        let webview: *mut Object = msg_send![webview, initWithFrame: frame configuration: config];
+        let webview: *mut AnyObject = msg_send![class!(WKWebView), alloc];
+        let webview: *mut AnyObject = msg_send![webview, initWithFrame: frame configuration: config];
         if webview.is_null() {
             return Err("Failed to create WKWebView".into());
         }
@@ -197,19 +198,19 @@ impl IosPlatformView {
         if let Some(url) = params.creation_params.get("url") {
             if !url.is_empty() {
                 let ns_url_str = Self::make_nsstring(url);
-                let nsurl: *mut Object = msg_send![class!(NSURL), URLWithString: ns_url_str];
+                let nsurl: *mut AnyObject = msg_send![class!(NSURL), URLWithString: ns_url_str];
                 if !nsurl.is_null() {
-                    let request: *mut Object =
+                    let request: *mut AnyObject =
                         msg_send![class!(NSURLRequest), requestWithURL: nsurl];
-                    let _: *mut Object = msg_send![webview, loadRequest: request];
+                    let _: *mut AnyObject = msg_send![webview, loadRequest: request];
                 }
                 let _: () = msg_send![ns_url_str, release];
             }
         } else if let Some(html) = params.creation_params.get("html") {
             if !html.is_empty() {
                 let ns_html = Self::make_nsstring(html);
-                let base_url: *mut Object = std::ptr::null_mut();
-                let _: *mut Object = msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
+                let base_url: *mut AnyObject = std::ptr::null_mut();
+                let _: *mut AnyObject = msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
                 let _: () = msg_send![ns_html, release];
             }
         }
@@ -222,29 +223,29 @@ impl IosPlatformView {
     unsafe fn create_camera_preview_view(
         frame: core_graphics::geometry::CGRect,
         params: &PlatformViewParams,
-    ) -> Result<*mut Object, String> {
+    ) -> Result<*mut AnyObject, String> {
         let uiview_class = class!(UIView);
-        let view: *mut Object = msg_send![uiview_class, alloc];
-        let view: *mut Object = msg_send![view, initWithFrame: frame];
+        let view: *mut AnyObject = msg_send![uiview_class, alloc];
+        let view: *mut AnyObject = msg_send![view, initWithFrame: frame];
         if view.is_null() {
             return Err("Failed to create UIView for camera_preview".into());
         }
 
-        let black_color: *mut Object = msg_send![class!(UIColor), blackColor];
+        let black_color: *mut AnyObject = msg_send![class!(UIColor), blackColor];
         let _: () = msg_send![view, setBackgroundColor: black_color];
 
         // If a session_id is provided, try to get the AVCaptureSession and create preview layer
         if let Some(session_id_str) = params.creation_params.get("session_id") {
             if let Ok(session_id) = session_id_str.parse::<usize>() {
                 if let Some(session_ptr) = crate::packages::camera::ios_get_session(session_id) {
-                    let layer: *mut Object = msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
-                    let layer: *mut Object = msg_send![layer, initWithSession: session_ptr];
+                    let layer: *mut AnyObject = msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
+                    let layer: *mut AnyObject = msg_send![layer, initWithSession: session_ptr];
                     if !layer.is_null() {
                         let _: () = msg_send![layer, setFrame: frame];
                         let gravity = Self::make_nsstring("AVLayerVideoGravityResizeAspectFill");
                         let _: () = msg_send![layer, setVideoGravity: gravity];
                         let _: () = msg_send![gravity, release];
-                        let view_layer: *mut Object = msg_send![view, layer];
+                        let view_layer: *mut AnyObject = msg_send![view, layer];
                         let _: () = msg_send![view_layer, addSublayer: layer];
                     }
                 }
@@ -256,12 +257,12 @@ impl IosPlatformView {
 
     /// Create a retained NSString from a Rust `&str`.
     #[cfg(target_os = "ios")]
-    unsafe fn make_nsstring(s: &str) -> *mut Object {
+    unsafe fn make_nsstring(s: &str) -> *mut AnyObject {
         let nsstring_class = class!(NSString);
         let bytes = s.as_ptr();
         let len = s.len();
-        let obj: *mut Object = msg_send![nsstring_class, alloc];
-        let obj: *mut Object = msg_send![obj, initWithBytes:bytes length:len encoding:4u64];
+        let obj: *mut AnyObject = msg_send![nsstring_class, alloc];
+        let obj: *mut AnyObject = msg_send![obj, initWithBytes:bytes length:len encoding:4u64];
         obj
     }
 
@@ -270,7 +271,7 @@ impl IosPlatformView {
     /// Use this to insert the view into the iOS view hierarchy from
     /// the window/paint code. Returns null if the view has been disposed.
     #[cfg(target_os = "ios")]
-    pub fn native_view_ptr(&self) -> *mut Object {
+    pub fn native_view_ptr(&self) -> *mut AnyObject {
         *self.native_view.lock().unwrap()
     }
 
@@ -302,8 +303,8 @@ impl IosPlatformView {
                     if !window_ptr.is_null() {
                         let window = &*window_ptr;
                         // Get the view controller's view (parent of Metal view)
-                        let vc: *mut Object = window.view_controller_ptr();
-                        let vc_view: *mut Object = msg_send![vc, view];
+                        let vc: *mut AnyObject = window.view_controller_ptr();
+                        let vc_view: *mut AnyObject = msg_send![vc, view];
                         if !vc_view.is_null() {
                             // Get the Metal view
                             let metal_view = window.metal_view_ptr();
@@ -395,7 +396,7 @@ impl PlatformView for IosPlatformView {
             let view = *self.native_view.lock().unwrap();
             if !view.is_null() {
                 unsafe {
-                    let layer: *mut Object = msg_send![view, layer];
+                    let layer: *mut AnyObject = msg_send![view, layer];
                     if !layer.is_null() {
                         let z = z_index as f64;
                         let _: () = msg_send![layer, setZPosition: z];

@@ -1,5 +1,5 @@
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 pub fn open_coordinates(
     latitude: f64,
@@ -51,7 +51,7 @@ pub fn is_available() -> Result<bool, String> {
 fn open_url(url_string: &str) -> Result<bool, String> {
     unsafe {
         let nsurl = nsurl_from_str(url_string)?;
-        let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+        let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
         if app.is_null() {
             return Err("Failed to get UIApplication.sharedApplication".into());
         }
@@ -65,15 +65,15 @@ fn open_url(url_string: &str) -> Result<bool, String> {
     }
 }
 
-unsafe fn nsurl_from_str(url: &str) -> Result<*mut Object, String> {
-    let ns_string: *mut Object = msg_send![class!(NSString), alloc];
-    let ns_string: *mut Object = msg_send![ns_string, initWithBytes: url.as_ptr()
+unsafe fn nsurl_from_str(url: &str) -> Result<*mut AnyObject, String> {
+    let ns_string: *mut AnyObject = msg_send![class!(NSString), alloc];
+    let ns_string: *mut AnyObject = msg_send![ns_string, initWithBytes: url.as_ptr()
                                                        length: url.len()
                                                        encoding: 4u64];
     if ns_string.is_null() {
         return Err("Failed to create NSString from URL".into());
     }
-    let nsurl: *mut Object = msg_send![class!(NSURL), URLWithString: ns_string];
+    let nsurl: *mut AnyObject = msg_send![class!(NSURL), URLWithString: ns_string];
     if nsurl.is_null() {
         return Err(format!("Failed to parse URL: {url}"));
     }

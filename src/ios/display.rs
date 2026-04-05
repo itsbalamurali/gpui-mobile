@@ -6,14 +6,14 @@
 use anyhow::Result;
 use core_graphics::geometry::CGRect;
 use gpui::{px, size, Bounds, DisplayId, Pixels, PlatformDisplay};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::{class, msg_send, sel};
 use uuid::Uuid;
 
 /// Represents an iOS display (UIScreen).
 #[derive(Debug)]
 pub(crate) struct IosDisplay {
     /// The UIScreen object
-    screen: *mut objc::runtime::Object,
+    screen: *mut objc2::runtime::AnyObject,
 }
 
 unsafe impl Send for IosDisplay {}
@@ -23,7 +23,7 @@ impl IosDisplay {
     /// Get the main screen.
     pub fn main() -> Self {
         unsafe {
-            let screen: *mut objc::runtime::Object = msg_send![class!(UIScreen), mainScreen];
+            let screen: *mut objc2::runtime::AnyObject = msg_send![class!(UIScreen), mainScreen];
             Self { screen }
         }
     }
@@ -31,11 +31,11 @@ impl IosDisplay {
     /// Get all connected screens.
     pub fn all() -> impl Iterator<Item = Self> {
         unsafe {
-            let screens: *mut objc::runtime::Object = msg_send![class!(UIScreen), screens];
+            let screens: *mut objc2::runtime::AnyObject = msg_send![class!(UIScreen), screens];
             let count: usize = msg_send![screens, count];
 
             (0..count).map(move |i| {
-                let screen: *mut objc::runtime::Object = msg_send![screens, objectAtIndex: i];
+                let screen: *mut objc2::runtime::AnyObject = msg_send![screens, objectAtIndex: i];
                 Self { screen }
             })
         }

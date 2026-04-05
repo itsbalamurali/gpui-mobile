@@ -1,5 +1,5 @@
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::ffi::CStr;
 
 pub struct IosSharedPreferences;
@@ -13,7 +13,7 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let value: *mut Object = msg_send![defaults, stringForKey: ns_key];
+            let value: *mut AnyObject = msg_send![defaults, stringForKey: ns_key];
             if value.is_null() {
                 None
             } else {
@@ -37,7 +37,7 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let obj: *mut Object = msg_send![defaults, objectForKey: ns_key];
+            let obj: *mut AnyObject = msg_send![defaults, objectForKey: ns_key];
             if obj.is_null() {
                 None
             } else {
@@ -61,7 +61,7 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let obj: *mut Object = msg_send![defaults, objectForKey: ns_key];
+            let obj: *mut AnyObject = msg_send![defaults, objectForKey: ns_key];
             if obj.is_null() {
                 None
             } else {
@@ -94,14 +94,14 @@ impl IosSharedPreferences {
     pub fn clear(&self) -> Result<(), String> {
         unsafe {
             let defaults = user_defaults();
-            let dict: *mut Object = msg_send![defaults, dictionaryRepresentation];
+            let dict: *mut AnyObject = msg_send![defaults, dictionaryRepresentation];
             if dict.is_null() {
                 return Ok(());
             }
-            let keys: *mut Object = msg_send![dict, allKeys];
+            let keys: *mut AnyObject = msg_send![dict, allKeys];
             let count: u64 = msg_send![keys, count];
             for i in 0..count {
-                let key: *mut Object = msg_send![keys, objectAtIndex: i];
+                let key: *mut AnyObject = msg_send![keys, objectAtIndex: i];
                 let _: () = msg_send![defaults, removeObjectForKey: key];
             }
             let _: () = msg_send![defaults, synchronize];
@@ -113,24 +113,24 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let obj: *mut Object = msg_send![defaults, objectForKey: ns_key];
+            let obj: *mut AnyObject = msg_send![defaults, objectForKey: ns_key];
             !obj.is_null()
         }
     }
 }
 
-unsafe fn user_defaults() -> *mut Object {
+unsafe fn user_defaults() -> *mut AnyObject {
     msg_send![class!(NSUserDefaults), standardUserDefaults]
 }
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
+unsafe fn nsstring(s: &str) -> *mut AnyObject {
+    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     msg_send![ns, initWithBytes: s.as_ptr()
                   length: s.len()
                   encoding: 4u64] // NSUTF8StringEncoding
 }
 
-unsafe fn nsstring_to_string(ns: *mut Object) -> String {
+unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {
     let utf8: *const i8 = msg_send![ns, UTF8String];
     if utf8.is_null() {
         return String::new();

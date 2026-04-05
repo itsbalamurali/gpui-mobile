@@ -1,12 +1,12 @@
 use super::DeviceInfo;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::ffi::CStr;
 
 pub fn get_device_info() -> Result<DeviceInfo, String> {
     unsafe {
         // UIDevice.currentDevice
-        let device: *mut Object = msg_send![class!(UIDevice), currentDevice];
+        let device: *mut AnyObject = msg_send![class!(UIDevice), currentDevice];
         if device.is_null() {
             return Err("Failed to get UIDevice.currentDevice".into());
         }
@@ -52,7 +52,7 @@ fn is_simulator() -> bool {
     model == "x86_64" || model == "arm64" || model.contains("simulator")
 }
 
-unsafe fn nsstring_to_string(ns: *mut Object) -> String {
+unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {
     if ns.is_null() {
         return String::new();
     }
