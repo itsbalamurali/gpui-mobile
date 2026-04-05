@@ -1,5 +1,5 @@
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::ffi::CStr;
 
 pub struct IosSharedPreferences;
@@ -27,7 +27,7 @@ impl IosSharedPreferences {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
             let ns_value = nsstring(value);
-            let _: () = msg_send![defaults, setObject: ns_value forKey: ns_key];
+            let _: () = msg_send![defaults, setObject: ns_value, forKey: ns_key];
             let _: () = msg_send![defaults, synchronize];
             Ok(())
         }
@@ -51,7 +51,7 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let _: () = msg_send![defaults, setInteger: value forKey: ns_key];
+            let _: () = msg_send![defaults, setInteger: value, forKey: ns_key];
             let _: () = msg_send![defaults, synchronize];
             Ok(())
         }
@@ -75,7 +75,7 @@ impl IosSharedPreferences {
         unsafe {
             let defaults = user_defaults();
             let ns_key = nsstring(key);
-            let _: () = msg_send![defaults, setBool: value forKey: ns_key];
+            let _: () = msg_send![defaults, setBool: value, forKey: ns_key];
             let _: () = msg_send![defaults, synchronize];
             Ok(())
         }

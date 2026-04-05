@@ -1,5 +1,4 @@
 use super::{OpenFileOptions, SaveFileOptions, SelectedFile, TypeGroup};
-use objc2::ffi::{BOOL, YES};
 use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 use std::sync::{mpsc, Mutex, Once};
@@ -78,12 +77,12 @@ unsafe extern "C" fn did_pick_documents(
         }
     }
     // Dismiss the picker
-    let _: () = msg_send![_controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    let _: () = msg_send![_controller, dismissViewControllerAnimated: true, completion: std::ptr::null::<AnyObject>()];
     send_result(paths);
 }
 
 unsafe extern "C" fn did_cancel(_this: *mut AnyObject, _sel: Sel, controller: *mut AnyObject) {
-    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    let _: () = msg_send![controller, dismissViewControllerAnimated: true, completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
 
@@ -151,7 +150,7 @@ use crate::ios::util::nsstring;
 
 unsafe fn nsarray_from_objects(objects: &[*mut AnyObject]) -> *mut AnyObject {
     msg_send![class!(NSArray),
-        arrayWithObjects: objects.as_ptr()
+        arrayWithObjects: objects.as_ptr(),
         count: objects.len()
     ]
 }
@@ -169,8 +168,8 @@ unsafe fn present_picker(picker: *mut AnyObject) -> Result<(), String> {
         return Err("No root view controller".into());
     }
     let _: () = msg_send![root_vc,
-        presentViewController: picker
-        animated: YES
+        presentViewController: picker,
+        animated: true,
         completion: std::ptr::null::<AnyObject>()
     ];
     Ok(())
@@ -266,7 +265,7 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
 
-        let _: () = msg_send![picker, setAllowsMultipleSelection: YES];
+        let _: () = msg_send![picker, setAllowsMultipleSelection: true];
 
         let delegate_cls = delegate_class();
         let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
@@ -349,7 +348,7 @@ pub fn get_directory_path(initial_directory: Option<&str>) -> Result<Option<Stri
         if let Some(dir) = initial_directory {
             let ns_dir = nsstring(dir);
             let dir_url: *mut AnyObject =
-                msg_send![class!(NSURL), fileURLWithPath: ns_dir isDirectory: YES];
+                msg_send![class!(NSURL), fileURLWithPath: ns_dir, isDirectory: true];
             if !dir_url.is_null() {
                 let _: () = msg_send![picker, setDirectoryURL: dir_url];
             }

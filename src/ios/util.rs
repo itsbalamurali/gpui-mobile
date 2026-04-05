@@ -15,8 +15,8 @@ use objc2::{class, msg_send};
 pub unsafe fn nsstring(s: &str) -> *mut AnyObject {
     let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     let ns: *mut AnyObject = msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
+        initWithBytes: s.as_ptr() as *const std::ffi::c_void,
+        length: s.len(),
         encoding: 4u64 // NSUTF8StringEncoding
     ];
     msg_send![ns, autorelease]

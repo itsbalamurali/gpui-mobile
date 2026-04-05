@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "ios")]
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 #[cfg(target_os = "ios")]
 use super::cg_types::ObjcCGRect;
@@ -193,7 +193,7 @@ impl IosPlatformView {
 
         let webview: *mut AnyObject = msg_send![class!(WKWebView), alloc];
         let webview: *mut AnyObject =
-            msg_send![webview, initWithFrame: frame configuration: config];
+            msg_send![webview, initWithFrame: frame, configuration: config];
         if webview.is_null() {
             return Err("Failed to create WKWebView".into());
         }
@@ -215,7 +215,7 @@ impl IosPlatformView {
                 let ns_html = Self::make_nsstring(html);
                 let base_url: *mut AnyObject = std::ptr::null_mut();
                 let _: *mut AnyObject =
-                    msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
+                    msg_send![webview, loadHTMLString: ns_html, baseURL: base_url];
                 let _: () = msg_send![ns_html, release];
             }
         }
@@ -312,7 +312,7 @@ impl IosPlatformView {
                                 // Insert below the Metal view so GPUI renders on top
                                 let _: () = msg_send![
                                     vc_view,
-                                    insertSubview: native_view
+                                    insertSubview: native_view,
                                     belowSubview: metal_view
                                 ];
                             } else {

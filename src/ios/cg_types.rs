@@ -37,6 +37,7 @@ unsafe impl RefEncode for ObjcCGRect {
 }
 
 impl ObjcCGRect {
+    #[allow(dead_code)]
     pub fn from_cg(r: CGRect) -> Self {
         Self {
             x: r.origin.x,
@@ -46,6 +47,7 @@ impl ObjcCGRect {
         }
     }
 
+    #[allow(dead_code)]
     pub fn to_cg(self) -> CGRect {
         CGRect {
             origin: CGPoint {
@@ -88,6 +90,7 @@ unsafe impl RefEncode for ObjcCGPoint {
 }
 
 impl ObjcCGPoint {
+    #[allow(dead_code)]
     pub fn to_cg(self) -> CGPoint {
         CGPoint {
             x: self.x,
@@ -115,6 +118,7 @@ unsafe impl RefEncode for ObjcCGSize {
 }
 
 impl ObjcCGSize {
+    #[allow(dead_code)]
     pub fn to_cg(self) -> CGSize {
         CGSize {
             width: self.width,

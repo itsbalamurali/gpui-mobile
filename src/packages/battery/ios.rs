@@ -1,6 +1,6 @@
 use super::BatteryState;
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 pub fn battery_level() -> i32 {
     unsafe {

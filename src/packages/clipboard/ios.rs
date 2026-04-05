@@ -1,5 +1,5 @@
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 pub fn set_text(text: &str) -> Result<(), String> {
     unsafe {
@@ -10,8 +10,8 @@ pub fn set_text(text: &str) -> Result<(), String> {
 
         let ns_text: *mut AnyObject = msg_send![class!(NSString), alloc];
         let ns_text: *mut AnyObject = msg_send![ns_text,
-            initWithBytes: text.as_ptr() as *const std::ffi::c_void
-            length: text.len()
+            initWithBytes: text.as_ptr() as *const std::ffi::c_void,
+            length: text.len(),
             encoding: 4u64  // NSUTF8StringEncoding
         ];
         if ns_text.is_null() {

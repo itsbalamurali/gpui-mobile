@@ -1,7 +1,7 @@
 use super::VideoInfo;
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::collections::HashMap;
 use std::sync::Mutex;
 

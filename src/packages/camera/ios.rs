@@ -2,8 +2,7 @@ use super::{
     CameraDescription, CameraHandle, CameraLensDirection, CapturedImage, ExposureMode, FlashMode,
     FocusMode, RecordedVideo, ResolutionPreset,
 };
-use objc2::ffi::{BOOL, YES};
-use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
 use std::sync::{mpsc, Mutex, Once};
@@ -119,9 +118,9 @@ extern "C" fn photo_did_finish(
                 let file_name = format!("camera_{}.jpg", uuid_str);
                 let file_path = std::env::temp_dir().join(&file_name);
                 let ns_path = nsstring(&file_path.to_string_lossy());
-                let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
+                let wrote: Bool = msg_send![jpeg_data, writeToFile: ns_path, atomically: true];
 
-                if wrote == YES {
+                if wrote.as_bool() {
                     // Get dimensions from CGImage
                     let cg_image: *mut AnyObject = msg_send![photo, CGImageRepresentation];
                     let (width, height) = if !cg_image.is_null() {
@@ -252,7 +251,7 @@ unsafe fn find_device_by_name(name: &str) -> *mut AnyObject {
         let ultra = nsstring("AVCaptureDeviceTypeBuiltInUltraWideCamera");
         let tele = nsstring("AVCaptureDeviceTypeBuiltInTelephotoCamera");
         msg_send![class!(NSArray),
-            arrayWithObjects: [wide, ultra, tele].as_ptr()
+            arrayWithObjects: [wide, ultra, tele].as_ptr(),
             count: 3usize
         ]
     };
@@ -261,8 +260,8 @@ unsafe fn find_device_by_name(name: &str) -> *mut AnyObject {
     let position: i64 = 0; // AVCaptureDevicePositionUnspecified
 
     let discovery: *mut AnyObject = msg_send![class!(AVCaptureDeviceDiscoverySession),
-        discoverySessionWithDeviceTypes: device_types
-        mediaType: media_type
+        discoverySessionWithDeviceTypes: device_types,
+        mediaType: media_type,
         position: position
     ];
 
@@ -299,7 +298,7 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             let ultra = nsstring("AVCaptureDeviceTypeBuiltInUltraWideCamera");
             let tele = nsstring("AVCaptureDeviceTypeBuiltInTelephotoCamera");
             msg_send![class!(NSArray),
-                arrayWithObjects: [wide, ultra, tele].as_ptr()
+                arrayWithObjects: [wide, ultra, tele].as_ptr(),
                 count: 3usize
             ]
         };
@@ -308,8 +307,8 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
         let position: i64 = 0; // AVCaptureDevicePositionUnspecified
 
         let discovery: *mut AnyObject = msg_send![class!(AVCaptureDeviceDiscoverySession),
-            discoverySessionWithDeviceTypes: device_types
-            mediaType: media_type
+            discoverySessionWithDeviceTypes: device_types,
+            mediaType: media_type,
             position: position
         ];
 
@@ -378,15 +377,15 @@ pub fn create_camera(
 
         // Set resolution preset
         let preset = nsstring(resolution_to_preset(resolution));
-        let can_set: BOOL = msg_send![session, canSetSessionPreset: preset];
-        if can_set == YES {
+        let can_set: Bool = msg_send![session, canSetSessionPreset: preset];
+        if can_set.as_bool() {
             let _: () = msg_send![session, setSessionPreset: preset];
         }
 
         // Add video input
         let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
         let input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
-            deviceInputWithDevice: device
+            deviceInputWithDevice: device,
             error: &mut error_ptr
         ];
         if input.is_null() || !error_ptr.is_null() {
@@ -394,8 +393,8 @@ pub fn create_camera(
             return Err("Failed to create device input".into());
         }
 
-        let can_add: BOOL = msg_send![session, canAddInput: input];
-        if can_add != YES {
+        let can_add: Bool = msg_send![session, canAddInput: input];
+        if !can_add.as_bool() {
             let _: () = msg_send![session, commitConfiguration];
             return Err("Cannot add camera input to session".into());
         }
@@ -411,12 +410,12 @@ pub fn create_camera(
             if !audio_device.is_null() {
                 let mut audio_err: *mut AnyObject = std::ptr::null_mut();
                 let a_input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
-                    deviceInputWithDevice: audio_device
+                    deviceInputWithDevice: audio_device,
                     error: &mut audio_err
                 ];
                 if !a_input.is_null() && audio_err.is_null() {
-                    let can_add_audio: BOOL = msg_send![session, canAddInput: a_input];
-                    if can_add_audio == YES {
+                    let can_add_audio: Bool = msg_send![session, canAddInput: a_input];
+                    if can_add_audio.as_bool() {
                         let _: () = msg_send![session, addInput: a_input];
                         audio_input = a_input;
                     }
@@ -427,8 +426,8 @@ pub fn create_camera(
         // Add photo output
         let photo_output: *mut AnyObject = msg_send![class!(AVCapturePhotoOutput), alloc];
         let photo_output: *mut AnyObject = msg_send![photo_output, init];
-        let can_add_photo: BOOL = msg_send![session, canAddOutput: photo_output];
-        if can_add_photo != YES {
+        let can_add_photo: Bool = msg_send![session, canAddOutput: photo_output];
+        if !can_add_photo.as_bool() {
             let _: () = msg_send![session, commitConfiguration];
             return Err("Cannot add photo output to session".into());
         }
@@ -437,8 +436,8 @@ pub fn create_camera(
         // Add video file output
         let video_output: *mut AnyObject = msg_send![class!(AVCaptureMovieFileOutput), alloc];
         let video_output: *mut AnyObject = msg_send![video_output, init];
-        let can_add_video: BOOL = msg_send![session, canAddOutput: video_output];
-        if can_add_video == YES {
+        let can_add_video: Bool = msg_send![session, canAddOutput: video_output];
+        if can_add_video.as_bool() {
             let _: () = msg_send![session, addOutput: video_output];
         } else {
             // Video recording won't be available, but that's okay
@@ -506,7 +505,7 @@ pub fn take_picture(handle: &CameraHandle) -> Result<CapturedImage, String> {
 
         // Capture
         let _: () = msg_send![state.photo_output,
-            capturePhotoWithSettings: settings
+            capturePhotoWithSettings: settings,
             delegate: delegate
         ];
     }
@@ -529,8 +528,8 @@ pub fn start_video_recording(handle: &CameraHandle) -> Result<(), String> {
             return Err("Video output not available".into());
         }
 
-        let is_recording: BOOL = msg_send![state.video_output, isRecording];
-        if is_recording == YES {
+        let is_recording: Bool = msg_send![state.video_output, isRecording];
+        if is_recording.as_bool() {
             return Err("Already recording".into());
         }
 
@@ -547,7 +546,7 @@ pub fn start_video_recording(handle: &CameraHandle) -> Result<(), String> {
         let delegate: *mut AnyObject = msg_send![delegate, init];
 
         let _: () = msg_send![state.video_output,
-            startRecordingToOutputFileURL: file_url
+            startRecordingToOutputFileURL: file_url,
             recordingDelegate: delegate
         ];
 
@@ -591,28 +590,28 @@ pub fn set_flash_mode(handle: &CameraHandle, mode: FlashMode) -> Result<(), Stri
 
         // For torch mode, use torchMode; for flash, it's set on capture settings
         if mode == FlashMode::Torch {
-            let has_torch: BOOL = msg_send![device, hasTorch];
-            if has_torch != YES {
+            let has_torch: Bool = msg_send![device, hasTorch];
+            if !has_torch.as_bool() {
                 return Err("Device does not have a torch".into());
             }
             let mut err: *mut AnyObject = std::ptr::null_mut();
-            let locked: BOOL =
+            let locked: Bool =
                 msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
-            if locked != YES {
+            if !locked.as_bool() {
                 return Err("Failed to lock device for configuration".into());
             }
             let _: () = msg_send![device, setTorchMode: 1i64]; // AVCaptureTorchModeOn
             let _: () = msg_send![device, unlockForConfiguration];
         } else {
             // Turn off torch if it was on
-            let has_torch: BOOL = msg_send![device, hasTorch];
-            if has_torch == YES {
+            let has_torch: Bool = msg_send![device, hasTorch];
+            if has_torch.as_bool() {
                 let torch_mode: i64 = msg_send![device, torchMode];
                 if torch_mode != 0 {
                     let mut err: *mut AnyObject = std::ptr::null_mut();
-                    let locked: BOOL =
+                    let locked: Bool =
                         msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
-                    if locked == YES {
+                    if locked.as_bool() {
                         let _: () = msg_send![device, setTorchMode: 0i64]; // AVCaptureTorchModeOff
                         let _: () = msg_send![device, unlockForConfiguration];
                     }
@@ -641,14 +640,14 @@ pub fn set_focus_mode(handle: &CameraHandle, mode: FocusMode) -> Result<(), Stri
             FocusMode::Locked => 0, // AVCaptureFocusModeLocked
         };
 
-        let is_supported: BOOL = msg_send![device, isFocusModeSupported: avf_mode];
-        if is_supported != YES {
+        let is_supported: Bool = msg_send![device, isFocusModeSupported: avf_mode];
+        if !is_supported.as_bool() {
             return Err("Focus mode not supported".into());
         }
 
         let mut err: *mut AnyObject = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
-        if locked != YES {
+        let locked: Bool = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
+        if !locked.as_bool() {
             return Err("Failed to lock device for configuration".into());
         }
 
@@ -674,14 +673,14 @@ pub fn set_exposure_mode(handle: &CameraHandle, mode: ExposureMode) -> Result<()
             ExposureMode::Locked => 0, // AVCaptureExposureModeLocked
         };
 
-        let is_supported: BOOL = msg_send![device, isExposureModeSupported: avf_mode];
-        if is_supported != YES {
+        let is_supported: Bool = msg_send![device, isExposureModeSupported: avf_mode];
+        if !is_supported.as_bool() {
             return Err("Exposure mode not supported".into());
         }
 
         let mut err: *mut AnyObject = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
-        if locked != YES {
+        let locked: Bool = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
+        if !locked.as_bool() {
             return Err("Failed to lock device for configuration".into());
         }
 
@@ -725,8 +724,8 @@ pub fn set_zoom(handle: &CameraHandle, zoom: f64) -> Result<(), String> {
         let clamped = zoom.max(1.0).min(max_zoom);
 
         let mut err: *mut AnyObject = std::ptr::null_mut();
-        let locked: BOOL = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
-        if locked != YES {
+        let locked: Bool = msg_send![device, lockForConfiguration: &mut err as *mut *mut AnyObject];
+        if !locked.as_bool() {
             return Err("Failed to lock device for configuration".into());
         }
 
@@ -761,7 +760,7 @@ pub fn set_camera(handle: &CameraHandle, camera: &CameraDescription) -> Result<(
         // Create new input
         let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
         let new_input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
-            deviceInputWithDevice: new_device
+            deviceInputWithDevice: new_device,
             error: &mut error_ptr as *mut *mut AnyObject
         ];
 
@@ -772,8 +771,8 @@ pub fn set_camera(handle: &CameraHandle, camera: &CameraDescription) -> Result<(
             return Err("Failed to create input for new camera".into());
         }
 
-        let can_add: BOOL = msg_send![session, canAddInput: new_input];
-        if can_add != YES {
+        let can_add: Bool = msg_send![session, canAddInput: new_input];
+        if !can_add.as_bool() {
             let _: () = msg_send![session, addInput: state.device_input];
             let _: () = msg_send![session, commitConfiguration];
             return Err("Cannot add new camera input".into());

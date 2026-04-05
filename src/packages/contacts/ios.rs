@@ -1,6 +1,6 @@
 use super::{Contact, EmailAddress, PhoneNumber};
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 pub fn get_contacts() -> Result<Vec<Contact>, String> {
     unsafe { fetch_contacts(std::ptr::null_mut()) }
@@ -121,8 +121,8 @@ unsafe fn fetch_contacts(predicate: *mut AnyObject) -> Result<Vec<Contact>, Stri
         let error_ptr: *mut *mut AnyObject = &error as *const _ as *mut *mut AnyObject;
 
         let results: *mut AnyObject = msg_send![store,
-            unifiedContactsMatchingPredicate: predicate
-            keysToFetch: keys
+            unifiedContactsMatchingPredicate: predicate,
+            keysToFetch: keys,
             error: error_ptr
         ];
 
@@ -175,8 +175,8 @@ unsafe fn enumerate_contacts(
     });
 
     let success: bool = msg_send![store,
-        enumerateContactsWithFetchRequest: request
-        error: error_ptr
+        enumerateContactsWithFetchRequest: request,
+        error: error_ptr,
         usingBlock: &*block
     ];
 
@@ -328,7 +328,7 @@ unsafe fn create_fetch_keys() -> *mut AnyObject {
     ];
 
     let array: *mut AnyObject = msg_send![class!(NSArray),
-        arrayWithObjects: objects.as_ptr()
+        arrayWithObjects: objects.as_ptr(),
         count: objects.len()
     ];
 
@@ -339,8 +339,8 @@ unsafe fn create_fetch_keys() -> *mut AnyObject {
 unsafe fn new_nsstring(s: &str) -> *mut AnyObject {
     let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
     let ns: *mut AnyObject = msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
+        initWithBytes: s.as_ptr() as *const std::ffi::c_void,
+        length: s.len(),
         encoding: 4u64  // NSUTF8StringEncoding
     ];
     ns

@@ -1,5 +1,5 @@
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::ffi::CString;
 
 #[link(name = "StoreKit", kind = "framework")]

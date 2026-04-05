@@ -1,6 +1,6 @@
 use super::{AuthResult, BiometricType};
 use objc2::runtime::{AnyObject, Bool};
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::ffi::c_void;
 
 /// LAPolicy constants.
@@ -36,7 +36,7 @@ pub fn is_device_supported() -> Result<bool, String> {
         // canEvaluatePolicy:error: — pass nil for error pointer
         let can_evaluate: bool = msg_send![
             context,
-            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
+            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS,
             error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
@@ -58,7 +58,7 @@ pub fn can_authenticate() -> Result<bool, String> {
 
         let can_evaluate: bool = msg_send![
             context,
-            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
+            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS,
             error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
@@ -77,7 +77,7 @@ pub fn get_available_biometrics() -> Result<Vec<BiometricType>, String> {
         // Must call canEvaluatePolicy first to populate biometryType
         let _can: bool = msg_send![
             context,
-            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
+            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS,
             error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
@@ -105,7 +105,7 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
         // Check if we can authenticate first
         let can_evaluate: bool = msg_send![
             context,
-            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
+            canEvaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS,
             error: std::ptr::null_mut::<*mut AnyObject>()
         ];
 
@@ -124,8 +124,8 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
         let reason_bytes = reason.as_bytes();
         let reason_nsstring: *mut AnyObject = msg_send![
             reason_nsstring,
-            initWithBytes: reason_bytes.as_ptr() as *const c_void
-            length: reason_bytes.len()
+            initWithBytes: reason_bytes.as_ptr() as *const c_void,
+            length: reason_bytes.len(),
             encoding: 4u64 // NSUTF8StringEncoding
         ];
 
@@ -144,7 +144,7 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
             } else if error.is_null() {
                 AuthResult::Failed
             } else {
-                let error_code: i64 = unsafe { msg_send![error, code] };
+                let error_code: i64 = msg_send![error, code];
                 match error_code {
                     LA_ERROR_AUTHENTICATION_FAILED => AuthResult::Failed,
                     LA_ERROR_USER_CANCEL => AuthResult::ErrorUserCancelled,
@@ -158,18 +158,18 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
             };
 
             // Store the result
-            if let Ok(mut guard) = unsafe { (*result_holder).lock() } {
+            if let Ok(mut guard) = (*result_holder).lock() {
                 *guard = auth_result;
             }
 
-            unsafe { dispatch_semaphore_signal(semaphore) };
+            dispatch_semaphore_signal(semaphore);
         });
 
         // Call evaluatePolicy:localizedReason:reply:
         let _: () = msg_send![
             context,
-            evaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS
-            localizedReason: reason_nsstring
+            evaluatePolicy: LA_POLICY_DEVICE_OWNER_AUTHENTICATION_WITH_BIOMETRICS,
+            localizedReason: reason_nsstring,
             reply: &*block as *const _ as *const c_void
         ];
 

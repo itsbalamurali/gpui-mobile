@@ -1,7 +1,7 @@
 use super::{BarometerData, SensorAvailability, SensorData};
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 pub fn available_sensors() -> SensorAvailability {
     unsafe {

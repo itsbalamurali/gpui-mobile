@@ -1,6 +1,6 @@
 use super::{Calendar, CalendarEvent};
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 /// EKEntityType.event = 0
 const EK_ENTITY_TYPE_EVENT: u64 = 0;
@@ -142,8 +142,8 @@ pub fn get_events(
             msg_send![class!(NSArray), arrayWithObject: target_calendar];
 
         let predicate: *mut AnyObject = msg_send![store,
-            predicateForEventsWithStartDate: start_date
-            endDate: end_date
+            predicateForEventsWithStartDate: start_date,
+            endDate: end_date,
             calendars: calendar_array
         ];
         if predicate.is_null() {
@@ -248,8 +248,8 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
 
         let mut error: *mut AnyObject = std::ptr::null_mut();
         let success: bool = msg_send![store,
-            saveEvent: ek_event
-            span: EK_SPAN_THIS_EVENT
+            saveEvent: ek_event,
+            span: EK_SPAN_THIS_EVENT,
             error: &mut error
         ];
 
@@ -291,8 +291,8 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
 
         let mut error: *mut AnyObject = std::ptr::null_mut();
         let success: bool = msg_send![store,
-            removeEvent: event
-            span: EK_SPAN_THIS_EVENT
+            removeEvent: event,
+            span: EK_SPAN_THIS_EVENT,
             error: &mut error
         ];
 

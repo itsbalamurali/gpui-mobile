@@ -18,7 +18,7 @@ use gpui::{
     Task, ThermalState, WindowAppearance, WindowParams,
 };
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
@@ -193,7 +193,7 @@ impl Platform for IosPlatform {
                 msg_send![class!(NSString), stringWithUTF8String: url.as_ptr()];
             let url: *mut AnyObject = msg_send![class!(NSURL), URLWithString: url_string];
             let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
-            let _: () = msg_send![app, openURL: url options: std::ptr::null::<AnyObject>() completionHandler: std::ptr::null::<AnyObject>()];
+            let _: () = msg_send![app, openURL: url, options: std::ptr::null::<AnyObject>(), completionHandler: std::ptr::null::<AnyObject>()];
         }
     }
 

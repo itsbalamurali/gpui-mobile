@@ -1,6 +1,6 @@
 use super::Notification;
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 /// Get the shared UNUserNotificationCenter instance.
 unsafe fn notification_center() -> *mut AnyObject {
@@ -24,7 +24,7 @@ pub fn initialize() -> Result<(), String> {
         let null_block: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![
             center,
-            requestAuthorizationWithOptions: options
+            requestAuthorizationWithOptions: options,
             completionHandler: null_block
         ];
 
@@ -64,7 +64,7 @@ pub fn show(notification: &Notification) -> Result<(), String> {
             let key = nsstring("payload");
             let user_info: *mut AnyObject = msg_send![
                 class!(NSDictionary),
-                dictionaryWithObject: payload_str
+                dictionaryWithObject: payload_str,
                 forKey: key
             ];
             let _: () = msg_send![content, setUserInfo: user_info];
@@ -75,8 +75,8 @@ pub fn show(notification: &Notification) -> Result<(), String> {
         let null_trigger: *mut AnyObject = std::ptr::null_mut();
         let request: *mut AnyObject = msg_send![
             class!(UNNotificationRequest),
-            requestWithIdentifier: identifier
-            content: content
+            requestWithIdentifier: identifier,
+            content: content,
             trigger: null_trigger
         ];
 
@@ -88,7 +88,7 @@ pub fn show(notification: &Notification) -> Result<(), String> {
         let null_block: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![
             center,
-            addNotificationRequest: request
+            addNotificationRequest: request,
             withCompletionHandler: null_block
         ];
 

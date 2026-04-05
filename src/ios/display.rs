@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use gpui::{px, size, Bounds, DisplayId, Pixels, PlatformDisplay};
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 use super::cg_types::ObjcCGRect;
 use uuid::Uuid;

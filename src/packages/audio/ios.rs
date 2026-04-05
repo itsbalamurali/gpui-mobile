@@ -1,9 +1,8 @@
 use super::{LoopMode, PlayerState};
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 

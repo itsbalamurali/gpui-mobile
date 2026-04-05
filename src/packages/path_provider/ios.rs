@@ -1,5 +1,5 @@
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
+use objc2::msg_send;
 use std::ffi::CStr;
 use std::path::PathBuf;
 

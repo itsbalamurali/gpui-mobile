@@ -10,8 +10,8 @@
 use gpui::{PlatformDispatcher, Priority, RunnableVariant, ThreadTaskTimings};
 use std::thread;
 
-use objc2::ffi::{BOOL, YES};
-use objc2::{class, msg_send, sel};
+use objc2::runtime::Bool;
+use objc2::{class, msg_send};
 use std::{ffi::c_void, ptr::NonNull, time::Duration};
 
 // GCD types - these are the same on iOS and macOS
@@ -58,8 +58,8 @@ pub(crate) struct IosDispatcher;
 impl PlatformDispatcher for IosDispatcher {
     fn is_main_thread(&self) -> bool {
         unsafe {
-            let is_main: BOOL = msg_send![class!(NSThread), isMainThread];
-            is_main == YES
+            let is_main: Bool = msg_send![class!(NSThread), isMainThread];
+            is_main.as_bool()
         }
     }
 

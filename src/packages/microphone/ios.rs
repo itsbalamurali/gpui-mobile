@@ -1,6 +1,6 @@
 use super::{AudioFormat, Recording, RecordingConfig};
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::sync::Mutex;
 
 #[link(name = "AVFoundation", kind = "framework")]
@@ -68,8 +68,8 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
         ];
 
         let settings: *mut AnyObject = msg_send![class!(NSDictionary),
-            dictionaryWithObjects: values.as_ptr()
-            forKeys: keys.as_ptr()
+            dictionaryWithObjects: values.as_ptr(),
+            forKeys: keys.as_ptr(),
             count: 4usize
         ];
 
@@ -77,8 +77,8 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
         let mut error: *mut AnyObject = std::ptr::null_mut();
         let recorder: *mut AnyObject = msg_send![class!(AVAudioRecorder), alloc];
         let recorder: *mut AnyObject = msg_send![recorder,
-            initWithURL: file_url
-            settings: settings
+            initWithURL: file_url,
+            settings: settings,
             error: &mut error as *mut *mut AnyObject
         ];
 
@@ -100,11 +100,11 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
         let record_category = nsstring("AVAudioSessionCategoryRecord");
         let mut session_error: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![session,
-            setCategory: record_category
+            setCategory: record_category,
             error: &mut session_error as *mut *mut AnyObject
         ];
         let _: () = msg_send![session,
-            setActive: true
+            setActive: true,
             error: &mut session_error as *mut *mut AnyObject
         ];
 
@@ -136,7 +136,7 @@ pub fn stop_recording() -> Result<Recording, String> {
         let session: *mut AnyObject = msg_send![class!(AVAudioSession), sharedInstance];
         let mut error: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![session,
-            setActive: false
+            setActive: false,
             error: &mut error as *mut *mut AnyObject
         ];
 

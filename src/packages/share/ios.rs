@@ -1,5 +1,5 @@
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 pub fn share_text(text: &str, _subject: Option<&str>) -> Result<(), String> {
     unsafe {
@@ -12,8 +12,8 @@ pub fn share_text(text: &str, _subject: Option<&str>) -> Result<(), String> {
             // Fallback: use alloc + initWithBytes for non-null-terminated strings
             let ns_text: *mut AnyObject = msg_send![class!(NSString), alloc];
             let ns_text: *mut AnyObject = msg_send![ns_text,
-                initWithBytes: text.as_ptr() as *const std::ffi::c_void
-                length: text.len()
+                initWithBytes: text.as_ptr() as *const std::ffi::c_void,
+                length: text.len(),
                 encoding: 4u64  // NSUTF8StringEncoding
             ];
             if ns_text.is_null() {
@@ -37,7 +37,7 @@ unsafe fn present_share_sheet(text: *mut AnyObject) -> Result<(), String> {
     let vc: *mut AnyObject = msg_send![class!(UIActivityViewController), alloc];
     let nil: *mut AnyObject = std::ptr::null_mut();
     let vc: *mut AnyObject = msg_send![vc,
-        initWithActivityItems: items
+        initWithActivityItems: items,
         applicationActivities: nil
     ];
     if vc.is_null() {
@@ -57,8 +57,8 @@ unsafe fn present_share_sheet(text: *mut AnyObject) -> Result<(), String> {
 
     // [rootVC presentViewController:vc animated:YES completion:nil];
     let _: () = msg_send![root_vc,
-        presentViewController: vc
-        animated: true
+        presentViewController: vc,
+        animated: true,
         completion: nil
     ];
 

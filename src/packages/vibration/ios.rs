@@ -1,6 +1,6 @@
 use super::HapticFeedback;
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 
 #[link(name = "AudioToolbox", kind = "framework")]
 extern "C" {}

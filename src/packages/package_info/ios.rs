@@ -1,6 +1,6 @@
 use super::PackageInfo;
 use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::{class, msg_send};
 use std::ffi::CStr;
 
 pub fn get_package_info() -> Result<PackageInfo, String> {

@@ -1,6 +1,5 @@
 use super::{CameraDevice, ImagePickerOptions, ImageSource, PickedFile};
-use objc2::ffi::{BOOL, YES};
-use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 use std::sync::{mpsc, Mutex, Once};
 
@@ -60,7 +59,7 @@ extern "C" fn phpicker_did_finish(
 ) {
     unsafe {
         // Dismiss the picker
-        let _: () = msg_send![picker, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+        let _: () = msg_send![picker, dismissViewControllerAnimated: true, completion: std::ptr::null::<AnyObject>()];
 
         let count: usize = msg_send![results, count];
         if count == 0 {
@@ -78,9 +77,9 @@ extern "C" fn phpicker_did_finish(
 
             // Check if it can load as UIImage
             let image_class = class!(UIImage);
-            let can_load: BOOL = msg_send![item_provider, canLoadObjectOfClass: image_class];
+            let can_load: Bool = msg_send![item_provider, canLoadObjectOfClass: image_class];
 
-            if can_load == YES {
+            if can_load.as_bool() {
                 // Use a synchronous approach: save to temp file
                 let uuid_str = uuid::Uuid::new_v4().to_string();
                 let file_name = format!("picked_image_{}.jpg", uuid_str);
@@ -103,14 +102,12 @@ extern "C" fn phpicker_did_finish(
                         }
                         // Copy the file to our temp directory
                         let file_mgr: *mut AnyObject =
-                            unsafe { msg_send![class!(NSFileManager), defaultManager] };
-                        let dest_url: *mut AnyObject = unsafe {
-                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)]
-                        };
-                        let ok: BOOL = unsafe {
-                            msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()]
-                        };
-                        if ok == YES {
+                            msg_send![class!(NSFileManager), defaultManager];
+                        let dest_url: *mut AnyObject =
+                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)];
+                        let ok: Bool =
+                            msg_send![file_mgr, copyItemAtURL: url, toURL: dest_url, error: std::ptr::null_mut::<*mut AnyObject>()];
+                        if ok.as_bool() {
                             let _ = item_tx.send(Some(path_copy.clone()));
                         } else {
                             let _ = item_tx.send(None);
@@ -119,7 +116,7 @@ extern "C" fn phpicker_did_finish(
                 );
 
                 let _: *mut AnyObject = msg_send![item_provider,
-                    loadFileRepresentationForTypeIdentifier: ns_uti
+                    loadFileRepresentationForTypeIdentifier: ns_uti,
                     completionHandler: &*block
                 ];
 
@@ -166,7 +163,7 @@ unsafe extern "C" fn uipicker_did_finish(
     controller: *mut AnyObject,
     info: *mut AnyObject,
 ) {
-    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    let _: () = msg_send![controller, dismissViewControllerAnimated: true, completion: std::ptr::null::<AnyObject>()];
 
     // Try to get the image URL first (for videos or saved photos)
     let media_url_key = nsstring("UIImagePickerControllerMediaURL");
@@ -198,8 +195,8 @@ unsafe extern "C" fn uipicker_did_finish(
             let file_name = format!("captured_{}.jpg", uuid_str);
             let file_path = std::env::temp_dir().join(file_name);
             let ns_path = nsstring(&file_path.to_string_lossy());
-            let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
-            if wrote == YES {
+            let wrote: Bool = msg_send![jpeg_data, writeToFile: ns_path, atomically: true];
+            if wrote.as_bool() {
                 send_result(vec![file_path.to_string_lossy().into_owned()]);
                 return;
             }
@@ -214,7 +211,7 @@ unsafe extern "C" fn uipicker_did_cancel(
     _sel: Sel,
     controller: *mut AnyObject,
 ) {
-    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    let _: () = msg_send![controller, dismissViewControllerAnimated: true, completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
 
@@ -242,8 +239,8 @@ unsafe fn present_vc(vc: *mut AnyObject) -> Result<(), String> {
         return Err("No root view controller".into());
     }
     let _: () = msg_send![root_vc,
-        presentViewController: vc
-        animated: YES
+        presentViewController: vc,
+        animated: true,
         completion: std::ptr::null::<AnyObject>()
     ];
     Ok(())
@@ -386,9 +383,9 @@ fn pick_from_camera(
     unsafe {
         // Check if camera is available
         let source_type: i64 = 1; // UIImagePickerControllerSourceTypeCamera
-        let available: BOOL =
+        let available: Bool =
             msg_send![class!(UIImagePickerController), isSourceTypeAvailable: source_type];
-        if available != YES {
+        if !available.as_bool() {
             return Err("Camera is not available on this device".into());
         }
 

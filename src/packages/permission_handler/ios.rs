@@ -1,7 +1,6 @@
 use super::*;
-use objc2::ffi::{BOOL, YES};
-use objc2::runtime::AnyObject;
-use objc2::{class, msg_send, sel};
+use objc2::runtime::{AnyObject, Bool};
+use objc2::{class, msg_send};
 use std::sync::mpsc;
 
 #[link(name = "AVFoundation", kind = "framework")]
@@ -244,8 +243,8 @@ unsafe fn request_av_authorization(media_type: &str) -> Result<PermissionStatus,
     let (tx, rx) = mpsc::channel();
     let ns_media = nsstring(media_type);
 
-    let block = block2::RcBlock::new(move |granted: BOOL| {
-        let status = if granted == YES {
+    let block = block2::RcBlock::new(move |granted: Bool| {
+        let status = if granted.as_bool() {
             PermissionStatus::Granted
         } else {
             PermissionStatus::PermanentlyDenied
@@ -254,7 +253,7 @@ unsafe fn request_av_authorization(media_type: &str) -> Result<PermissionStatus,
     });
 
     let _: () = msg_send![class!(AVCaptureDevice),
-        requestAccessForMediaType: ns_media
+        requestAccessForMediaType: ns_media,
         completionHandler: &*block
     ];
 
@@ -278,7 +277,7 @@ unsafe fn request_photos_authorization() -> Result<PermissionStatus, String> {
     });
 
     let _: () = msg_send![class!(PHPhotoLibrary),
-        requestAuthorizationForAccessLevel: 1i64 // PHAccessLevelReadWrite
+        requestAuthorizationForAccessLevel: 1i64, // PHAccessLevelReadWrite
         handler: &*block
     ];
 
@@ -308,8 +307,8 @@ unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
     let store: *mut AnyObject = msg_send![class!(CNContactStore), alloc];
     let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
-        let status = if granted == YES {
+    let block = block2::RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
+        let status = if granted.as_bool() {
             PermissionStatus::Granted
         } else {
             PermissionStatus::PermanentlyDenied
@@ -318,7 +317,7 @@ unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
     });
 
     let _: () = msg_send![store,
-        requestAccessForEntityType: 0i64 // CNEntityTypeContacts
+        requestAccessForEntityType: 0i64, // CNEntityTypeContacts
         completionHandler: &*block
     ];
 
@@ -331,8 +330,8 @@ unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStat
     let store: *mut AnyObject = msg_send![class!(EKEventStore), alloc];
     let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
-        let status = if granted == YES {
+    let block = block2::RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
+        let status = if granted.as_bool() {
             PermissionStatus::Granted
         } else {
             PermissionStatus::PermanentlyDenied
@@ -341,7 +340,7 @@ unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStat
     });
 
     let _: () = msg_send![store,
-        requestAccessToEntityType: entity_type
+        requestAccessToEntityType: entity_type,
         completion: &*block
     ];
 
@@ -357,8 +356,8 @@ unsafe fn request_notification_authorization() -> Result<PermissionStatus, Strin
     // UNAuthorizationOptionAlert | UNAuthorizationOptionBadge | UNAuthorizationOptionSound
     let options: u64 = (1 << 0) | (1 << 1) | (1 << 2);
 
-    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
-        let status = if granted == YES {
+    let block = block2::RcBlock::new(move |granted: Bool, _error: *mut AnyObject| {
+        let status = if granted.as_bool() {
             PermissionStatus::Granted
         } else {
             PermissionStatus::PermanentlyDenied
@@ -367,7 +366,7 @@ unsafe fn request_notification_authorization() -> Result<PermissionStatus, Strin
     });
 
     let _: () = msg_send![center,
-        requestAuthorizationWithOptions: options
+        requestAuthorizationWithOptions: options,
         completionHandler: &*block
     ];
 
@@ -438,8 +437,8 @@ pub fn service_status(permission: Permission) -> Result<ServiceStatus, String> {
     unsafe {
         match permission {
             Permission::LocationWhenInUse | Permission::LocationAlways => {
-                let enabled: BOOL = msg_send![class!(CLLocationManager), locationServicesEnabled];
-                Ok(if enabled == YES {
+                let enabled: Bool = msg_send![class!(CLLocationManager), locationServicesEnabled];
+                Ok(if enabled.as_bool() {
                     ServiceStatus::Enabled
                 } else {
                     ServiceStatus::Disabled
@@ -465,16 +464,16 @@ pub fn open_app_settings() -> Result<bool, String> {
         }
 
         let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
-        let can_open: BOOL = msg_send![app, canOpenURL: url];
-        if can_open != YES {
+        let can_open: Bool = msg_send![app, canOpenURL: url];
+        if !can_open.as_bool() {
             return Ok(false);
         }
 
         let empty_dict: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
         let nil: *mut AnyObject = std::ptr::null_mut();
         let _: () = msg_send![app,
-            openURL: url
-            options: empty_dict
+            openURL: url,
+            options: empty_dict,
             completionHandler: nil
         ];
 

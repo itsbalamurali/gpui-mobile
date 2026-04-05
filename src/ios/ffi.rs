@@ -404,7 +404,7 @@ pub extern "C" fn gpui_ios_handle_open_url(url_ptr: *mut c_void) {
     }
 
     let url_string = unsafe {
-        use objc2::{msg_send, sel};
+        use objc2::msg_send;
         let ns_str = url_ptr as *mut objc2::runtime::AnyObject;
         let cstr: *const std::ffi::c_char = msg_send![ns_str, UTF8String];
         if cstr.is_null() {
