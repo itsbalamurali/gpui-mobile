@@ -40,7 +40,8 @@ fn delegate_class() -> &'static AnyClass {
             // documentPicker:didPickDocumentsAtURLs:
             decl.add_method(
                 sel!(documentPicker:didPickDocumentsAtURLs:),
-                did_pick_documents as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                did_pick_documents
+                    as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             // documentPickerWasCancelled:
             decl.add_method(
@@ -227,7 +228,8 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
 
-        let _: () = msg_send![picker, setAllowsMultipleSelection: objc2::runtime::Bool::from(false)];
+        let _: () =
+            msg_send![picker, setAllowsMultipleSelection: objc2::runtime::Bool::from(false)];
 
         // Set delegate
         let delegate_cls = delegate_class();

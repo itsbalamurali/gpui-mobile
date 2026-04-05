@@ -62,7 +62,8 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
             return Err("Failed to create EKEventStore".into());
         }
 
-        let calendars: *mut AnyObject = msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
+        let calendars: *mut AnyObject =
+            msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if calendars.is_null() {
             return Ok(vec![]);
         }

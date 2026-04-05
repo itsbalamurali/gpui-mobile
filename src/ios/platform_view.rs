@@ -116,9 +116,7 @@ impl IosPlatformView {
 
     /// Create a generic transparent UIView container.
     #[cfg(target_os = "ios")]
-    unsafe fn create_generic_view(
-        frame: ObjcCGRect,
-    ) -> Result<*mut AnyObject, String> {
+    unsafe fn create_generic_view(frame: ObjcCGRect) -> Result<*mut AnyObject, String> {
         let uiview_class = class!(UIView);
         let view: *mut AnyObject = msg_send![uiview_class, alloc];
         let view: *mut AnyObject = msg_send![view, initWithFrame: frame];
@@ -194,7 +192,8 @@ impl IosPlatformView {
         }
 
         let webview: *mut AnyObject = msg_send![class!(WKWebView), alloc];
-        let webview: *mut AnyObject = msg_send![webview, initWithFrame: frame configuration: config];
+        let webview: *mut AnyObject =
+            msg_send![webview, initWithFrame: frame configuration: config];
         if webview.is_null() {
             return Err("Failed to create WKWebView".into());
         }
@@ -215,7 +214,8 @@ impl IosPlatformView {
             if !html.is_empty() {
                 let ns_html = Self::make_nsstring(html);
                 let base_url: *mut AnyObject = std::ptr::null_mut();
-                let _: *mut AnyObject = msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
+                let _: *mut AnyObject =
+                    msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
                 let _: () = msg_send![ns_html, release];
             }
         }
@@ -243,7 +243,8 @@ impl IosPlatformView {
         if let Some(session_id_str) = params.creation_params.get("session_id") {
             if let Ok(session_id) = session_id_str.parse::<usize>() {
                 if let Some(session_ptr) = crate::packages::camera::ios_get_session(session_id) {
-                    let layer: *mut AnyObject = msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
+                    let layer: *mut AnyObject =
+                        msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
                     let layer: *mut AnyObject = msg_send![layer, initWithSession: session_ptr];
                     if !layer.is_null() {
                         let _: () = msg_send![layer, setFrame: frame];

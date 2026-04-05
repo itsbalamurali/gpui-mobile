@@ -251,8 +251,7 @@ struct CGSize {
 }
 
 unsafe impl Encode for CGSize {
-    const ENCODING: Encoding =
-        Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
+    const ENCODING: Encoding = Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
 }
 
 unsafe impl RefEncode for CGSize {

@@ -48,13 +48,24 @@ impl ObjcCGRect {
 
     pub fn to_cg(self) -> CGRect {
         CGRect {
-            origin: CGPoint { x: self.x, y: self.y },
-            size: CGSize { width: self.width, height: self.height },
+            origin: CGPoint {
+                x: self.x,
+                y: self.y,
+            },
+            size: CGSize {
+                width: self.width,
+                height: self.height,
+            },
         }
     }
 
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -69,8 +80,7 @@ pub struct ObjcCGPoint {
 }
 
 unsafe impl Encode for ObjcCGPoint {
-    const ENCODING: Encoding =
-        Encoding::Struct("CGPoint", &[Encoding::Double, Encoding::Double]);
+    const ENCODING: Encoding = Encoding::Struct("CGPoint", &[Encoding::Double, Encoding::Double]);
 }
 
 unsafe impl RefEncode for ObjcCGPoint {
@@ -79,7 +89,10 @@ unsafe impl RefEncode for ObjcCGPoint {
 
 impl ObjcCGPoint {
     pub fn to_cg(self) -> CGPoint {
-        CGPoint { x: self.x, y: self.y }
+        CGPoint {
+            x: self.x,
+            y: self.y,
+        }
     }
 }
 
@@ -94,8 +107,7 @@ pub struct ObjcCGSize {
 }
 
 unsafe impl Encode for ObjcCGSize {
-    const ENCODING: Encoding =
-        Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
+    const ENCODING: Encoding = Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
 }
 
 unsafe impl RefEncode for ObjcCGSize {
@@ -104,6 +116,9 @@ unsafe impl RefEncode for ObjcCGSize {
 
 impl ObjcCGSize {
     pub fn to_cg(self) -> CGSize {
-        CGSize { width: self.width, height: self.height }
+        CGSize {
+            width: self.width,
+            height: self.height,
+        }
     }
 }

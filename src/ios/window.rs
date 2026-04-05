@@ -242,7 +242,8 @@ fn register_metal_view_class() -> &'static AnyClass {
             );
             decl.add_method(
                 sel!(touchesCancelled:withEvent:),
-                touches_cancelled as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                touches_cancelled
+                    as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -331,7 +332,11 @@ fn register_text_input_view_class() -> &'static AnyClass {
         unsafe extern "C" fn get_autocapitalization_type(this: *mut AnyObject, _sel: Sel) -> isize {
             *(*this).get_ivar::<isize>("_autocapitalizationType")
         }
-        unsafe extern "C" fn set_autocapitalization_type(this: *mut AnyObject, _sel: Sel, val: isize) {
+        unsafe extern "C" fn set_autocapitalization_type(
+            this: *mut AnyObject,
+            _sel: Sel,
+            val: isize,
+        ) {
             *(*this).get_mut_ivar::<isize>("_autocapitalizationType") = val;
         }
 
@@ -972,7 +977,12 @@ impl IosWindow {
             unsafe impl Encode for UIEdgeInsets {
                 const ENCODING: Encoding = Encoding::Struct(
                     "UIEdgeInsets",
-                    &[Encoding::Double, Encoding::Double, Encoding::Double, Encoding::Double],
+                    &[
+                        Encoding::Double,
+                        Encoding::Double,
+                        Encoding::Double,
+                        Encoding::Double,
+                    ],
                 );
             }
 

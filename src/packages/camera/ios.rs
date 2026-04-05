@@ -73,7 +73,14 @@ fn photo_delegate_class() -> &'static AnyClass {
             // captureOutput:didFinishProcessingPhoto:error:
             decl.add_method(
                 sel!(captureOutput:didFinishProcessingPhoto:error:),
-                photo_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
+                photo_did_finish
+                    as extern "C" fn(
+                        *mut AnyObject,
+                        Sel,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                    ),
             );
         }
 
@@ -165,7 +172,15 @@ fn video_delegate_class() -> &'static AnyClass {
             // captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:
             decl.add_method(
                 sel!(captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:),
-                video_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject, *mut AnyObject),
+                video_did_finish
+                    as extern "C" fn(
+                        *mut AnyObject,
+                        Sel,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                        *mut AnyObject,
+                    ),
             );
         }
 

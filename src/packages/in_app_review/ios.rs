@@ -23,7 +23,8 @@ pub fn open_store_listing(app_id: &str) -> Result<(), String> {
         let url_str = format!("https://apps.apple.com/app/id{}", app_id);
         let c_url_str = CString::new(url_str).map_err(|e| e.to_string())?;
         let ns_url_str: *mut AnyObject = msg_send![class!(NSString), alloc];
-        let ns_url_str: *mut AnyObject = msg_send![ns_url_str, initWithUTF8String: c_url_str.as_ptr()];
+        let ns_url_str: *mut AnyObject =
+            msg_send![ns_url_str, initWithUTF8String: c_url_str.as_ptr()];
         if ns_url_str.is_null() {
             return Err("Failed to create NSString for URL".into());
         }

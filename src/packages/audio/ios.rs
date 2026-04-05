@@ -58,7 +58,8 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
         let ns_url = nsurl_from_str(url)?;
 
         // Create AVPlayerItem with URL
-        let player_item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
+        let player_item: *mut AnyObject =
+            msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
         if player_item.is_null() {
             return Err("Failed to create AVPlayerItem".into());
         }
@@ -70,7 +71,8 @@ pub fn set_url(id: u32, url: &str) -> Result<Option<u64>, String> {
                 let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: player_item];
                 Ok(entry.player)
             } else {
-                let p: *mut AnyObject = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
+                let p: *mut AnyObject =
+                    msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
@@ -96,7 +98,8 @@ pub fn set_file_path(id: u32, path: &str) -> Result<Option<u64>, String> {
             return Err("Failed to create file URL".into());
         }
 
-        let player_item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
+        let player_item: *mut AnyObject =
+            msg_send![class!(AVPlayerItem), playerItemWithURL: ns_url];
         if player_item.is_null() {
             return Err("Failed to create AVPlayerItem".into());
         }
@@ -106,7 +109,8 @@ pub fn set_file_path(id: u32, path: &str) -> Result<Option<u64>, String> {
                 let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: player_item];
                 Ok(entry.player)
             } else {
-                let p: *mut AnyObject = msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
+                let p: *mut AnyObject =
+                    msg_send![class!(AVPlayer), playerWithPlayerItem: player_item];
                 if p.is_null() {
                     return Err("Failed to create AVPlayer".into());
                 }
@@ -365,7 +369,8 @@ unsafe fn nsstring_from_str(s: &str) -> *mut AnyObject {
     let len = s.len();
     // initWithBytes:length:encoding: — NSUTF8StringEncoding = 4
     let ns_string: *mut AnyObject = msg_send![cls, alloc];
-    let ns_string: *mut AnyObject = msg_send![ns_string, initWithBytes:bytes length:len encoding:4u64];
+    let ns_string: *mut AnyObject =
+        msg_send![ns_string, initWithBytes:bytes length:len encoding:4u64];
     ns_string
 }
 

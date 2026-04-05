@@ -42,7 +42,8 @@ fn phpicker_delegate_class() -> &'static AnyClass {
         unsafe {
             decl.add_method(
                 sel!(picker:didFinishPicking:),
-                phpicker_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                phpicker_did_finish
+                    as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -103,9 +104,12 @@ extern "C" fn phpicker_did_finish(
                         // Copy the file to our temp directory
                         let file_mgr: *mut AnyObject =
                             unsafe { msg_send![class!(NSFileManager), defaultManager] };
-                        let dest_url: *mut AnyObject =
-                            unsafe { msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)] };
-                        let ok: BOOL = unsafe { msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()] };
+                        let dest_url: *mut AnyObject = unsafe {
+                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)]
+                        };
+                        let ok: BOOL = unsafe {
+                            msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()]
+                        };
                         if ok == YES {
                             let _ = item_tx.send(Some(path_copy.clone()));
                         } else {
@@ -142,7 +146,8 @@ fn uipicker_delegate_class() -> &'static AnyClass {
         unsafe {
             decl.add_method(
                 sel!(imagePickerController:didFinishPickingMediaWithInfo:),
-                uipicker_did_finish as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                uipicker_did_finish
+                    as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(imagePickerControllerDidCancel:),
@@ -204,7 +209,11 @@ unsafe extern "C" fn uipicker_did_finish(
     send_result(vec![]);
 }
 
-unsafe extern "C" fn uipicker_did_cancel(_this: *mut AnyObject, _sel: Sel, controller: *mut AnyObject) {
+unsafe extern "C" fn uipicker_did_cancel(
+    _this: *mut AnyObject,
+    _sel: Sel,
+    controller: *mut AnyObject,
+) {
     let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
