@@ -104,7 +104,7 @@ fn register_view_controller_class() -> &'static AnyClass {
             // Call super
             unsafe {
                 let superclass = class!(UIViewController);
-                let _: () = msg_send![super(&*this, superclass), viewDidLayoutSubviews];
+                let _: () = msg_send![super(this, superclass), viewDidLayoutSubviews];
             }
 
             // Notify all registered GPUI windows about the layout change.

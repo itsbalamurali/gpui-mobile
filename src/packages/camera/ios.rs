@@ -394,7 +394,7 @@ pub fn create_camera(
         let mut error_ptr: *mut AnyObject = std::ptr::null_mut();
         let input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
             deviceInputWithDevice: device
-            error: &mut error_ptr as *mut *mut AnyObject
+            error: &mut error_ptr
         ];
         if input.is_null() || !error_ptr.is_null() {
             let _: () = msg_send![session, commitConfiguration];
@@ -419,7 +419,7 @@ pub fn create_camera(
                 let mut audio_err: *mut AnyObject = std::ptr::null_mut();
                 let a_input: *mut AnyObject = msg_send![class!(AVCaptureDeviceInput),
                     deviceInputWithDevice: audio_device
-                    error: &mut audio_err as *mut *mut AnyObject
+                    error: &mut audio_err
                 ];
                 if !a_input.is_null() && audio_err.is_null() {
                     let can_add_audio: BOOL = msg_send![session, canAddInput: a_input];
