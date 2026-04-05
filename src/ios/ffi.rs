@@ -271,8 +271,8 @@ pub extern "C" fn gpui_ios_handle_touch(
     // Cast to IosWindow and forward the touch event
     let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
     window.handle_touch(
-        touch_ptr as *mut objc::runtime::Object,
-        event_ptr as *mut objc::runtime::Object,
+        touch_ptr as *mut objc2::runtime::AnyObject,
+        event_ptr as *mut objc2::runtime::AnyObject,
     );
 }
 
@@ -361,7 +361,7 @@ pub extern "C" fn gpui_ios_handle_text_input(window_ptr: *mut c_void, text_ptr: 
     log::info!("GPUI iOS: Handle text input");
 
     let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
-    window.handle_text_input(text_ptr as *mut objc::runtime::Object);
+    window.handle_text_input(text_ptr as *mut objc2::runtime::AnyObject);
 }
 
 /// Handle a key event from an external keyboard.
@@ -404,8 +404,8 @@ pub extern "C" fn gpui_ios_handle_open_url(url_ptr: *mut c_void) {
     }
 
     let url_string = unsafe {
-        use objc::{msg_send, sel, sel_impl};
-        let ns_str = url_ptr as *mut objc::runtime::Object;
+        use objc2::{msg_send, sel};
+        let ns_str = url_ptr as *mut objc2::runtime::AnyObject;
         let cstr: *const std::ffi::c_char = msg_send![ns_str, UTF8String];
         if cstr.is_null() {
             return;

@@ -68,7 +68,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "56104fb17e6c58499
 
 [target.'cfg(target_os = "ios")'.dependencies]
 # Objective-C runtime
-objc = "0.2"
+objc2 = "0.6"
 
 # Apple frameworks
 core-foundation     = "0.10"
@@ -76,7 +76,7 @@ core-foundation-sys = "0.8"
 core-graphics       = "0.24"
 core-text           = "=21.0.0"
 uuid                = { version = "1", features = ["v4", "v5"] }
-block               = "0.1"
+block2              = "0.6"
 
 # wgpu renderer (Metal backend on iOS/Android)
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "56104fb17e6c5849900a4c282f42d1bfea294121", package = "gpui_wgpu", features = ["font-kit"] }

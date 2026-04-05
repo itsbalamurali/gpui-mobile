@@ -1,5 +1,5 @@
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::ffi::CString;
 
 #[link(name = "StoreKit", kind = "framework")]
@@ -22,16 +22,17 @@ pub fn open_store_listing(app_id: &str) -> Result<(), String> {
     unsafe {
         let url_str = format!("https://apps.apple.com/app/id{}", app_id);
         let c_url_str = CString::new(url_str).map_err(|e| e.to_string())?;
-        let ns_url_str: *mut Object = msg_send![class!(NSString), alloc];
-        let ns_url_str: *mut Object = msg_send![ns_url_str, initWithUTF8String: c_url_str.as_ptr()];
+        let ns_url_str: *mut AnyObject = msg_send![class!(NSString), alloc];
+        let ns_url_str: *mut AnyObject =
+            msg_send![ns_url_str, initWithUTF8String: c_url_str.as_ptr()];
         if ns_url_str.is_null() {
             return Err("Failed to create NSString for URL".into());
         }
-        let url: *mut Object = msg_send![class!(NSURL), URLWithString: ns_url_str];
+        let url: *mut AnyObject = msg_send![class!(NSURL), URLWithString: ns_url_str];
         if url.is_null() {
             return Err("Failed to create NSURL".into());
         }
-        let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+        let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
         if app.is_null() {
             return Err("Failed to get UIApplication".into());
         }

@@ -7,6 +7,7 @@
 //! - Metal for GPU rendering
 //! - CoreFoundation for many utilities
 
+pub(crate) mod cg_types;
 mod dispatcher;
 mod display;
 mod events;
@@ -15,6 +16,7 @@ mod platform;
 pub mod platform_view;
 mod text_input;
 mod text_system;
+pub mod util;
 mod window;
 
 pub(crate) use dispatcher::*;

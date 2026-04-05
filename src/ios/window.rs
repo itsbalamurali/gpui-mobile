@@ -21,13 +21,12 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
 };
 use gpui_wgpu::{GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
-use objc::{
-    class,
-    declare::ClassDecl,
-    msg_send,
-    runtime::{Class, Object, Sel, BOOL, YES},
-    sel, sel_impl,
-};
+use objc2::encode::{Encode, Encoding, RefEncode};
+use objc2::ffi::{BOOL, YES};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
+
+use super::cg_types::ObjcCGRect;
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
@@ -84,13 +83,13 @@ static STATUS_BAR_STYLE: std::sync::atomic::AtomicI32 = std::sync::atomic::Atomi
 
 /// Register a custom UIViewController subclass that allows overriding
 /// `preferredStatusBarStyle` at runtime.
-fn register_view_controller_class() -> &'static Class {
+fn register_view_controller_class() -> &'static AnyClass {
     VC_CLASS_REGISTERED.call_once(|| {
         let superclass = class!(UIViewController);
-        let mut decl = ClassDecl::new("GPUIViewController", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GPUIViewController", superclass).unwrap();
 
         // Override preferredStatusBarStyle
-        extern "C" fn preferred_status_bar_style(_this: &Object, _sel: Sel) -> isize {
+        extern "C" fn preferred_status_bar_style(_this: *mut AnyObject, _sel: Sel) -> isize {
             let style = STATUS_BAR_STYLE.load(std::sync::atomic::Ordering::Relaxed);
             if style == 1 {
                 1 // UIStatusBarStyleLightContent
@@ -101,7 +100,7 @@ fn register_view_controller_class() -> &'static Class {
 
         // Override viewDidLayoutSubviews — called by UIKit on rotation,
         // split-screen changes, and any other layout pass.
-        extern "C" fn view_did_layout_subviews(this: &Object, _sel: Sel) {
+        extern "C" fn view_did_layout_subviews(this: *mut AnyObject, _sel: Sel) {
             // Call super
             unsafe {
                 let superclass = class!(UIViewController);
@@ -125,11 +124,11 @@ fn register_view_controller_class() -> &'static Class {
         unsafe {
             decl.add_method(
                 sel!(preferredStatusBarStyle),
-                preferred_status_bar_style as extern "C" fn(&Object, Sel) -> isize,
+                preferred_status_bar_style as extern "C" fn(*mut AnyObject, Sel) -> isize,
             );
             decl.add_method(
                 sel!(viewDidLayoutSubviews),
-                view_did_layout_subviews as extern "C" fn(&Object, Sel),
+                view_did_layout_subviews as extern "C" fn(*mut AnyObject, Sel),
             );
         }
 
@@ -171,52 +170,52 @@ pub fn set_status_bar_style(style: crate::StatusBarContentStyle) {
 
 /// Register a custom UIView subclass that uses CAMetalLayer as its backing layer.
 /// This is required for Metal rendering on iOS.
-fn register_metal_view_class() -> &'static Class {
+fn register_metal_view_class() -> &'static AnyClass {
     METAL_VIEW_CLASS_REGISTERED.call_once(|| {
         let superclass = class!(UIView);
-        let mut decl = ClassDecl::new("GPUIMetalView", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GPUIMetalView", superclass).unwrap();
 
         // Add ivar to store window pointer for touch handling
-        decl.add_ivar::<*mut std::ffi::c_void>(GPUI_WINDOW_IVAR);
+        decl.add_ivar::<*mut std::ffi::c_void>(c"gpui_window_ptr");
 
         // Override layerClass to return CAMetalLayer
-        extern "C" fn layer_class(_self: &Class, _sel: Sel) -> *const Class {
-            class!(CAMetalLayer) as *const Class
+        extern "C" fn layer_class(_self: *const AnyClass, _sel: Sel) -> *const AnyClass {
+            class!(CAMetalLayer) as *const AnyClass
         }
 
         // Touch handling methods
         extern "C" fn touches_began(
-            this: &mut Object,
+            this: *mut AnyObject,
             _sel: Sel,
-            touches: *mut Object,
-            event: *mut Object,
+            touches: *mut AnyObject,
+            event: *mut AnyObject,
         ) {
             handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_moved(
-            this: &mut Object,
+            this: *mut AnyObject,
             _sel: Sel,
-            touches: *mut Object,
-            event: *mut Object,
+            touches: *mut AnyObject,
+            event: *mut AnyObject,
         ) {
             handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_ended(
-            this: &mut Object,
+            this: *mut AnyObject,
             _sel: Sel,
-            touches: *mut Object,
-            event: *mut Object,
+            touches: *mut AnyObject,
+            event: *mut AnyObject,
         ) {
             handle_touches(this, touches, event);
         }
 
         extern "C" fn touches_cancelled(
-            this: &mut Object,
+            this: *mut AnyObject,
             _sel: Sel,
-            touches: *mut Object,
-            event: *mut Object,
+            touches: *mut AnyObject,
+            event: *mut AnyObject,
         ) {
             handle_touches(this, touches, event);
         }
@@ -225,25 +224,26 @@ fn register_metal_view_class() -> &'static Class {
             // Add class method for layerClass
             decl.add_class_method(
                 sel!(layerClass),
-                layer_class as extern "C" fn(&Class, Sel) -> *const Class,
+                layer_class as extern "C" fn(*const AnyClass, Sel) -> *const AnyClass,
             );
 
             // Add touch handling instance methods
             decl.add_method(
                 sel!(touchesBegan:withEvent:),
-                touches_began as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
+                touches_began as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(touchesMoved:withEvent:),
-                touches_moved as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
+                touches_moved as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(touchesEnded:withEvent:),
-                touches_ended as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
+                touches_ended as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(touchesCancelled:withEvent:),
-                touches_cancelled as extern "C" fn(&mut Object, Sel, *mut Object, *mut Object),
+                touches_cancelled
+                    as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -264,130 +264,124 @@ fn register_metal_view_class() -> &'static Class {
 /// - `hasText` → always returns YES (simplifies things; no harm)
 /// - `insertText:` → forwards the text to `IosWindow::handle_text_input`
 /// - `deleteBackward` → dispatches a backspace via `crate::dispatch_text_input`
-fn register_text_input_view_class() -> &'static Class {
+fn register_text_input_view_class() -> &'static AnyClass {
     TEXT_INPUT_VIEW_CLASS_REGISTERED.call_once(|| {
         let superclass = class!(UIView);
-        let mut decl = ClassDecl::new("GPUITextInputView", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GPUITextInputView", superclass).unwrap();
 
         // Declare protocol conformance so iOS knows this view can receive
         // keyboard text input.
-        if let Some(protocol) = objc::runtime::Protocol::get("UIKeyInput") {
+        if let Some(protocol) = objc2::runtime::AnyProtocol::get(c"UIKeyInput") {
             decl.add_protocol(protocol);
         }
 
         // Store the IosWindow pointer so callbacks can reach the Rust window.
-        decl.add_ivar::<*mut std::ffi::c_void>(GPUI_WINDOW_IVAR);
+        decl.add_ivar::<*mut std::ffi::c_void>(c"gpui_window_ptr");
 
         // UITextInputTraits property storage — UIView doesn't provide these,
         // but iOS reads them from the first responder to configure the keyboard.
-        decl.add_ivar::<isize>("_keyboardType"); // UIKeyboardType
-        decl.add_ivar::<isize>("_autocorrectionType"); // UITextAutocorrectionType
-        decl.add_ivar::<isize>("_autocapitalizationType"); // UITextAutocapitalizationType
+        decl.add_ivar::<isize>(c"_keyboardType"); // UIKeyboardType
+        decl.add_ivar::<isize>(c"_autocorrectionType"); // UITextAutocorrectionType
+        decl.add_ivar::<isize>(c"_autocapitalizationType"); // UITextAutocapitalizationType
 
         // --- UIKeyInput protocol methods ---
 
         // BOOL hasText
-        extern "C" fn has_text(_this: &Object, _sel: Sel) -> BOOL {
+        unsafe extern "C" fn has_text(_this: *mut AnyObject, _sel: Sel) -> BOOL {
             YES
         }
 
         // void insertText:(NSString *)text
-        extern "C" fn insert_text(this: &Object, _sel: Sel, text: *mut Object) {
-            unsafe {
-                let window_ptr: *mut std::ffi::c_void = *this.get_ivar(GPUI_WINDOW_IVAR);
-                if window_ptr.is_null() || text.is_null() {
-                    return;
-                }
-                let window = &*(window_ptr as *const IosWindow);
-                window.handle_text_input(text);
+        unsafe extern "C" fn insert_text(this: *mut AnyObject, _sel: Sel, text: *mut AnyObject) {
+            let window_ptr: *mut std::ffi::c_void = *(*this).get_ivar(GPUI_WINDOW_IVAR);
+            if window_ptr.is_null() || text.is_null() {
+                return;
             }
+            let window = &*(window_ptr as *const IosWindow);
+            window.handle_text_input(text);
         }
 
         // void deleteBackward
-        extern "C" fn delete_backward(this: &Object, _sel: Sel) {
-            unsafe {
-                let window_ptr: *mut std::ffi::c_void = *this.get_ivar(GPUI_WINDOW_IVAR);
-                if window_ptr.is_null() {
-                    return;
-                }
-                let window = &*(window_ptr as *const IosWindow);
-                window.handle_delete_backward();
+        unsafe extern "C" fn delete_backward(this: *mut AnyObject, _sel: Sel) {
+            let window_ptr: *mut std::ffi::c_void = *(*this).get_ivar(GPUI_WINDOW_IVAR);
+            if window_ptr.is_null() {
+                return;
             }
+            let window = &*(window_ptr as *const IosWindow);
+            window.handle_delete_backward();
         }
 
         // canBecomeFirstResponder must return YES
-        extern "C" fn can_become_first_responder(_this: &Object, _sel: Sel) -> BOOL {
+        unsafe extern "C" fn can_become_first_responder(_this: *mut AnyObject, _sel: Sel) -> BOOL {
             YES
         }
 
         // --- UITextInputTraits property accessors ---
-        extern "C" fn get_keyboard_type(this: &Object, _sel: Sel) -> isize {
-            unsafe { *this.get_ivar::<isize>("_keyboardType") }
+        unsafe extern "C" fn get_keyboard_type(this: *mut AnyObject, _sel: Sel) -> isize {
+            *(*this).get_ivar::<isize>("_keyboardType")
         }
-        extern "C" fn set_keyboard_type(this: &mut Object, _sel: Sel, val: isize) {
-            unsafe {
-                this.set_ivar::<isize>("_keyboardType", val);
-            }
+        unsafe extern "C" fn set_keyboard_type(this: *mut AnyObject, _sel: Sel, val: isize) {
+            *(*this).get_mut_ivar::<isize>("_keyboardType") = val;
         }
-        extern "C" fn get_autocorrection_type(this: &Object, _sel: Sel) -> isize {
-            unsafe { *this.get_ivar::<isize>("_autocorrectionType") }
+        unsafe extern "C" fn get_autocorrection_type(this: *mut AnyObject, _sel: Sel) -> isize {
+            *(*this).get_ivar::<isize>("_autocorrectionType")
         }
-        extern "C" fn set_autocorrection_type(this: &mut Object, _sel: Sel, val: isize) {
-            unsafe {
-                this.set_ivar::<isize>("_autocorrectionType", val);
-            }
+        unsafe extern "C" fn set_autocorrection_type(this: *mut AnyObject, _sel: Sel, val: isize) {
+            *(*this).get_mut_ivar::<isize>("_autocorrectionType") = val;
         }
-        extern "C" fn get_autocapitalization_type(this: &Object, _sel: Sel) -> isize {
-            unsafe { *this.get_ivar::<isize>("_autocapitalizationType") }
+        unsafe extern "C" fn get_autocapitalization_type(this: *mut AnyObject, _sel: Sel) -> isize {
+            *(*this).get_ivar::<isize>("_autocapitalizationType")
         }
-        extern "C" fn set_autocapitalization_type(this: &mut Object, _sel: Sel, val: isize) {
-            unsafe {
-                this.set_ivar::<isize>("_autocapitalizationType", val);
-            }
+        unsafe extern "C" fn set_autocapitalization_type(
+            this: *mut AnyObject,
+            _sel: Sel,
+            val: isize,
+        ) {
+            *(*this).get_mut_ivar::<isize>("_autocapitalizationType") = val;
         }
 
         unsafe {
             decl.add_method(
                 sel!(hasText),
-                has_text as extern "C" fn(&Object, Sel) -> BOOL,
+                has_text as unsafe extern "C" fn(*mut AnyObject, Sel) -> BOOL,
             );
             decl.add_method(
                 sel!(insertText:),
-                insert_text as extern "C" fn(&Object, Sel, *mut Object),
+                insert_text as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
             );
             decl.add_method(
                 sel!(deleteBackward),
-                delete_backward as extern "C" fn(&Object, Sel),
+                delete_backward as unsafe extern "C" fn(*mut AnyObject, Sel),
             );
             decl.add_method(
                 sel!(canBecomeFirstResponder),
-                can_become_first_responder as extern "C" fn(&Object, Sel) -> BOOL,
+                can_become_first_responder as unsafe extern "C" fn(*mut AnyObject, Sel) -> BOOL,
             );
 
             // UITextInputTraits property methods
             decl.add_method(
                 sel!(keyboardType),
-                get_keyboard_type as extern "C" fn(&Object, Sel) -> isize,
+                get_keyboard_type as unsafe extern "C" fn(*mut AnyObject, Sel) -> isize,
             );
             decl.add_method(
                 sel!(setKeyboardType:),
-                set_keyboard_type as extern "C" fn(&mut Object, Sel, isize),
+                set_keyboard_type as unsafe extern "C" fn(*mut AnyObject, Sel, isize),
             );
             decl.add_method(
                 sel!(autocorrectionType),
-                get_autocorrection_type as extern "C" fn(&Object, Sel) -> isize,
+                get_autocorrection_type as unsafe extern "C" fn(*mut AnyObject, Sel) -> isize,
             );
             decl.add_method(
                 sel!(setAutocorrectionType:),
-                set_autocorrection_type as extern "C" fn(&mut Object, Sel, isize),
+                set_autocorrection_type as unsafe extern "C" fn(*mut AnyObject, Sel, isize),
             );
             decl.add_method(
                 sel!(autocapitalizationType),
-                get_autocapitalization_type as extern "C" fn(&Object, Sel) -> isize,
+                get_autocapitalization_type as unsafe extern "C" fn(*mut AnyObject, Sel) -> isize,
             );
             decl.add_method(
                 sel!(setAutocapitalizationType:),
-                set_autocapitalization_type as extern "C" fn(&mut Object, Sel, isize),
+                set_autocapitalization_type as unsafe extern "C" fn(*mut AnyObject, Sel, isize),
             );
         }
 
@@ -398,10 +392,10 @@ fn register_text_input_view_class() -> &'static Class {
 }
 
 /// Handle touch events from the GPUIMetalView
-fn handle_touches(view: &mut Object, touches: *mut Object, event: *mut Object) {
+fn handle_touches(view: *mut AnyObject, touches: *mut AnyObject, event: *mut AnyObject) {
     unsafe {
         // Get the window pointer from the view's ivar
-        let window_ptr: *mut std::ffi::c_void = *view.get_ivar(GPUI_WINDOW_IVAR);
+        let window_ptr: *mut std::ffi::c_void = *(*view).get_ivar(GPUI_WINDOW_IVAR);
         if window_ptr.is_null() {
             log::warn!("GPUI iOS: Touch event but no window pointer set");
             return;
@@ -410,11 +404,11 @@ fn handle_touches(view: &mut Object, touches: *mut Object, event: *mut Object) {
         let window = &*(window_ptr as *const IosWindow);
 
         // Get all touches from the set
-        let all_touches: *mut Object = msg_send![touches, allObjects];
+        let all_touches: *mut AnyObject = msg_send![touches, allObjects];
         let count: usize = msg_send![all_touches, count];
 
         for i in 0..count {
-            let touch: *mut Object = msg_send![all_touches, objectAtIndex: i];
+            let touch: *mut AnyObject = msg_send![all_touches, objectAtIndex: i];
             window.handle_touch(touch, event);
         }
     }
@@ -442,13 +436,13 @@ enum TouchState {
 #[allow(clippy::type_complexity)]
 pub(crate) struct IosWindow {
     /// The UIWindow object
-    window: *mut Object,
+    window: *mut AnyObject,
     /// The UIViewController
-    view_controller: *mut Object,
+    view_controller: *mut AnyObject,
     /// The Metal-backed UIView
-    view: *mut Object,
+    view: *mut AnyObject,
     /// The hidden text input view for keyboard input
-    text_input_view: *mut Object,
+    text_input_view: *mut AnyObject,
     /// Current bounds in pixels
     bounds: Cell<Bounds<Pixels>>,
     /// Scale factor
@@ -510,25 +504,25 @@ impl IosWindow {
 
         unsafe {
             // Create UIWindow
-            let screen_obj: *mut Object = msg_send![class!(UIScreen), mainScreen];
-            let screen_bounds_cg: core_graphics::geometry::CGRect = msg_send![screen_obj, bounds];
-            let window: *mut Object = msg_send![class!(UIWindow), alloc];
-            let window: *mut Object = msg_send![window, initWithFrame: screen_bounds_cg];
+            let screen_obj: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
+            let screen_bounds_cg: ObjcCGRect = msg_send![screen_obj, bounds];
+            let window: *mut AnyObject = msg_send![class!(UIWindow), alloc];
+            let window: *mut AnyObject = msg_send![window, initWithFrame: screen_bounds_cg];
 
             // Create our custom UIViewController subclass that supports
             // dynamic `preferredStatusBarStyle` overrides.
             let vc_class = register_view_controller_class();
-            let view_controller: *mut Object = msg_send![vc_class, alloc];
-            let view_controller: *mut Object = msg_send![view_controller, init];
+            let view_controller: *mut AnyObject = msg_send![vc_class, alloc];
+            let view_controller: *mut AnyObject = msg_send![view_controller, init];
 
             // Create our custom Metal view using the registered class
             let metal_view_class = register_metal_view_class();
-            let view: *mut Object = msg_send![metal_view_class, alloc];
-            let view: *mut Object = msg_send![view, initWithFrame: screen_bounds_cg];
+            let view: *mut AnyObject = msg_send![metal_view_class, alloc];
+            let view: *mut AnyObject = msg_send![view, initWithFrame: screen_bounds_cg];
 
             // Configure the Metal layer — wgpu will use it for rendering but
             // we still need to set contentsScale so the drawable size is correct.
-            let layer: *mut Object = msg_send![view, layer];
+            let layer: *mut AnyObject = msg_send![view, layer];
             let scale: core_graphics::base::CGFloat = msg_send![screen_obj, scale];
             let _: () = msg_send![layer, setContentsScale: scale];
 
@@ -553,23 +547,17 @@ impl IosWindow {
             // Uses our custom GPUITextInputView which implements UIKeyInput
             // so iOS actually routes keyboard text to us.
             let text_input_class = register_text_input_view_class();
-            let text_input_view: *mut Object = msg_send![text_input_class, alloc];
-            let text_input_frame = core_graphics::geometry::CGRect {
-                origin: core_graphics::geometry::CGPoint { x: 0.0, y: 0.0 },
-                size: core_graphics::geometry::CGSize {
-                    width: 1.0,
-                    height: 1.0,
-                },
-            };
-            let text_input_view: *mut Object =
+            let text_input_view: *mut AnyObject = msg_send![text_input_class, alloc];
+            let text_input_frame = ObjcCGRect::new(0.0, 0.0, 1.0, 1.0);
+            let text_input_view: *mut AnyObject =
                 msg_send![text_input_view, initWithFrame: text_input_frame];
             let _: () = msg_send![text_input_view, setAlpha: 0.01_f64];
             let _: () = msg_send![text_input_view, setUserInteractionEnabled: YES];
             let _: () = msg_send![view, addSubview: text_input_view];
 
             // --- Initialise the wgpu renderer (Metal backend) ---------------
-            let pixel_w = (screen_bounds_cg.size.width * scale) as i32;
-            let pixel_h = (screen_bounds_cg.size.height * scale) as i32;
+            let pixel_w = (screen_bounds_cg.width * scale) as i32;
+            let pixel_h = (screen_bounds_cg.height * scale) as i32;
 
             let _handle = handle; // consumed but not stored
             let ios_window = Self {
@@ -668,12 +656,12 @@ impl IosWindow {
     }
 
     /// Get the raw pointer to the UIViewController.
-    pub fn view_controller_ptr(&self) -> *mut Object {
+    pub fn view_controller_ptr(&self) -> *mut AnyObject {
         self.view_controller
     }
 
     /// Get the raw pointer to the GPUIMetalView.
-    pub fn metal_view_ptr(&self) -> *mut Object {
+    pub fn metal_view_ptr(&self) -> *mut AnyObject {
         self.view
     }
 
@@ -687,8 +675,8 @@ impl IosWindow {
         // and on the text input view so keyboard input can find us.
         unsafe {
             let window_ptr = self as *const Self as *mut std::ffi::c_void;
-            (*self.view).set_ivar(GPUI_WINDOW_IVAR, window_ptr);
-            (*self.text_input_view).set_ivar(GPUI_WINDOW_IVAR, window_ptr);
+            *(*self.view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
+            *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
             log::info!(
                 "GPUI iOS: Set window pointer {:p} on view {:p} and text input {:p}",
                 window_ptr,
@@ -705,63 +693,55 @@ impl IosWindow {
     /// keyboard height and allow the UI to shift content above the keyboard.
     pub(crate) fn register_keyboard_observers(&self) {
         unsafe {
-            let notification_center: *mut Object =
+            let notification_center: *mut AnyObject =
                 msg_send![class!(NSNotificationCenter), defaultCenter];
 
-            // Helper to create an NSString from a Rust &str.
-            fn make_nsstring(s: &str) -> *mut Object {
-                let cls = class!(NSString);
-                let bytes = s.as_ptr() as *const c_void;
-                let len = s.len();
-                unsafe {
-                    let ns: *mut Object = msg_send![cls, alloc];
-                    msg_send![ns, initWithBytes:bytes length:len encoding:4u64] // NSUTF8StringEncoding
-                }
-            }
-
-            let show_name = make_nsstring("UIKeyboardWillShowNotification");
-            let hide_name = make_nsstring("UIKeyboardWillHideNotification");
+            let show_name = crate::ios::util::nsstring("UIKeyboardWillShowNotification");
+            let hide_name = crate::ios::util::nsstring("UIKeyboardWillHideNotification");
 
             // Block that fires when the keyboard appears — extracts the
             // end-frame height and stores it in the global atomic.
-            let show_block = block::ConcreteBlock::new(move |notification: *mut Object| {
+            let show_block = block2::RcBlock::new(move |notification: *mut AnyObject| {
                 if notification.is_null() {
                     return;
                 }
-                let user_info: *mut Object = msg_send![notification, userInfo];
+                let user_info: *mut AnyObject = unsafe { msg_send![notification, userInfo] };
                 if user_info.is_null() {
                     return;
                 }
-                let frame_key = make_nsstring("UIKeyboardFrameEndUserInfoKey");
-                let frame_value: *mut Object = msg_send![user_info, objectForKey: frame_key];
+                let frame_key =
+                    unsafe { crate::ios::util::nsstring("UIKeyboardFrameEndUserInfoKey") };
+                let frame_value: *mut AnyObject =
+                    unsafe { msg_send![user_info, objectForKey: frame_key] };
+                // frame_key is autoreleased by util::nsstring — no manual release needed
+                let _ = frame_key;
                 if frame_value.is_null() {
                     return;
                 }
-                let frame: core_graphics::geometry::CGRect = msg_send![frame_value, CGRectValue];
-                let height = frame.size.height as f32;
+                let frame: ObjcCGRect = unsafe { msg_send![frame_value, CGRectValue] };
+                let height = frame.height as f32;
                 log::info!("GPUI iOS: Keyboard will show, height={}", height);
                 crate::set_keyboard_height(height);
             });
-            let show_block = show_block.copy();
 
-            let hide_block = block::ConcreteBlock::new(move |_notification: *mut Object| {
+            let hide_block = block2::RcBlock::new(move |_notification: *mut AnyObject| {
                 log::info!("GPUI iOS: Keyboard will hide");
                 crate::set_keyboard_height(0.0);
             });
-            let hide_block = hide_block.copy();
 
-            let _: *mut Object = msg_send![notification_center,
+            let _: *mut AnyObject = msg_send![notification_center,
                 addObserverForName: show_name
-                object: std::ptr::null::<Object>()
-                queue: std::ptr::null::<Object>()
+                object: std::ptr::null::<AnyObject>()
+                queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*show_block
             ];
-            let _: *mut Object = msg_send![notification_center,
+            let _: *mut AnyObject = msg_send![notification_center,
                 addObserverForName: hide_name
-                object: std::ptr::null::<Object>()
-                queue: std::ptr::null::<Object>()
+                object: std::ptr::null::<AnyObject>()
+                queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*hide_block
             ];
+            // show_name and hide_name are autoreleased by util::nsstring
 
             // Leak the blocks so they live for the app lifetime.
             std::mem::forget(show_block);
@@ -785,7 +765,7 @@ impl IosWindow {
     /// near a button or tab doesn't accidentally trigger navigation.
     /// Interactive screens use `MouseMove` to track the finger during drags
     /// and `MouseUp` to detect the end of a throw/drag gesture.
-    pub fn handle_touch(&self, touch: *mut Object, _event: *mut Object) {
+    pub fn handle_touch(&self, touch: *mut AnyObject, _event: *mut AnyObject) {
         let position = touch_location_in_view(touch, self.view);
         let phase = touch_phase(touch);
         let tap_count = touch_tap_count(touch);
@@ -987,6 +967,22 @@ impl IosWindow {
                 right: f64,
             }
 
+            unsafe impl Encode for UIEdgeInsets {
+                const ENCODING: Encoding = Encoding::Struct(
+                    "UIEdgeInsets",
+                    &[
+                        Encoding::Double,
+                        Encoding::Double,
+                        Encoding::Double,
+                        Encoding::Double,
+                    ],
+                );
+            }
+
+            unsafe impl RefEncode for UIEdgeInsets {
+                const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+            }
+
             let insets: UIEdgeInsets = msg_send![self.view, safeAreaInsets];
             (
                 insets.top as f32,
@@ -1091,7 +1087,7 @@ impl IosWindow {
             // Defer becomeFirstResponder to the next run-loop iteration.
             let _: () = msg_send![self.text_input_view,
                 performSelector: sel!(becomeFirstResponder)
-                withObject: ptr::null::<Object>()
+                withObject: ptr::null::<AnyObject>()
                 afterDelay: 0.0_f64
             ];
             log::info!("GPUI iOS: show_keyboard_with_type done");
@@ -1107,14 +1103,14 @@ impl IosWindow {
         unsafe {
             let _: () = msg_send![self.text_input_view,
                 performSelector: sel!(resignFirstResponder)
-                withObject: ptr::null::<Object>()
+                withObject: ptr::null::<AnyObject>()
                 afterDelay: 0.0_f64
             ];
         }
     }
 
     /// Handle text input from the software keyboard
-    pub fn handle_text_input(&self, text: *mut Object) {
+    pub fn handle_text_input(&self, text: *mut AnyObject) {
         if text.is_null() {
             return;
         }
@@ -1265,12 +1261,12 @@ impl IosWindow {
     /// reconfigures the Metal layer + wgpu surface, and fires the resize callback.
     pub fn handle_layout_change(&self) {
         unsafe {
-            let view_bounds: core_graphics::geometry::CGRect = msg_send![self.view, bounds];
-            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
+            let view_bounds: ObjcCGRect = msg_send![self.view, bounds];
+            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
             let scale: core_graphics::base::CGFloat = msg_send![screen, scale];
 
-            let new_w = view_bounds.size.width as f32;
-            let new_h = view_bounds.size.height as f32;
+            let new_w = view_bounds.width as f32;
+            let new_h = view_bounds.height as f32;
             let new_scale = scale as f32;
 
             let old_bounds = self.bounds.get();
@@ -1301,7 +1297,7 @@ impl IosWindow {
 
             // Update the Metal layer's contentsScale so the drawable has the
             // correct pixel dimensions.
-            let layer: *mut Object = msg_send![self.view, layer];
+            let layer: *mut AnyObject = msg_send![self.view, layer];
             let _: () = msg_send![layer, setContentsScale: scale];
 
             // Update the wgpu renderer's surface configuration.
@@ -1378,7 +1374,7 @@ impl PlatformWindow for IosWindow {
 
     fn appearance(&self) -> WindowAppearance {
         unsafe {
-            let trait_collection: *mut Object = msg_send![self.view, traitCollection];
+            let trait_collection: *mut AnyObject = msg_send![self.view, traitCollection];
             let style: i64 = msg_send![trait_collection, userInterfaceStyle];
             match style {
                 2 => WindowAppearance::Dark,
@@ -1429,12 +1425,12 @@ impl PlatformWindow for IosWindow {
 
             let alert_style: i64 = 1; // UIAlertControllerStyleAlert
 
-            let title_str: *mut Object =
+            let title_str: *mut AnyObject =
                 msg_send![class!(NSString), stringWithUTF8String: title.as_ptr()];
-            let message_str: *mut Object =
+            let message_str: *mut AnyObject =
                 msg_send![class!(NSString), stringWithUTF8String: message.as_ptr()];
 
-            let alert: *mut Object = msg_send![
+            let alert: *mut AnyObject = msg_send![
                 class!(UIAlertController),
                 alertControllerWithTitle: title_str
                 message: message_str
@@ -1443,7 +1439,7 @@ impl PlatformWindow for IosWindow {
 
             // Add buttons
             for button in answers.iter() {
-                let button_title: *mut Object = msg_send![
+                let button_title: *mut AnyObject = msg_send![
                     class!(NSString),
                     stringWithUTF8String: button.label().as_str().as_ptr()
                 ];
@@ -1451,11 +1447,11 @@ impl PlatformWindow for IosWindow {
                 let action_style: i64 = if button.is_cancel() { 1 } else { 0 }; // UIAlertActionStyleCancel or Default
 
                 // Note: In production, this would need a block that calls tx.send(index)
-                let action: *mut Object = msg_send![
+                let action: *mut AnyObject = msg_send![
                     class!(UIAlertAction),
                     actionWithTitle: button_title
                     style: action_style
-                    handler: ptr::null::<Object>()
+                    handler: ptr::null::<AnyObject>()
                 ];
 
                 let _: () = msg_send![alert, addAction: action];
@@ -1466,7 +1462,7 @@ impl PlatformWindow for IosWindow {
                 self.view_controller,
                 presentViewController: alert
                 animated: YES
-                completion: ptr::null::<Object>()
+                completion: ptr::null::<AnyObject>()
             ];
         }
 
@@ -1481,8 +1477,8 @@ impl PlatformWindow for IosWindow {
 
     fn is_active(&self) -> bool {
         unsafe {
-            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-            let key_window: *mut Object = msg_send![app, keyWindow];
+            let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+            let key_window: *mut AnyObject = msg_send![app, keyWindow];
             self.window == key_window
         }
     }

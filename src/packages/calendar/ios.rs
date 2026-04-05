@@ -1,6 +1,6 @@
 use super::{Calendar, CalendarEvent};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 /// EKEntityType.event = 0
 const EK_ENTITY_TYPE_EVENT: u64 = 0;
@@ -9,21 +9,21 @@ const EK_ENTITY_TYPE_EVENT: u64 = 0;
 const EK_SPAN_THIS_EVENT: u64 = 0;
 
 /// Create an EKEventStore instance.
-unsafe fn new_event_store() -> *mut Object {
-    let store: *mut Object = msg_send![class!(EKEventStore), alloc];
-    let store: *mut Object = msg_send![store, init];
+unsafe fn new_event_store() -> *mut AnyObject {
+    let store: *mut AnyObject = msg_send![class!(EKEventStore), alloc];
+    let store: *mut AnyObject = msg_send![store, init];
     store
 }
 
 /// Convert a Unix timestamp in milliseconds to an NSDate.
-unsafe fn nsdate_from_ms(ms: i64) -> *mut Object {
+unsafe fn nsdate_from_ms(ms: i64) -> *mut AnyObject {
     let seconds = (ms as f64) / 1000.0;
-    let date: *mut Object = msg_send![class!(NSDate), dateWithTimeIntervalSince1970: seconds];
+    let date: *mut AnyObject = msg_send![class!(NSDate), dateWithTimeIntervalSince1970: seconds];
     date
 }
 
 /// Convert an NSDate to a Unix timestamp in milliseconds.
-unsafe fn ms_from_nsdate(date: *mut Object) -> i64 {
+unsafe fn ms_from_nsdate(date: *mut AnyObject) -> i64 {
     if date.is_null() {
         return 0;
     }
@@ -32,7 +32,7 @@ unsafe fn ms_from_nsdate(date: *mut Object) -> i64 {
 }
 
 /// Read a UTF-8 string from an NSString pointer. Returns empty string if null.
-unsafe fn nsstring_to_string(ns: *mut Object) -> String {
+unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {
     if ns.is_null() {
         return String::new();
     }
@@ -44,15 +44,10 @@ unsafe fn nsstring_to_string(ns: *mut Object) -> String {
     c_str.to_string_lossy().into_owned()
 }
 
-/// Create an NSString from a Rust &str.
-unsafe fn nsstring_from_str(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
-    let ns: *mut Object = msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64  // NSUTF8StringEncoding
-    ];
-    ns
+use crate::ios::util::nsstring;
+
+unsafe fn nsstring_from_str(s: &str) -> *mut AnyObject {
+    nsstring(s)
 }
 
 pub fn get_calendars() -> Result<Vec<Calendar>, String> {
@@ -62,8 +57,10 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
             return Err("Failed to create EKEventStore".into());
         }
 
-        let calendars: *mut Object = msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
+        let calendars: *mut AnyObject =
+            msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if calendars.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
@@ -71,17 +68,17 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
         let mut result = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            let cal: *mut Object = msg_send![calendars, objectAtIndex: i];
+            let cal: *mut AnyObject = msg_send![calendars, objectAtIndex: i];
             if cal.is_null() {
                 continue;
             }
 
-            let identifier: *mut Object = msg_send![cal, calendarIdentifier];
-            let title: *mut Object = msg_send![cal, title];
+            let identifier: *mut AnyObject = msg_send![cal, calendarIdentifier];
+            let title: *mut AnyObject = msg_send![cal, title];
             let allows_modifications: bool = msg_send![cal, allowsContentModifications];
 
             // Get calendar color from CGColor
-            let cg_color: *mut Object = msg_send![cal, CGColor];
+            let cg_color: *mut AnyObject = msg_send![cal, CGColor];
             let color = cgcolor_to_argb(cg_color);
 
             result.push(Calendar {
@@ -92,6 +89,7 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
             });
         }
 
+        let _: () = msg_send![store, release];
         Ok(result)
     }
 }
@@ -111,21 +109,22 @@ pub fn get_events(
         let end_date = nsdate_from_ms(end_ms);
 
         // Find the calendar with matching identifier
-        let all_calendars: *mut Object =
+        let all_calendars: *mut AnyObject =
             msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if all_calendars.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
         let cal_count: u64 = msg_send![all_calendars, count];
-        let mut target_calendar: *mut Object = std::ptr::null_mut();
+        let mut target_calendar: *mut AnyObject = std::ptr::null_mut();
 
         for i in 0..cal_count {
-            let cal: *mut Object = msg_send![all_calendars, objectAtIndex: i];
+            let cal: *mut AnyObject = msg_send![all_calendars, objectAtIndex: i];
             if cal.is_null() {
                 continue;
             }
-            let identifier: *mut Object = msg_send![cal, calendarIdentifier];
+            let identifier: *mut AnyObject = msg_send![cal, calendarIdentifier];
             let id_str = nsstring_to_string(identifier);
             if id_str == calendar_id {
                 target_calendar = cal;
@@ -134,24 +133,27 @@ pub fn get_events(
         }
 
         if target_calendar.is_null() {
+            let _: () = msg_send![store, release];
             return Err(format!("Calendar not found: {}", calendar_id));
         }
 
         // Create an NSArray with just this calendar
-        let calendar_array: *mut Object =
+        let calendar_array: *mut AnyObject =
             msg_send![class!(NSArray), arrayWithObject: target_calendar];
 
-        let predicate: *mut Object = msg_send![store,
+        let predicate: *mut AnyObject = msg_send![store,
             predicateForEventsWithStartDate: start_date
             endDate: end_date
             calendars: calendar_array
         ];
         if predicate.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
-        let events: *mut Object = msg_send![store, eventsMatchingPredicate: predicate];
+        let events: *mut AnyObject = msg_send![store, eventsMatchingPredicate: predicate];
         if events.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(vec![]);
         }
 
@@ -159,20 +161,20 @@ pub fn get_events(
         let mut result = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            let event: *mut Object = msg_send![events, objectAtIndex: i];
+            let event: *mut AnyObject = msg_send![events, objectAtIndex: i];
             if event.is_null() {
                 continue;
             }
 
-            let event_identifier: *mut Object = msg_send![event, eventIdentifier];
-            let title: *mut Object = msg_send![event, title];
-            let notes: *mut Object = msg_send![event, notes];
-            let location: *mut Object = msg_send![event, location];
-            let start: *mut Object = msg_send![event, startDate];
-            let end: *mut Object = msg_send![event, endDate];
+            let event_identifier: *mut AnyObject = msg_send![event, eventIdentifier];
+            let title: *mut AnyObject = msg_send![event, title];
+            let notes: *mut AnyObject = msg_send![event, notes];
+            let location: *mut AnyObject = msg_send![event, location];
+            let start: *mut AnyObject = msg_send![event, startDate];
+            let end: *mut AnyObject = msg_send![event, endDate];
             let is_all_day: bool = msg_send![event, isAllDay];
-            let cal: *mut Object = msg_send![event, calendar];
-            let cal_id: *mut Object = msg_send![cal, calendarIdentifier];
+            let cal: *mut AnyObject = msg_send![event, calendar];
+            let cal_id: *mut AnyObject = msg_send![cal, calendarIdentifier];
 
             result.push(CalendarEvent {
                 id: nsstring_to_string(event_identifier),
@@ -186,6 +188,7 @@ pub fn get_events(
             });
         }
 
+        let _: () = msg_send![store, release];
         Ok(result)
     }
 }
@@ -197,8 +200,9 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
             return Err("Failed to create EKEventStore".into());
         }
 
-        let ek_event: *mut Object = msg_send![class!(EKEvent), eventWithEventStore: store];
+        let ek_event: *mut AnyObject = msg_send![class!(EKEvent), eventWithEventStore: store];
         if ek_event.is_null() {
+            let _: () = msg_send![store, release];
             return Err("Failed to create EKEvent".into());
         }
 
@@ -224,16 +228,16 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
         let _: () = msg_send![ek_event, setAllDay: event.all_day];
 
         // Find and set the calendar
-        let all_calendars: *mut Object =
+        let all_calendars: *mut AnyObject =
             msg_send![store, calendarsForEntityType: EK_ENTITY_TYPE_EVENT];
         if !all_calendars.is_null() {
             let cal_count: u64 = msg_send![all_calendars, count];
             for i in 0..cal_count {
-                let cal: *mut Object = msg_send![all_calendars, objectAtIndex: i];
+                let cal: *mut AnyObject = msg_send![all_calendars, objectAtIndex: i];
                 if cal.is_null() {
                     continue;
                 }
-                let identifier: *mut Object = msg_send![cal, calendarIdentifier];
+                let identifier: *mut AnyObject = msg_send![cal, calendarIdentifier];
                 let id_str = nsstring_to_string(identifier);
                 if id_str == event.calendar_id {
                     let _: () = msg_send![ek_event, setCalendar: cal];
@@ -242,7 +246,7 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
             }
         }
 
-        let mut error: *mut Object = std::ptr::null_mut();
+        let mut error: *mut AnyObject = std::ptr::null_mut();
         let success: bool = msg_send![store,
             saveEvent: ek_event
             span: EK_SPAN_THIS_EVENT
@@ -251,15 +255,18 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
 
         if !success {
             if !error.is_null() {
-                let desc: *mut Object = msg_send![error, localizedDescription];
+                let desc: *mut AnyObject = msg_send![error, localizedDescription];
                 let err_str = nsstring_to_string(desc);
+                let _: () = msg_send![store, release];
                 return Err(format!("Failed to save event: {}", err_str));
             }
+            let _: () = msg_send![store, release];
             return Err("Failed to save event".into());
         }
 
-        let event_identifier: *mut Object = msg_send![ek_event, eventIdentifier];
+        let event_identifier: *mut AnyObject = msg_send![ek_event, eventIdentifier];
         let id_str = nsstring_to_string(event_identifier);
+        let _: () = msg_send![store, release];
         if id_str.is_empty() {
             Err("Event saved but no identifier returned".into())
         } else {
@@ -276,12 +283,13 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
         }
 
         let ns_event_id = nsstring_from_str(event_id);
-        let event: *mut Object = msg_send![store, eventWithIdentifier: ns_event_id];
+        let event: *mut AnyObject = msg_send![store, eventWithIdentifier: ns_event_id];
         if event.is_null() {
+            let _: () = msg_send![store, release];
             return Ok(false);
         }
 
-        let mut error: *mut Object = std::ptr::null_mut();
+        let mut error: *mut AnyObject = std::ptr::null_mut();
         let success: bool = msg_send![store,
             removeEvent: event
             span: EK_SPAN_THIS_EVENT
@@ -290,19 +298,22 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
 
         if !success {
             if !error.is_null() {
-                let desc: *mut Object = msg_send![error, localizedDescription];
+                let desc: *mut AnyObject = msg_send![error, localizedDescription];
                 let err_str = nsstring_to_string(desc);
+                let _: () = msg_send![store, release];
                 return Err(format!("Failed to delete event: {}", err_str));
             }
+            let _: () = msg_send![store, release];
             return Err("Failed to delete event".into());
         }
 
+        let _: () = msg_send![store, release];
         Ok(true)
     }
 }
 
 /// Convert a CGColor to an ARGB u32 value.
-unsafe fn cgcolor_to_argb(cg_color: *mut Object) -> u32 {
+unsafe fn cgcolor_to_argb(cg_color: *mut AnyObject) -> u32 {
     if cg_color.is_null() {
         return 0xFF000000; // Default to opaque black
     }
@@ -310,7 +321,7 @@ unsafe fn cgcolor_to_argb(cg_color: *mut Object) -> u32 {
     // Get the number of components
     let num_components: usize = {
         extern "C" {
-            fn CGColorGetNumberOfComponents(color: *const Object) -> usize;
+            fn CGColorGetNumberOfComponents(color: *const AnyObject) -> usize;
         }
         CGColorGetNumberOfComponents(cg_color)
     };
@@ -318,7 +329,7 @@ unsafe fn cgcolor_to_argb(cg_color: *mut Object) -> u32 {
     // Get the component array
     let components: *const f64 = {
         extern "C" {
-            fn CGColorGetComponents(color: *const Object) -> *const f64;
+            fn CGColorGetComponents(color: *const AnyObject) -> *const f64;
         }
         CGColorGetComponents(cg_color)
     };

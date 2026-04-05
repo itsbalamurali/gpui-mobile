@@ -1,6 +1,7 @@
 use super::{BarometerData, SensorAvailability, SensorData};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::encode::{Encode, Encoding, RefEncode};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 pub fn available_sensors() -> SensorAvailability {
     unsafe {
@@ -37,7 +38,7 @@ pub fn accelerometer() -> Option<SensorData> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let data: *mut Object = msg_send![manager, accelerometerData];
+        let data: *mut AnyObject = msg_send![manager, accelerometerData];
         if data.is_null() {
             return None;
         }
@@ -64,7 +65,7 @@ pub fn gyroscope() -> Option<SensorData> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let data: *mut Object = msg_send![manager, gyroData];
+        let data: *mut AnyObject = msg_send![manager, gyroData];
         if data.is_null() {
             return None;
         }
@@ -90,7 +91,7 @@ pub fn magnetometer() -> Option<SensorData> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let data: *mut Object = msg_send![manager, magnetometerData];
+        let data: *mut AnyObject = msg_send![manager, magnetometerData];
         if data.is_null() {
             return None;
         }
@@ -112,6 +113,21 @@ pub fn barometer() -> Option<BarometerData> {
 }
 
 // CoreMotion types
+
+macro_rules! encode_xyz_struct {
+    ($name:ident) => {
+        unsafe impl Encode for $name {
+            const ENCODING: Encoding = Encoding::Struct(
+                stringify!($name),
+                &[Encoding::Double, Encoding::Double, Encoding::Double],
+            );
+        }
+        unsafe impl RefEncode for $name {
+            const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+        }
+    };
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CMAcceleration {
@@ -119,6 +135,7 @@ struct CMAcceleration {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMAcceleration);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +144,7 @@ struct CMRotationRate {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMRotationRate);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -135,18 +153,19 @@ struct CMMagneticField {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMMagneticField);
 
 /// Get or create a shared CMMotionManager instance.
 ///
 /// CMMotionManager should be a singleton per app.
-unsafe fn get_motion_manager() -> *mut Object {
+unsafe fn get_motion_manager() -> *mut AnyObject {
     use std::sync::OnceLock;
     static MANAGER: OnceLock<usize> = OnceLock::new();
 
     let ptr = MANAGER.get_or_init(|| {
-        let manager: *mut Object = msg_send![class!(CMMotionManager), alloc];
-        let manager: *mut Object = msg_send![manager, init];
+        let manager: *mut AnyObject = msg_send![class!(CMMotionManager), alloc];
+        let manager: *mut AnyObject = msg_send![manager, init];
         manager as usize
     });
-    *ptr as *mut Object
+    *ptr as *mut AnyObject
 }

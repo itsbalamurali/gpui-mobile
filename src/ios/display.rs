@@ -4,16 +4,17 @@
 //! and possibly an external display via AirPlay or USB-C.
 
 use anyhow::Result;
-use core_graphics::geometry::CGRect;
 use gpui::{px, size, Bounds, DisplayId, Pixels, PlatformDisplay};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::{class, msg_send, sel};
+
+use super::cg_types::ObjcCGRect;
 use uuid::Uuid;
 
 /// Represents an iOS display (UIScreen).
 #[derive(Debug)]
 pub(crate) struct IosDisplay {
     /// The UIScreen object
-    screen: *mut objc::runtime::Object,
+    screen: *mut objc2::runtime::AnyObject,
 }
 
 unsafe impl Send for IosDisplay {}
@@ -23,7 +24,7 @@ impl IosDisplay {
     /// Get the main screen.
     pub fn main() -> Self {
         unsafe {
-            let screen: *mut objc::runtime::Object = msg_send![class!(UIScreen), mainScreen];
+            let screen: *mut objc2::runtime::AnyObject = msg_send![class!(UIScreen), mainScreen];
             Self { screen }
         }
     }
@@ -31,18 +32,18 @@ impl IosDisplay {
     /// Get all connected screens.
     pub fn all() -> impl Iterator<Item = Self> {
         unsafe {
-            let screens: *mut objc::runtime::Object = msg_send![class!(UIScreen), screens];
+            let screens: *mut objc2::runtime::AnyObject = msg_send![class!(UIScreen), screens];
             let count: usize = msg_send![screens, count];
 
             (0..count).map(move |i| {
-                let screen: *mut objc::runtime::Object = msg_send![screens, objectAtIndex: i];
+                let screen: *mut objc2::runtime::AnyObject = msg_send![screens, objectAtIndex: i];
                 Self { screen }
             })
         }
     }
 
     /// Get the screen bounds in points.
-    fn bounds_in_points(&self) -> CGRect {
+    fn bounds_in_points(&self) -> ObjcCGRect {
         unsafe { msg_send![self.screen, bounds] }
     }
 
@@ -78,8 +79,8 @@ impl PlatformDisplay for IosDisplay {
         // Create a deterministic UUID from screen properties
         let bytes = format!(
             "ios-screen-{}-{}-{}",
-            bounds.size.width as u32,
-            bounds.size.height as u32,
+            bounds.width as u32,
+            bounds.height as u32,
             (scale * 100.0) as u32
         );
 
@@ -91,7 +92,7 @@ impl PlatformDisplay for IosDisplay {
 
         Bounds {
             origin: Default::default(),
-            size: size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            size: size(px(bounds.width as f32), px(bounds.height as f32)),
         }
     }
 }

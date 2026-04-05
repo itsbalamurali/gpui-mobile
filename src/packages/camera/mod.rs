@@ -124,7 +124,7 @@ fn ensure_factory_registered() {
 ///
 /// Used by `IosPlatformView` to create `AVCaptureVideoPreviewLayer`.
 #[cfg(target_os = "ios")]
-pub fn ios_get_session(id: usize) -> Option<*mut objc::runtime::Object> {
+pub fn ios_get_session(id: usize) -> Option<*mut objc2::runtime::AnyObject> {
     ios::get_session_ptr(id)
 }
 

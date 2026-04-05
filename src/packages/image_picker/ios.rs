@@ -1,7 +1,7 @@
 use super::{CameraDevice, ImagePickerOptions, ImageSource, PickedFile};
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel, BOOL, YES};
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::ffi::{BOOL, YES};
+use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
 use std::sync::{mpsc, Mutex, Once};
 
 #[link(name = "PhotosUI", kind = "framework")]
@@ -32,34 +32,35 @@ fn send_result(paths: Vec<String>) {
 // ── PHPicker delegate (iOS 14+ gallery picker) ─────────────────────────────
 
 static REGISTER_PHPICKER_DELEGATE: Once = Once::new();
-static mut PHPICKER_DELEGATE_CLASS: *const Class = std::ptr::null();
+static mut PHPICKER_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 
-fn phpicker_delegate_class() -> &'static Class {
+fn phpicker_delegate_class() -> &'static AnyClass {
     REGISTER_PHPICKER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("GpuiPHPickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiPHPickerDelegate", superclass).unwrap();
 
         unsafe {
             decl.add_method(
                 sel!(picker:didFinishPicking:),
-                phpicker_did_finish as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+                phpicker_did_finish
+                    as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
         }
 
-        unsafe { PHPICKER_DELEGATE_CLASS = decl.register() };
+        unsafe { PHPICKER_DELEGATE_CLASS = decl.register() as *const AnyClass };
     });
     unsafe { &*PHPICKER_DELEGATE_CLASS }
 }
 
 extern "C" fn phpicker_did_finish(
-    _this: &Object,
+    _this: *mut AnyObject,
     _sel: Sel,
-    picker: *mut Object,
-    results: *mut Object,
+    picker: *mut AnyObject,
+    results: *mut AnyObject,
 ) {
     unsafe {
         // Dismiss the picker
-        let _: () = msg_send![picker, dismissViewControllerAnimated: YES completion: std::ptr::null::<Object>()];
+        let _: () = msg_send![picker, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
 
         let count: usize = msg_send![results, count];
         if count == 0 {
@@ -72,8 +73,8 @@ extern "C" fn phpicker_did_finish(
         let mut paths = Vec::with_capacity(count);
 
         for i in 0..count {
-            let result: *mut Object = msg_send![results, objectAtIndex: i];
-            let item_provider: *mut Object = msg_send![result, itemProvider];
+            let result: *mut AnyObject = msg_send![results, objectAtIndex: i];
+            let item_provider: *mut AnyObject = msg_send![result, itemProvider];
 
             // Check if it can load as UIImage
             let image_class = class!(UIImage);
@@ -94,18 +95,21 @@ extern "C" fn phpicker_did_finish(
                 let path_copy = file_path_str.clone();
 
                 // Use loadFileRepresentationForTypeIdentifier to get a temp file URL
-                let block = block::ConcreteBlock::new(
-                    move |url: *mut Object, _error: *mut Object| {
+                let block = block2::RcBlock::new(
+                    move |url: *mut AnyObject, _error: *mut AnyObject| {
                         if url.is_null() {
                             let _ = item_tx.send(None);
                             return;
                         }
                         // Copy the file to our temp directory
-                        let file_mgr: *mut Object =
-                            msg_send![class!(NSFileManager), defaultManager];
-                        let dest_url: *mut Object =
-                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)];
-                        let ok: BOOL = msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut Object>()];
+                        let file_mgr: *mut AnyObject =
+                            unsafe { msg_send![class!(NSFileManager), defaultManager] };
+                        let dest_url: *mut AnyObject = unsafe {
+                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)]
+                        };
+                        let ok: BOOL = unsafe {
+                            msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()]
+                        };
                         if ok == YES {
                             let _ = item_tx.send(Some(path_copy.clone()));
                         } else {
@@ -113,9 +117,8 @@ extern "C" fn phpicker_did_finish(
                         }
                     },
                 );
-                let block = block.copy();
 
-                let _: *mut Object = msg_send![item_provider,
+                let _: *mut AnyObject = msg_send![item_provider,
                     loadFileRepresentationForTypeIdentifier: ns_uti
                     completionHandler: &*block
                 ];
@@ -133,121 +136,115 @@ extern "C" fn phpicker_did_finish(
 // ── UIImagePicker delegate (camera capture) ─────────────────────────────────
 
 static REGISTER_UIPICKER_DELEGATE: Once = Once::new();
-static mut UIPICKER_DELEGATE_CLASS: *const Class = std::ptr::null();
+static mut UIPICKER_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 
-fn uipicker_delegate_class() -> &'static Class {
+fn uipicker_delegate_class() -> &'static AnyClass {
     REGISTER_UIPICKER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassDecl::new("GpuiUIImagePickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiUIImagePickerDelegate", superclass).unwrap();
 
         unsafe {
             decl.add_method(
                 sel!(imagePickerController:didFinishPickingMediaWithInfo:),
-                uipicker_did_finish as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+                uipicker_did_finish
+                    as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(imagePickerControllerDidCancel:),
-                uipicker_did_cancel as extern "C" fn(&Object, Sel, *mut Object),
+                uipicker_did_cancel as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
             );
         }
 
-        unsafe { UIPICKER_DELEGATE_CLASS = decl.register() };
+        unsafe { UIPICKER_DELEGATE_CLASS = decl.register() as *const AnyClass };
     });
     unsafe { &*UIPICKER_DELEGATE_CLASS }
 }
 
-extern "C" fn uipicker_did_finish(
-    _this: &Object,
+unsafe extern "C" fn uipicker_did_finish(
+    _this: *mut AnyObject,
     _sel: Sel,
-    controller: *mut Object,
-    info: *mut Object,
+    controller: *mut AnyObject,
+    info: *mut AnyObject,
 ) {
-    unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<Object>()];
+    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
 
-        // Try to get the image URL first (for videos or saved photos)
-        let media_url_key = nsstring("UIImagePickerControllerMediaURL");
-        let media_url: *mut Object = msg_send![info, objectForKey: media_url_key];
+    // Try to get the image URL first (for videos or saved photos)
+    let media_url_key = nsstring("UIImagePickerControllerMediaURL");
+    let media_url: *mut AnyObject = msg_send![info, objectForKey: media_url_key];
 
-        if !media_url.is_null() {
-            let abs_string: *mut Object = msg_send![media_url, absoluteString];
-            let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
-            if !cstr.is_null() {
-                let path = std::ffi::CStr::from_ptr(cstr)
-                    .to_string_lossy()
-                    .into_owned();
-                let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
-                send_result(vec![path]);
+    if !media_url.is_null() {
+        let abs_string: *mut AnyObject = msg_send![media_url, absoluteString];
+        let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
+        if !cstr.is_null() {
+            let path = std::ffi::CStr::from_ptr(cstr)
+                .to_string_lossy()
+                .into_owned();
+            let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
+            send_result(vec![path]);
+            return;
+        }
+    }
+
+    // Fall back to getting the UIImage and saving it
+    let image_key = nsstring("UIImagePickerControllerOriginalImage");
+    let image: *mut AnyObject = msg_send![info, objectForKey: image_key];
+
+    if !image.is_null() {
+        // Convert to JPEG data
+        // Use UIImageJPEGRepresentation C function
+        let jpeg_data = uiimage_jpeg_representation(image, 0.9);
+        if !jpeg_data.is_null() {
+            let uuid_str = uuid::Uuid::new_v4().to_string();
+            let file_name = format!("captured_{}.jpg", uuid_str);
+            let file_path = std::env::temp_dir().join(file_name);
+            let ns_path = nsstring(&file_path.to_string_lossy());
+            let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
+            if wrote == YES {
+                send_result(vec![file_path.to_string_lossy().into_owned()]);
                 return;
             }
         }
-
-        // Fall back to getting the UIImage and saving it
-        let image_key = nsstring("UIImagePickerControllerOriginalImage");
-        let image: *mut Object = msg_send![info, objectForKey: image_key];
-
-        if !image.is_null() {
-            // Convert to JPEG data
-            // Use UIImageJPEGRepresentation C function
-            let jpeg_data = uiimage_jpeg_representation(image, 0.9);
-            if !jpeg_data.is_null() {
-                let uuid_str = uuid::Uuid::new_v4().to_string();
-                let file_name = format!("captured_{}.jpg", uuid_str);
-                let file_path = std::env::temp_dir().join(file_name);
-                let ns_path = nsstring(&file_path.to_string_lossy());
-                let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
-                if wrote == YES {
-                    send_result(vec![file_path.to_string_lossy().into_owned()]);
-                    return;
-                }
-            }
-        }
-
-        send_result(vec![]);
     }
+
+    send_result(vec![]);
 }
 
-extern "C" fn uipicker_did_cancel(_this: &Object, _sel: Sel, controller: *mut Object) {
-    unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<Object>()];
-    }
+unsafe extern "C" fn uipicker_did_cancel(
+    _this: *mut AnyObject,
+    _sel: Sel,
+    controller: *mut AnyObject,
+) {
+    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
 
 // UIImageJPEGRepresentation is a C function, not an ObjC method
 extern "C" {
-    fn UIImageJPEGRepresentation(image: *mut Object, quality: f64) -> *mut Object;
+    fn UIImageJPEGRepresentation(image: *mut AnyObject, quality: f64) -> *mut AnyObject;
 }
 
-unsafe fn uiimage_jpeg_representation(image: *mut Object, quality: f64) -> *mut Object {
+unsafe fn uiimage_jpeg_representation(image: *mut AnyObject, quality: f64) -> *mut AnyObject {
     UIImageJPEGRepresentation(image, quality)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn nsstring(s: &str) -> *mut Object {
-    let ns: *mut Object = msg_send![class!(NSString), alloc];
-    msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;
 
-unsafe fn present_vc(vc: *mut Object) -> Result<(), String> {
-    let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
-    let key_window: *mut Object = msg_send![app, keyWindow];
+unsafe fn present_vc(vc: *mut AnyObject) -> Result<(), String> {
+    let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
+    let key_window: *mut AnyObject = msg_send![app, keyWindow];
     if key_window.is_null() {
         return Err("No key window available".into());
     }
-    let root_vc: *mut Object = msg_send![key_window, rootViewController];
+    let root_vc: *mut AnyObject = msg_send![key_window, rootViewController];
     if root_vc.is_null() {
         return Err("No root view controller".into());
     }
     let _: () = msg_send![root_vc,
         presentViewController: vc
         animated: YES
-        completion: std::ptr::null::<Object>()
+        completion: std::ptr::null::<AnyObject>()
     ];
     Ok(())
 }
@@ -311,8 +308,8 @@ fn pick_image_from_gallery(
 
     unsafe {
         // PHPickerConfiguration
-        let config: *mut Object = msg_send![class!(PHPickerConfiguration), alloc];
-        let config: *mut Object = msg_send![config, init];
+        let config: *mut AnyObject = msg_send![class!(PHPickerConfiguration), alloc];
+        let config: *mut AnyObject = msg_send![config, init];
 
         if allow_multi {
             let _: () = msg_send![config, setSelectionLimit: 0i64]; // 0 = unlimited
@@ -321,20 +318,20 @@ fn pick_image_from_gallery(
         }
 
         // Filter to images only
-        let image_filter: *mut Object = msg_send![class!(PHPickerFilter), imagesFilter];
+        let image_filter: *mut AnyObject = msg_send![class!(PHPickerFilter), imagesFilter];
         let _: () = msg_send![config, setFilter: image_filter];
 
         // Create PHPickerViewController
-        let picker: *mut Object = msg_send![class!(PHPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initWithConfiguration: config];
+        let picker: *mut AnyObject = msg_send![class!(PHPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initWithConfiguration: config];
         if picker.is_null() {
             return Err("Failed to create PHPickerViewController".into());
         }
 
         // Set delegate
         let delegate_cls = phpicker_delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_vc(picker)?;
@@ -351,23 +348,23 @@ fn pick_video_from_gallery() -> Result<Option<PickedFile>, String> {
 
     unsafe {
         // PHPickerConfiguration
-        let config: *mut Object = msg_send![class!(PHPickerConfiguration), alloc];
-        let config: *mut Object = msg_send![config, init];
+        let config: *mut AnyObject = msg_send![class!(PHPickerConfiguration), alloc];
+        let config: *mut AnyObject = msg_send![config, init];
         let _: () = msg_send![config, setSelectionLimit: 1i64];
 
         // Filter to videos only
-        let video_filter: *mut Object = msg_send![class!(PHPickerFilter), videosFilter];
+        let video_filter: *mut AnyObject = msg_send![class!(PHPickerFilter), videosFilter];
         let _: () = msg_send![config, setFilter: video_filter];
 
-        let picker: *mut Object = msg_send![class!(PHPickerViewController), alloc];
-        let picker: *mut Object = msg_send![picker, initWithConfiguration: config];
+        let picker: *mut AnyObject = msg_send![class!(PHPickerViewController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, initWithConfiguration: config];
         if picker.is_null() {
             return Err("Failed to create PHPickerViewController".into());
         }
 
         let delegate_cls = phpicker_delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_vc(picker)?;
@@ -395,8 +392,8 @@ fn pick_from_camera(
             return Err("Camera is not available on this device".into());
         }
 
-        let picker: *mut Object = msg_send![class!(UIImagePickerController), alloc];
-        let picker: *mut Object = msg_send![picker, init];
+        let picker: *mut AnyObject = msg_send![class!(UIImagePickerController), alloc];
+        let picker: *mut AnyObject = msg_send![picker, init];
         if picker.is_null() {
             return Err("Failed to create UIImagePickerController".into());
         }
@@ -406,7 +403,7 @@ fn pick_from_camera(
         // Set media types
         if video {
             let video_type = nsstring("public.movie");
-            let types: *mut Object = msg_send![class!(NSArray), arrayWithObject: video_type];
+            let types: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: video_type];
             let _: () = msg_send![picker, setMediaTypes: types];
         }
 
@@ -419,8 +416,8 @@ fn pick_from_camera(
 
         // Set delegate
         let delegate_cls = uipicker_delegate_class();
-        let delegate: *mut Object = msg_send![delegate_cls, alloc];
-        let delegate: *mut Object = msg_send![delegate, init];
+        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+        let delegate: *mut AnyObject = msg_send![delegate, init];
         let _: () = msg_send![picker, setDelegate: delegate];
 
         present_vc(picker)?;

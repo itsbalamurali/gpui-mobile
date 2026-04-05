@@ -90,7 +90,7 @@ fn ensure_factory_registered() {
 /// Used by `IosPlatformView` to create an `AVPlayerLayer` during
 /// platform view construction.
 #[cfg(target_os = "ios")]
-pub fn ios_get_player(id: u32) -> Option<*mut objc::runtime::Object> {
+pub fn ios_get_player(id: u32) -> Option<*mut objc2::runtime::AnyObject> {
     ios::get_player_ptr(id)
 }
 

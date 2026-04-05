@@ -1,6 +1,7 @@
 use super::{LocationAccuracy, LocationSettings, Position};
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::encode::{Encode, Encoding, RefEncode};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::sync::OnceLock;
 
 /// CLLocation coordinate struct matching CoreLocation's CLLocationCoordinate2D.
@@ -9,6 +10,17 @@ use std::sync::OnceLock;
 struct CLLocationCoordinate2D {
     latitude: f64,
     longitude: f64,
+}
+
+unsafe impl Encode for CLLocationCoordinate2D {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CLLocationCoordinate2D",
+        &[Encoding::Double, Encoding::Double],
+    );
+}
+
+unsafe impl RefEncode for CLLocationCoordinate2D {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
 pub fn is_location_service_enabled() -> Result<bool, String> {
@@ -39,7 +51,7 @@ pub fn get_current_position(settings: &LocationSettings) -> Result<Position, Str
 
         // Give CLLocationManager time to acquire a fix.
         // In a production app this would use a delegate callback; here we poll.
-        let mut location: *mut Object = std::ptr::null_mut();
+        let mut location: *mut AnyObject = std::ptr::null_mut();
         for _ in 0..60 {
             std::thread::sleep(std::time::Duration::from_millis(500));
             location = msg_send![manager, location];
@@ -63,7 +75,7 @@ pub fn get_last_known_position() -> Result<Option<Position>, String> {
             return Err("Failed to create CLLocationManager".into());
         }
 
-        let location: *mut Object = msg_send![manager, location];
+        let location: *mut AnyObject = msg_send![manager, location];
         if location.is_null() {
             return Ok(None);
         }
@@ -72,7 +84,7 @@ pub fn get_last_known_position() -> Result<Option<Position>, String> {
     }
 }
 
-unsafe fn parse_cl_location(location: *mut Object) -> Position {
+unsafe fn parse_cl_location(location: *mut AnyObject) -> Position {
     let coord: CLLocationCoordinate2D = msg_send![location, coordinate];
     let altitude: f64 = msg_send![location, altitude];
     let horizontal_accuracy: f64 = msg_send![location, horizontalAccuracy];
@@ -82,7 +94,7 @@ unsafe fn parse_cl_location(location: *mut Object) -> Position {
     let course_accuracy: f64 = msg_send![location, courseAccuracy];
 
     // Get timestamp as unix millis from NSDate
-    let timestamp_obj: *mut Object = msg_send![location, timestamp];
+    let timestamp_obj: *mut AnyObject = msg_send![location, timestamp];
     let time_interval: f64 = msg_send![timestamp_obj, timeIntervalSince1970];
     let timestamp_millis = (time_interval * 1000.0) as u64;
 
@@ -128,13 +140,13 @@ fn cl_accuracy(accuracy: LocationAccuracy) -> f64 {
 /// Get or create a shared CLLocationManager instance.
 ///
 /// CLLocationManager is typically used as a singleton per app.
-unsafe fn get_location_manager() -> *mut Object {
+unsafe fn get_location_manager() -> *mut AnyObject {
     static MANAGER: OnceLock<usize> = OnceLock::new();
 
     let ptr = MANAGER.get_or_init(|| {
-        let manager: *mut Object = msg_send![class!(CLLocationManager), alloc];
-        let manager: *mut Object = msg_send![manager, init];
+        let manager: *mut AnyObject = msg_send![class!(CLLocationManager), alloc];
+        let manager: *mut AnyObject = msg_send![manager, init];
         manager as usize
     });
-    *ptr as *mut Object
+    *ptr as *mut AnyObject
 }

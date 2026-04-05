@@ -1,6 +1,6 @@
 use super::HapticFeedback;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 
 #[link(name = "AudioToolbox", kind = "framework")]
 extern "C" {}
@@ -38,8 +38,8 @@ pub fn can_vibrate() -> bool {
 }
 
 unsafe fn impact_feedback(style: i64) -> Result<(), String> {
-    let generator: *mut Object = msg_send![class!(UIImpactFeedbackGenerator), alloc];
-    let generator: *mut Object = msg_send![generator, initWithStyle: style];
+    let generator: *mut AnyObject = msg_send![class!(UIImpactFeedbackGenerator), alloc];
+    let generator: *mut AnyObject = msg_send![generator, initWithStyle: style];
     if generator.is_null() {
         return Err("Failed to create UIImpactFeedbackGenerator".into());
     }
@@ -49,8 +49,8 @@ unsafe fn impact_feedback(style: i64) -> Result<(), String> {
 }
 
 unsafe fn selection_feedback() -> Result<(), String> {
-    let generator: *mut Object = msg_send![class!(UISelectionFeedbackGenerator), alloc];
-    let generator: *mut Object = msg_send![generator, init];
+    let generator: *mut AnyObject = msg_send![class!(UISelectionFeedbackGenerator), alloc];
+    let generator: *mut AnyObject = msg_send![generator, init];
     if generator.is_null() {
         return Err("Failed to create UISelectionFeedbackGenerator".into());
     }
@@ -60,8 +60,8 @@ unsafe fn selection_feedback() -> Result<(), String> {
 }
 
 unsafe fn notification_feedback(type_: i64) -> Result<(), String> {
-    let generator: *mut Object = msg_send![class!(UINotificationFeedbackGenerator), alloc];
-    let generator: *mut Object = msg_send![generator, init];
+    let generator: *mut AnyObject = msg_send![class!(UINotificationFeedbackGenerator), alloc];
+    let generator: *mut AnyObject = msg_send![generator, init];
     if generator.is_null() {
         return Err("Failed to create UINotificationFeedbackGenerator".into());
     }

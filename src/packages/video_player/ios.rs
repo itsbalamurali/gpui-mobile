@@ -1,6 +1,7 @@
 use super::VideoInfo;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
+use objc2::encode::{Encode, Encoding, RefEncode};
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -12,7 +13,7 @@ static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 
 struct PlayerEntry {
     /// The AVPlayer instance (retained).
-    player: *mut Object,
+    player: *mut AnyObject,
     /// Whether looping is enabled.
     looping: bool,
 }
@@ -39,8 +40,8 @@ fn with_player<T>(
 /// Create a new AVPlayer and return its ID.
 pub fn create_player() -> Result<u32, String> {
     unsafe {
-        let player: *mut Object = msg_send![class!(AVPlayer), alloc];
-        let player: *mut Object = msg_send![player, init];
+        let player: *mut AnyObject = msg_send![class!(AVPlayer), alloc];
+        let player: *mut AnyObject = msg_send![player, init];
         if player.is_null() {
             return Err("Failed to create AVPlayer".into());
         }
@@ -63,20 +64,20 @@ pub fn create_player() -> Result<u32, String> {
 /// Get the raw AVPlayer pointer for a given player ID.
 ///
 /// Used by the platform view system to create AVPlayerLayer.
-pub fn get_player_ptr(id: u32) -> Option<*mut Object> {
+pub fn get_player_ptr(id: u32) -> Option<*mut AnyObject> {
     with_players(|map| map.get(&id).map(|entry| entry.player))
 }
 
 pub fn set_url(id: u32, url: &str) -> Result<VideoInfo, String> {
     with_player(id, |entry| unsafe {
         let url_str = make_nsstring(url);
-        let nsurl: *mut Object = msg_send![class!(NSURL), URLWithString: url_str];
+        let nsurl: *mut AnyObject = msg_send![class!(NSURL), URLWithString: url_str];
         if nsurl.is_null() {
             let _: () = msg_send![url_str, release];
             return Err("Invalid URL".into());
         }
 
-        let item: *mut Object = msg_send![class!(AVPlayerItem), playerItemWithURL: nsurl];
+        let item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: nsurl];
         let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: item];
         let _: () = msg_send![url_str, release];
 
@@ -88,13 +89,13 @@ pub fn set_url(id: u32, url: &str) -> Result<VideoInfo, String> {
 pub fn set_file_path(id: u32, path: &str) -> Result<VideoInfo, String> {
     with_player(id, |entry| unsafe {
         let path_str = make_nsstring(path);
-        let nsurl: *mut Object = msg_send![class!(NSURL), fileURLWithPath: path_str];
+        let nsurl: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: path_str];
         if nsurl.is_null() {
             let _: () = msg_send![path_str, release];
             return Err("Invalid file path".into());
         }
 
-        let item: *mut Object = msg_send![class!(AVPlayerItem), playerItemWithURL: nsurl];
+        let item: *mut AnyObject = msg_send![class!(AVPlayerItem), playerItemWithURL: nsurl];
         let _: () = msg_send![entry.player, replaceCurrentItemWithPlayerItem: item];
         let _: () = msg_send![path_str, release];
 
@@ -175,7 +176,7 @@ pub fn position(id: u32) -> Result<u64, String> {
 
 pub fn duration(id: u32) -> Result<u64, String> {
     with_player(id, |entry| unsafe {
-        let item: *mut Object = msg_send![entry.player, currentItem];
+        let item: *mut AnyObject = msg_send![entry.player, currentItem];
         if item.is_null() {
             return Err("No current item".into());
         }
@@ -186,7 +187,7 @@ pub fn duration(id: u32) -> Result<u64, String> {
 
 pub fn video_size(id: u32) -> Result<(u32, u32), String> {
     with_player(id, |entry| unsafe {
-        let item: *mut Object = msg_send![entry.player, currentItem];
+        let item: *mut AnyObject = msg_send![entry.player, currentItem];
         if item.is_null() {
             return Err("No current item".into());
         }
@@ -225,12 +226,36 @@ struct CMTime {
     epoch: i64,
 }
 
+unsafe impl Encode for CMTime {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CMTime",
+        &[
+            Encoding::LongLong,
+            Encoding::Int,
+            Encoding::UInt,
+            Encoding::LongLong,
+        ],
+    );
+}
+
+unsafe impl RefEncode for CMTime {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+}
+
 /// CGSize layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CGSize {
     width: f64,
     height: f64,
+}
+
+unsafe impl Encode for CGSize {
+    const ENCODING: Encoding = Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
+}
+
+unsafe impl RefEncode for CGSize {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
 /// CMTime flag indicating a valid time.
@@ -262,20 +287,13 @@ fn cmtime_to_ms(time: CMTime) -> u64 {
     ((time.value as f64 / time.timescale as f64) * 1000.0).max(0.0) as u64
 }
 
-/// Create a retained NSString from a Rust `&str`.
-unsafe fn make_nsstring(s: &str) -> *mut Object {
-    let nsstring_class = class!(NSString);
-    let bytes = s.as_ptr();
-    let len = s.len();
-    // NSUTF8StringEncoding = 4
-    let obj: *mut Object = msg_send![nsstring_class, alloc];
-    let obj: *mut Object = msg_send![obj, initWithBytes:bytes length:len encoding:4u64];
-    obj
+unsafe fn make_nsstring(s: &str) -> *mut AnyObject {
+    crate::ios::util::nsstring(s)
 }
 
 /// Wait (up to 5 seconds) for the current AVPlayerItem to reach ReadyToPlay status.
-unsafe fn wait_for_item_ready(player: *mut Object) -> Result<(), String> {
-    let item: *mut Object = msg_send![player, currentItem];
+unsafe fn wait_for_item_ready(player: *mut AnyObject) -> Result<(), String> {
+    let item: *mut AnyObject = msg_send![player, currentItem];
     if item.is_null() {
         return Err("No player item".into());
     }
@@ -293,8 +311,8 @@ unsafe fn wait_for_item_ready(player: *mut Object) -> Result<(), String> {
 }
 
 /// Extract video info from the current player item.
-unsafe fn get_video_info(player: *mut Object) -> Result<VideoInfo, String> {
-    let item: *mut Object = msg_send![player, currentItem];
+unsafe fn get_video_info(player: *mut AnyObject) -> Result<VideoInfo, String> {
+    let item: *mut AnyObject = msg_send![player, currentItem];
     if item.is_null() {
         return Err("No player item".into());
     }
