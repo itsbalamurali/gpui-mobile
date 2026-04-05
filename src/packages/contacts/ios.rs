@@ -1,5 +1,5 @@
 use super::{Contact, EmailAddress, PhoneNumber};
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send, sel};
 
 pub fn get_contacts() -> Result<Vec<Contact>, String> {
@@ -162,20 +162,17 @@ unsafe fn enumerate_contacts(
     error_ptr: *mut *mut AnyObject,
     contacts: &mut Vec<Contact>,
 ) -> bool {
-    // We use block crate to create an Objective-C block for the enumeration callback.
+    // We use block2 to create an Objective-C block for the enumeration callback.
     // The block signature is: void (^)(CNContact *contact, BOOL *stop)
-    use block::ConcreteBlock;
-
     let contacts_ptr = contacts as *mut Vec<Contact>;
 
-    let block = ConcreteBlock::new(move |cn_contact: *mut AnyObject, _stop: *mut bool| {
+    let block = block2::RcBlock::new(move |cn_contact: *mut AnyObject, _stop: *mut Bool| {
         if !cn_contact.is_null() {
-            if let Some(contact) = parse_cn_contact(cn_contact) {
-                (*contacts_ptr).push(contact);
+            if let Some(contact) = unsafe { parse_cn_contact(cn_contact) } {
+                unsafe { (*contacts_ptr).push(contact) };
             }
         }
     });
-    let block = block.copy();
 
     let success: bool = msg_send![store,
         enumerateContactsWithFetchRequest: request

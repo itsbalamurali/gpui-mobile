@@ -1,4 +1,5 @@
 use super::{LocationAccuracy, LocationSettings, Position};
+use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, sel};
 use std::sync::OnceLock;
@@ -9,6 +10,17 @@ use std::sync::OnceLock;
 struct CLLocationCoordinate2D {
     latitude: f64,
     longitude: f64,
+}
+
+unsafe impl Encode for CLLocationCoordinate2D {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CLLocationCoordinate2D",
+        &[Encoding::Double, Encoding::Double],
+    );
+}
+
+unsafe impl RefEncode for CLLocationCoordinate2D {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
 pub fn is_location_service_enabled() -> Result<bool, String> {

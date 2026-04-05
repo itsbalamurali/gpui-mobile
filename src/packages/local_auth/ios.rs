@@ -1,5 +1,5 @@
 use super::{AuthResult, BiometricType};
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send, sel};
 use std::ffi::c_void;
 
@@ -138,13 +138,13 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
 
         // Create the reply block.
         // The block signature is: void (^)(BOOL success, NSError *error)
-        let block = block::ConcreteBlock::new(move |success: bool, error: *mut AnyObject| {
-            let auth_result = if success {
+        let block = block2::RcBlock::new(move |success: Bool, error: *mut AnyObject| {
+            let auth_result = if success.as_bool() {
                 AuthResult::Success
             } else if error.is_null() {
                 AuthResult::Failed
             } else {
-                let error_code: i64 = msg_send![error, code];
+                let error_code: i64 = unsafe { msg_send![error, code] };
                 match error_code {
                     LA_ERROR_AUTHENTICATION_FAILED => AuthResult::Failed,
                     LA_ERROR_USER_CANCEL => AuthResult::ErrorUserCancelled,
@@ -158,13 +158,12 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
             };
 
             // Store the result
-            if let Ok(mut guard) = (*result_holder).lock() {
+            if let Ok(mut guard) = unsafe { (*result_holder).lock() } {
                 *guard = auth_result;
             }
 
-            dispatch_semaphore_signal(semaphore);
+            unsafe { dispatch_semaphore_signal(semaphore) };
         });
-        let block = block.copy();
 
         // Call evaluatePolicy:localizedReason:reply:
         let _: () = msg_send![

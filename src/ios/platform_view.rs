@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, sel};
 
+#[cfg(target_os = "ios")]
+use super::cg_types::ObjcCGRect;
+
 /// iOS implementation of a platform view.
 ///
 /// Wraps a `UIView` instance. The view is created during construction but
@@ -77,9 +80,11 @@ impl IosPlatformView {
         params: &PlatformViewParams,
     ) -> Result<*mut AnyObject, String> {
         unsafe {
-            let frame = core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(bounds.x as f64, bounds.y as f64),
-                &core_graphics::geometry::CGSize::new(bounds.width as f64, bounds.height as f64),
+            let frame = ObjcCGRect::new(
+                bounds.x as f64,
+                bounds.y as f64,
+                bounds.width as f64,
+                bounds.height as f64,
             );
 
             let view: *mut AnyObject = match view_type {
@@ -112,7 +117,7 @@ impl IosPlatformView {
     /// Create a generic transparent UIView container.
     #[cfg(target_os = "ios")]
     unsafe fn create_generic_view(
-        frame: core_graphics::geometry::CGRect,
+        frame: ObjcCGRect,
     ) -> Result<*mut AnyObject, String> {
         let uiview_class = class!(UIView);
         let view: *mut AnyObject = msg_send![uiview_class, alloc];
@@ -128,7 +133,7 @@ impl IosPlatformView {
     /// Create a UIView with an AVPlayerLayer for video playback.
     #[cfg(target_os = "ios")]
     unsafe fn create_video_player_view(
-        frame: core_graphics::geometry::CGRect,
+        frame: ObjcCGRect,
         params: &PlatformViewParams,
     ) -> Result<*mut AnyObject, String> {
         // Create a container UIView
@@ -168,7 +173,7 @@ impl IosPlatformView {
     /// Create a WKWebView.
     #[cfg(target_os = "ios")]
     unsafe fn create_webview_view(
-        frame: core_graphics::geometry::CGRect,
+        frame: ObjcCGRect,
         params: &PlatformViewParams,
     ) -> Result<*mut AnyObject, String> {
         let config: *mut AnyObject = msg_send![class!(WKWebViewConfiguration), alloc];
@@ -221,7 +226,7 @@ impl IosPlatformView {
     /// Create a UIView with AVCaptureVideoPreviewLayer for camera preview.
     #[cfg(target_os = "ios")]
     unsafe fn create_camera_preview_view(
-        frame: core_graphics::geometry::CGRect,
+        frame: ObjcCGRect,
         params: &PlatformViewParams,
     ) -> Result<*mut AnyObject, String> {
         let uiview_class = class!(UIView);
@@ -341,9 +346,11 @@ impl IosPlatformView {
             return;
         }
         unsafe {
-            let frame = core_graphics::geometry::CGRect::new(
-                &core_graphics::geometry::CGPoint::new(bounds.x as f64, bounds.y as f64),
-                &core_graphics::geometry::CGSize::new(bounds.width as f64, bounds.height as f64),
+            let frame = ObjcCGRect::new(
+                bounds.x as f64,
+                bounds.y as f64,
+                bounds.width as f64,
+                bounds.height as f64,
             );
             let _: () = msg_send![view, setFrame: frame];
         }

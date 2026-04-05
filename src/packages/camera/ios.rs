@@ -67,14 +67,13 @@ static mut PHOTO_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 fn photo_delegate_class() -> &'static AnyClass {
     REGISTER_PHOTO_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassBuilder::new("GpuiPhotoCaptureDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiPhotoCaptureDelegate", superclass).unwrap();
 
         unsafe {
             // captureOutput:didFinishProcessingPhoto:error:
             decl.add_method(
                 sel!(captureOutput:didFinishProcessingPhoto:error:),
-                photo_did_finish
-                    as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
+                photo_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -84,7 +83,7 @@ fn photo_delegate_class() -> &'static AnyClass {
 }
 
 extern "C" fn photo_did_finish(
-    _this: &AnyObject,
+    _this: *mut AnyObject,
     _sel: Sel,
     _output: *mut AnyObject,
     photo: *mut AnyObject,
@@ -160,21 +159,13 @@ static mut VIDEO_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 fn video_delegate_class() -> &'static AnyClass {
     REGISTER_VIDEO_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassBuilder::new("GpuiVideoRecordingDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiVideoRecordingDelegate", superclass).unwrap();
 
         unsafe {
             // captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:
             decl.add_method(
                 sel!(captureOutput:didFinishRecordingToOutputFileAtURL:fromConnections:error:),
-                video_did_finish
-                    as extern "C" fn(
-                        &AnyObject,
-                        Sel,
-                        *mut AnyObject,
-                        *mut AnyObject,
-                        *mut AnyObject,
-                        *mut AnyObject,
-                    ),
+                video_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -184,7 +175,7 @@ fn video_delegate_class() -> &'static AnyClass {
 }
 
 extern "C" fn video_did_finish(
-    _this: &AnyObject,
+    _this: *mut AnyObject,
     _sel: Sel,
     _output: *mut AnyObject,
     url: *mut AnyObject,

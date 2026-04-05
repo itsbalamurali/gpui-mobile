@@ -1,4 +1,5 @@
 use super::VideoInfo;
+use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
@@ -225,12 +226,37 @@ struct CMTime {
     epoch: i64,
 }
 
+unsafe impl Encode for CMTime {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CMTime",
+        &[
+            Encoding::LongLong,
+            Encoding::Int,
+            Encoding::UInt,
+            Encoding::LongLong,
+        ],
+    );
+}
+
+unsafe impl RefEncode for CMTime {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+}
+
 /// CGSize layout.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CGSize {
     width: f64,
     height: f64,
+}
+
+unsafe impl Encode for CGSize {
+    const ENCODING: Encoding =
+        Encoding::Struct("CGSize", &[Encoding::Double, Encoding::Double]);
+}
+
+unsafe impl RefEncode for CGSize {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
 /// CMTime flag indicating a valid time.

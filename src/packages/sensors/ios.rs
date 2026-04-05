@@ -1,4 +1,5 @@
 use super::{BarometerData, SensorAvailability, SensorData};
+use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, sel};
 
@@ -112,6 +113,21 @@ pub fn barometer() -> Option<BarometerData> {
 }
 
 // CoreMotion types
+
+macro_rules! encode_xyz_struct {
+    ($name:ident) => {
+        unsafe impl Encode for $name {
+            const ENCODING: Encoding = Encoding::Struct(
+                stringify!($name),
+                &[Encoding::Double, Encoding::Double, Encoding::Double],
+            );
+        }
+        unsafe impl RefEncode for $name {
+            const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+        }
+    };
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CMAcceleration {
@@ -119,6 +135,7 @@ struct CMAcceleration {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMAcceleration);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +144,7 @@ struct CMRotationRate {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMRotationRate);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -135,6 +153,7 @@ struct CMMagneticField {
     y: f64,
     z: f64,
 }
+encode_xyz_struct!(CMMagneticField);
 
 /// Get or create a shared CMMotionManager instance.
 ///

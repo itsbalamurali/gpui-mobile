@@ -37,12 +37,12 @@ static mut PHPICKER_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 fn phpicker_delegate_class() -> &'static AnyClass {
     REGISTER_PHPICKER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassBuilder::new("GpuiPHPickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiPHPickerDelegate", superclass).unwrap();
 
         unsafe {
             decl.add_method(
                 sel!(picker:didFinishPicking:),
-                phpicker_did_finish as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                phpicker_did_finish as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
         }
 
@@ -52,7 +52,7 @@ fn phpicker_delegate_class() -> &'static AnyClass {
 }
 
 extern "C" fn phpicker_did_finish(
-    _this: &AnyObject,
+    _this: *mut AnyObject,
     _sel: Sel,
     picker: *mut AnyObject,
     results: *mut AnyObject,
@@ -94,7 +94,7 @@ extern "C" fn phpicker_did_finish(
                 let path_copy = file_path_str.clone();
 
                 // Use loadFileRepresentationForTypeIdentifier to get a temp file URL
-                let block = block::ConcreteBlock::new(
+                let block = block2::RcBlock::new(
                     move |url: *mut AnyObject, _error: *mut AnyObject| {
                         if url.is_null() {
                             let _ = item_tx.send(None);
@@ -102,10 +102,10 @@ extern "C" fn phpicker_did_finish(
                         }
                         // Copy the file to our temp directory
                         let file_mgr: *mut AnyObject =
-                            msg_send![class!(NSFileManager), defaultManager];
+                            unsafe { msg_send![class!(NSFileManager), defaultManager] };
                         let dest_url: *mut AnyObject =
-                            msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)];
-                        let ok: BOOL = msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()];
+                            unsafe { msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)] };
+                        let ok: BOOL = unsafe { msg_send![file_mgr, copyItemAtURL: url toURL: dest_url error: std::ptr::null_mut::<*mut AnyObject>()] };
                         if ok == YES {
                             let _ = item_tx.send(Some(path_copy.clone()));
                         } else {
@@ -113,7 +113,6 @@ extern "C" fn phpicker_did_finish(
                         }
                     },
                 );
-                let block = block.copy();
 
                 let _: *mut AnyObject = msg_send![item_provider,
                     loadFileRepresentationForTypeIdentifier: ns_uti
@@ -138,16 +137,16 @@ static mut UIPICKER_DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 fn uipicker_delegate_class() -> &'static AnyClass {
     REGISTER_UIPICKER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassBuilder::new("GpuiUIImagePickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiUIImagePickerDelegate", superclass).unwrap();
 
         unsafe {
             decl.add_method(
                 sel!(imagePickerController:didFinishPickingMediaWithInfo:),
-                uipicker_did_finish as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                uipicker_did_finish as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             decl.add_method(
                 sel!(imagePickerControllerDidCancel:),
-                uipicker_did_cancel as extern "C" fn(&AnyObject, Sel, *mut AnyObject),
+                uipicker_did_cancel as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
             );
         }
 
@@ -156,61 +155,57 @@ fn uipicker_delegate_class() -> &'static AnyClass {
     unsafe { &*UIPICKER_DELEGATE_CLASS }
 }
 
-extern "C" fn uipicker_did_finish(
-    _this: &AnyObject,
+unsafe extern "C" fn uipicker_did_finish(
+    _this: *mut AnyObject,
     _sel: Sel,
     controller: *mut AnyObject,
     info: *mut AnyObject,
 ) {
-    unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
 
-        // Try to get the image URL first (for videos or saved photos)
-        let media_url_key = nsstring("UIImagePickerControllerMediaURL");
-        let media_url: *mut AnyObject = msg_send![info, objectForKey: media_url_key];
+    // Try to get the image URL first (for videos or saved photos)
+    let media_url_key = nsstring("UIImagePickerControllerMediaURL");
+    let media_url: *mut AnyObject = msg_send![info, objectForKey: media_url_key];
 
-        if !media_url.is_null() {
-            let abs_string: *mut AnyObject = msg_send![media_url, absoluteString];
-            let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
-            if !cstr.is_null() {
-                let path = std::ffi::CStr::from_ptr(cstr)
-                    .to_string_lossy()
-                    .into_owned();
-                let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
-                send_result(vec![path]);
+    if !media_url.is_null() {
+        let abs_string: *mut AnyObject = msg_send![media_url, absoluteString];
+        let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
+        if !cstr.is_null() {
+            let path = std::ffi::CStr::from_ptr(cstr)
+                .to_string_lossy()
+                .into_owned();
+            let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
+            send_result(vec![path]);
+            return;
+        }
+    }
+
+    // Fall back to getting the UIImage and saving it
+    let image_key = nsstring("UIImagePickerControllerOriginalImage");
+    let image: *mut AnyObject = msg_send![info, objectForKey: image_key];
+
+    if !image.is_null() {
+        // Convert to JPEG data
+        // Use UIImageJPEGRepresentation C function
+        let jpeg_data = uiimage_jpeg_representation(image, 0.9);
+        if !jpeg_data.is_null() {
+            let uuid_str = uuid::Uuid::new_v4().to_string();
+            let file_name = format!("captured_{}.jpg", uuid_str);
+            let file_path = std::env::temp_dir().join(file_name);
+            let ns_path = nsstring(&file_path.to_string_lossy());
+            let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
+            if wrote == YES {
+                send_result(vec![file_path.to_string_lossy().into_owned()]);
                 return;
             }
         }
-
-        // Fall back to getting the UIImage and saving it
-        let image_key = nsstring("UIImagePickerControllerOriginalImage");
-        let image: *mut AnyObject = msg_send![info, objectForKey: image_key];
-
-        if !image.is_null() {
-            // Convert to JPEG data
-            // Use UIImageJPEGRepresentation C function
-            let jpeg_data = uiimage_jpeg_representation(image, 0.9);
-            if !jpeg_data.is_null() {
-                let uuid_str = uuid::Uuid::new_v4().to_string();
-                let file_name = format!("captured_{}.jpg", uuid_str);
-                let file_path = std::env::temp_dir().join(file_name);
-                let ns_path = nsstring(&file_path.to_string_lossy());
-                let wrote: BOOL = msg_send![jpeg_data, writeToFile: ns_path atomically: YES];
-                if wrote == YES {
-                    send_result(vec![file_path.to_string_lossy().into_owned()]);
-                    return;
-                }
-            }
-        }
-
-        send_result(vec![]);
     }
+
+    send_result(vec![]);
 }
 
-extern "C" fn uipicker_did_cancel(_this: &AnyObject, _sel: Sel, controller: *mut AnyObject) {
-    unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
-    }
+unsafe extern "C" fn uipicker_did_cancel(_this: *mut AnyObject, _sel: Sel, controller: *mut AnyObject) {
+    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
 

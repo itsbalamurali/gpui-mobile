@@ -153,8 +153,8 @@ unsafe fn check_notification_authorization() -> Result<PermissionStatus, String>
 
     let center: *mut AnyObject =
         msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
-    let block = block::ConcreteBlock::new(move |settings: *mut AnyObject| {
-        let auth_status: i64 = msg_send![settings, authorizationStatus];
+    let block = block2::RcBlock::new(move |settings: *mut AnyObject| {
+        let auth_status: i64 = unsafe { msg_send![settings, authorizationStatus] };
         let status = match auth_status {
             0 => PermissionStatus::Denied,  // UNAuthorizationStatusNotDetermined
             1 => PermissionStatus::Denied,  // UNAuthorizationStatusDenied
@@ -164,7 +164,6 @@ unsafe fn check_notification_authorization() -> Result<PermissionStatus, String>
         };
         let _ = tx.send(status);
     });
-    let block = block.copy();
     let _: () = msg_send![center, getNotificationSettingsWithCompletionHandler: &*block];
 
     rx.recv()
@@ -252,7 +251,7 @@ unsafe fn request_av_authorization(media_type: &str) -> Result<PermissionStatus,
     let (tx, rx) = mpsc::channel();
     let ns_media = nsstring(media_type);
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL| {
+    let block = block2::RcBlock::new(move |granted: BOOL| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -260,7 +259,6 @@ unsafe fn request_av_authorization(media_type: &str) -> Result<PermissionStatus,
         };
         let _ = tx.send(status);
     });
-    let block = block.copy();
 
     let _: () = msg_send![class!(AVCaptureDevice),
         requestAccessForMediaType: ns_media
@@ -274,7 +272,7 @@ unsafe fn request_av_authorization(media_type: &str) -> Result<PermissionStatus,
 unsafe fn request_photos_authorization() -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
 
-    let block = block::ConcreteBlock::new(move |status: i64| {
+    let block = block2::RcBlock::new(move |status: i64| {
         let perm = match status {
             0 => PermissionStatus::Denied,
             1 => PermissionStatus::Restricted,
@@ -285,7 +283,6 @@ unsafe fn request_photos_authorization() -> Result<PermissionStatus, String> {
         };
         let _ = tx.send(perm);
     });
-    let block = block.copy();
 
     let _: () = msg_send![class!(PHPhotoLibrary),
         requestAuthorizationForAccessLevel: 1i64 // PHAccessLevelReadWrite
@@ -318,7 +315,7 @@ unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
     let store: *mut AnyObject = msg_send![class!(CNContactStore), alloc];
     let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
+    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -326,7 +323,6 @@ unsafe fn request_contacts_authorization() -> Result<PermissionStatus, String> {
         };
         let _ = tx.send(status);
     });
-    let block = block.copy();
 
     let _: () = msg_send![store,
         requestAccessForEntityType: 0i64 // CNEntityTypeContacts
@@ -342,7 +338,7 @@ unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStat
     let store: *mut AnyObject = msg_send![class!(EKEventStore), alloc];
     let store: *mut AnyObject = msg_send![store, init];
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
+    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -350,7 +346,6 @@ unsafe fn request_event_authorization(entity_type: i64) -> Result<PermissionStat
         };
         let _ = tx.send(status);
     });
-    let block = block.copy();
 
     let _: () = msg_send![store,
         requestAccessToEntityType: entity_type
@@ -369,7 +364,7 @@ unsafe fn request_notification_authorization() -> Result<PermissionStatus, Strin
     // UNAuthorizationOptionAlert | UNAuthorizationOptionBadge | UNAuthorizationOptionSound
     let options: u64 = (1 << 0) | (1 << 1) | (1 << 2);
 
-    let block = block::ConcreteBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
+    let block = block2::RcBlock::new(move |granted: BOOL, _error: *mut AnyObject| {
         let status = if granted == YES {
             PermissionStatus::Granted
         } else {
@@ -377,7 +372,6 @@ unsafe fn request_notification_authorization() -> Result<PermissionStatus, Strin
         };
         let _ = tx.send(status);
     });
-    let block = block.copy();
 
     let _: () = msg_send![center,
         requestAuthorizationWithOptions: options
@@ -391,7 +385,7 @@ unsafe fn request_notification_authorization() -> Result<PermissionStatus, Strin
 unsafe fn request_speech_authorization() -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
 
-    let block = block::ConcreteBlock::new(move |status: i64| {
+    let block = block2::RcBlock::new(move |status: i64| {
         let perm = match status {
             0 => PermissionStatus::Denied,
             1 => PermissionStatus::Denied,
@@ -401,7 +395,6 @@ unsafe fn request_speech_authorization() -> Result<PermissionStatus, String> {
         };
         let _ = tx.send(perm);
     });
-    let block = block.copy();
 
     let _: () = msg_send![class!(SFSpeechRecognizer),
         requestAuthorization: &*block
@@ -414,7 +407,7 @@ unsafe fn request_speech_authorization() -> Result<PermissionStatus, String> {
 unsafe fn request_tracking_authorization() -> Result<PermissionStatus, String> {
     let (tx, rx) = mpsc::channel();
 
-    let block = block::ConcreteBlock::new(move |status: u32| {
+    let block = block2::RcBlock::new(move |status: u32| {
         let perm = match status {
             0 => PermissionStatus::Denied,
             1 => PermissionStatus::Restricted,
@@ -424,7 +417,6 @@ unsafe fn request_tracking_authorization() -> Result<PermissionStatus, String> {
         };
         let _ = tx.send(perm);
     });
-    let block = block.copy();
 
     let _: () = msg_send![class!(ATTrackingManager),
         requestTrackingAuthorizationWithCompletionHandler: &*block

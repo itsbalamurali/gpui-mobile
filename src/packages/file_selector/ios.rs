@@ -34,18 +34,18 @@ static mut DELEGATE_CLASS: *const AnyClass = std::ptr::null();
 fn delegate_class() -> &'static AnyClass {
     REGISTER_DELEGATE.call_once(|| {
         let superclass = class!(NSObject);
-        let mut decl = ClassBuilder::new("GpuiDocumentPickerDelegate", superclass).unwrap();
+        let mut decl = ClassBuilder::new(c"GpuiDocumentPickerDelegate", superclass).unwrap();
 
         unsafe {
             // documentPicker:didPickDocumentsAtURLs:
             decl.add_method(
                 sel!(documentPicker:didPickDocumentsAtURLs:),
-                did_pick_documents as extern "C" fn(&AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+                did_pick_documents as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
             // documentPickerWasCancelled:
             decl.add_method(
                 sel!(documentPickerWasCancelled:),
-                did_cancel as extern "C" fn(&AnyObject, Sel, *mut AnyObject),
+                did_cancel as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
             );
         }
 
@@ -54,39 +54,35 @@ fn delegate_class() -> &'static AnyClass {
     unsafe { &*DELEGATE_CLASS }
 }
 
-extern "C" fn did_pick_documents(
-    _this: &AnyObject,
+unsafe extern "C" fn did_pick_documents(
+    _this: *mut AnyObject,
     _sel: Sel,
     _controller: *mut AnyObject,
     urls: *mut AnyObject,
 ) {
-    unsafe {
-        let count: usize = msg_send![urls, count];
-        let mut paths = Vec::with_capacity(count);
-        for i in 0..count {
-            let url: *mut AnyObject = msg_send![urls, objectAtIndex: i];
-            let abs_string: *mut AnyObject = msg_send![url, absoluteString];
-            if !abs_string.is_null() {
-                let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
-                if !cstr.is_null() {
-                    paths.push(
-                        std::ffi::CStr::from_ptr(cstr)
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                }
+    let count: usize = msg_send![urls, count];
+    let mut paths = Vec::with_capacity(count);
+    for i in 0..count {
+        let url: *mut AnyObject = msg_send![urls, objectAtIndex: i];
+        let abs_string: *mut AnyObject = msg_send![url, absoluteString];
+        if !abs_string.is_null() {
+            let cstr: *const std::ffi::c_char = msg_send![abs_string, UTF8String];
+            if !cstr.is_null() {
+                paths.push(
+                    std::ffi::CStr::from_ptr(cstr)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
-        // Dismiss the picker
-        let _: () = msg_send![_controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
-        send_result(paths);
     }
+    // Dismiss the picker
+    let _: () = msg_send![_controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
+    send_result(paths);
 }
 
-extern "C" fn did_cancel(_this: &AnyObject, _sel: Sel, controller: *mut AnyObject) {
-    unsafe {
-        let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
-    }
+unsafe extern "C" fn did_cancel(_this: *mut AnyObject, _sel: Sel, controller: *mut AnyObject) {
+    let _: () = msg_send![controller, dismissViewControllerAnimated: YES completion: std::ptr::null::<AnyObject>()];
     send_result(vec![]);
 }
 
@@ -231,7 +227,7 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             return Err("Failed to create UIDocumentPickerViewController".into());
         }
 
-        let _: () = msg_send![picker, setAllowsMultipleSelection: false as BOOL];
+        let _: () = msg_send![picker, setAllowsMultipleSelection: objc2::runtime::Bool::from(false)];
 
         // Set delegate
         let delegate_cls = delegate_class();

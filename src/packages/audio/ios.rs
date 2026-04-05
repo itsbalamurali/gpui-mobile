@@ -1,4 +1,5 @@
 use super::{LoopMode, PlayerState};
+use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, sel};
 use std::collections::HashMap;
@@ -316,6 +317,22 @@ struct CMTime {
     timescale: i32,
     flags: u32,
     epoch: i64,
+}
+
+unsafe impl Encode for CMTime {
+    const ENCODING: Encoding = Encoding::Struct(
+        "CMTime",
+        &[
+            Encoding::LongLong,
+            Encoding::Int,
+            Encoding::UInt,
+            Encoding::LongLong,
+        ],
+    );
+}
+
+unsafe impl RefEncode for CMTime {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
 }
 
 /// CMTimeMake(value, timescale) — construct a CMTime.

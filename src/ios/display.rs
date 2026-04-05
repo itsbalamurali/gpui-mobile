@@ -4,9 +4,10 @@
 //! and possibly an external display via AirPlay or USB-C.
 
 use anyhow::Result;
-use core_graphics::geometry::CGRect;
 use gpui::{px, size, Bounds, DisplayId, Pixels, PlatformDisplay};
 use objc2::{class, msg_send, sel};
+
+use super::cg_types::ObjcCGRect;
 use uuid::Uuid;
 
 /// Represents an iOS display (UIScreen).
@@ -42,7 +43,7 @@ impl IosDisplay {
     }
 
     /// Get the screen bounds in points.
-    fn bounds_in_points(&self) -> CGRect {
+    fn bounds_in_points(&self) -> ObjcCGRect {
         unsafe { msg_send![self.screen, bounds] }
     }
 
@@ -78,8 +79,8 @@ impl PlatformDisplay for IosDisplay {
         // Create a deterministic UUID from screen properties
         let bytes = format!(
             "ios-screen-{}-{}-{}",
-            bounds.size.width as u32,
-            bounds.size.height as u32,
+            bounds.width as u32,
+            bounds.height as u32,
             (scale * 100.0) as u32
         );
 
@@ -91,7 +92,7 @@ impl PlatformDisplay for IosDisplay {
 
         Bounds {
             origin: Default::default(),
-            size: size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            size: size(px(bounds.width as f32), px(bounds.height as f32)),
         }
     }
 }

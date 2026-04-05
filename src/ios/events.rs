@@ -6,10 +6,11 @@
 //! - Pan gesture → ScrollWheel events
 //! - Touch move → MouseMove events
 
-use core_graphics::geometry::CGPoint;
 use gpui::{px, Pixels, Point, TouchPhase};
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
+
+use super::cg_types::ObjcCGPoint;
 
 /// Touch phase from UIKit
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +51,7 @@ impl From<UITouchPhase> for TouchPhase {
 /// Convert a UITouch to a mouse position
 pub fn touch_location_in_view(touch: *mut AnyObject, view: *mut AnyObject) -> Point<Pixels> {
     unsafe {
-        let location: CGPoint = msg_send![touch, locationInView: view];
+        let location: ObjcCGPoint = msg_send![touch, locationInView: view];
         Point::new(px(location.x as f32), px(location.y as f32))
     }
 }
