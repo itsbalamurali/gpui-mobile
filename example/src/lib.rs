@@ -162,15 +162,16 @@ impl log::Log for NsLogLogger {
 /// Call NSLog from Rust via raw FFI.
 #[cfg(target_os = "ios")]
 fn nslog(msg: &str) {
-    use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
     unsafe {
-        extern "C" { fn NSLog(fmt: *mut Object, ...); }
+        extern "C" { fn NSLog(fmt: *mut AnyObject, ...); }
         let c_msg = std::ffi::CString::new(msg).unwrap_or_default();
-        let ns_msg: *mut Object = msg_send![class!(NSString), alloc];
-        let ns_msg: *mut Object = msg_send![ns_msg, initWithUTF8String: c_msg.as_ptr()];
+        let ns_msg: *mut AnyObject = msg_send![class!(NSString), alloc];
+        let ns_msg: *mut AnyObject = msg_send![ns_msg, initWithUTF8String: c_msg.as_ptr()];
         let c_fmt = std::ffi::CString::new("%@").unwrap_or_default();
-        let ns_fmt: *mut Object = msg_send![class!(NSString), alloc];
-        let ns_fmt: *mut Object = msg_send![ns_fmt, initWithUTF8String: c_fmt.as_ptr()];
+        let ns_fmt: *mut AnyObject = msg_send![class!(NSString), alloc];
+        let ns_fmt: *mut AnyObject = msg_send![ns_fmt, initWithUTF8String: c_fmt.as_ptr()];
         NSLog(ns_fmt, ns_msg);
     }
 }
