@@ -209,8 +209,7 @@ impl IosPlatformView {
             if !html.is_empty() {
                 let ns_html = Self::make_nsstring(html);
                 let base_url: *mut Object = std::ptr::null_mut();
-                let _: *mut Object =
-                    msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
+                let _: *mut Object = msg_send![webview, loadHTMLString: ns_html baseURL: base_url];
                 let _: () = msg_send![ns_html, release];
             }
         }
@@ -238,8 +237,7 @@ impl IosPlatformView {
         if let Some(session_id_str) = params.creation_params.get("session_id") {
             if let Ok(session_id) = session_id_str.parse::<usize>() {
                 if let Some(session_ptr) = crate::packages::camera::ios_get_session(session_id) {
-                    let layer: *mut Object =
-                        msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
+                    let layer: *mut Object = msg_send![class!(AVCaptureVideoPreviewLayer), alloc];
                     let layer: *mut Object = msg_send![layer, initWithSession: session_ptr];
                     if !layer.is_null() {
                         let _: () = msg_send![layer, setFrame: frame];

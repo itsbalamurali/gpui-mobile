@@ -53,9 +53,7 @@ impl AndroidPlatformView {
 
         with_env(|env| {
             let helper_class = find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
-            let view_type_jstr = env
-                .new_string(&self.view_type)
-                .map_err(|e| e.to_string())?;
+            let view_type_jstr = env.new_string(&self.view_type).map_err(|e| e.to_string())?;
             let view_id = self.id.0 as i64;
 
             let bounds = self.bounds.lock().unwrap();
@@ -80,7 +78,9 @@ impl AndroidPlatformView {
                 .call_static_method(
                     &helper_class,
                     jni::jni_str!("createView"),
-                    jni::jni_sig!("(Landroid/app/Activity;Ljava/lang/String;JFFFFLjava/lang/String;)Z"),
+                    jni::jni_sig!(
+                        "(Landroid/app/Activity;Ljava/lang/String;JFFFFLjava/lang/String;)Z"
+                    ),
                     &[
                         JValue::Object(&act),
                         JValue::Object(&view_type_jstr),

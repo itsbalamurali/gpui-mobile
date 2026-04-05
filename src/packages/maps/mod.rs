@@ -130,13 +130,31 @@ impl MapView {
 
         let mut creation_params = std::collections::HashMap::new();
         creation_params.insert("latitude".to_string(), settings.center.latitude.to_string());
-        creation_params.insert("longitude".to_string(), settings.center.longitude.to_string());
+        creation_params.insert(
+            "longitude".to_string(),
+            settings.center.longitude.to_string(),
+        );
         creation_params.insert("zoom".to_string(), settings.zoom.to_string());
-        creation_params.insert("map_type".to_string(), (settings.map_type as i32).to_string());
-        creation_params.insert("zoom_gestures".to_string(), settings.zoom_gestures_enabled.to_string());
-        creation_params.insert("scroll_gestures".to_string(), settings.scroll_gestures_enabled.to_string());
-        creation_params.insert("rotate_gestures".to_string(), settings.rotate_gestures_enabled.to_string());
-        creation_params.insert("my_location".to_string(), settings.my_location_enabled.to_string());
+        creation_params.insert(
+            "map_type".to_string(),
+            (settings.map_type as i32).to_string(),
+        );
+        creation_params.insert(
+            "zoom_gestures".to_string(),
+            settings.zoom_gestures_enabled.to_string(),
+        );
+        creation_params.insert(
+            "scroll_gestures".to_string(),
+            settings.scroll_gestures_enabled.to_string(),
+        );
+        creation_params.insert(
+            "rotate_gestures".to_string(),
+            settings.rotate_gestures_enabled.to_string(),
+        );
+        creation_params.insert(
+            "my_location".to_string(),
+            settings.my_location_enabled.to_string(),
+        );
 
         let params = PlatformViewParams {
             bounds: PlatformViewBounds::default(),

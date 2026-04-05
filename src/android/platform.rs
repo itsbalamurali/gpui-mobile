@@ -174,6 +174,14 @@ struct AndroidPlatformState {
     preferred_backend: AndroidBackend,
 }
 
+// SAFETY: `AndroidPlatformState` is only ever accessed while holding the
+// `Mutex<AndroidPlatformState>` lock, and all GPU work (including any use of
+// `GpuContext = Rc<RefCell<Option<WgpuContext>>>`) happens exclusively on the
+// Android main thread.  The `Rc` never escapes to another thread; we just need
+// `Send` so that `Arc<AndroidPlatform>` satisfies the `Sync` bound required by
+// `static OnceLock<Arc<AndroidPlatform>>`.
+unsafe impl Send for AndroidPlatformState {}
+
 // ── AndroidPlatform ───────────────────────────────────────────────────────────
 
 /// The GPUI platform implementation for Android.

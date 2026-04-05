@@ -101,17 +101,29 @@ impl std::fmt::Display for TargetPlatform {
 /// ```
 pub fn target_platform() -> TargetPlatform {
     #[cfg(target_os = "android")]
-    { return TargetPlatform::Android; }
+    {
+        return TargetPlatform::Android;
+    }
     #[cfg(target_os = "ios")]
-    { return TargetPlatform::IOS; }
+    {
+        return TargetPlatform::IOS;
+    }
     #[cfg(target_os = "macos")]
-    { return TargetPlatform::MacOS; }
+    {
+        return TargetPlatform::MacOS;
+    }
     #[cfg(target_os = "linux")]
-    { return TargetPlatform::Linux; }
+    {
+        return TargetPlatform::Linux;
+    }
     #[cfg(target_os = "windows")]
-    { return TargetPlatform::Windows; }
+    {
+        return TargetPlatform::Windows;
+    }
     #[cfg(target_arch = "wasm32")]
-    { return TargetPlatform::Web; }
+    {
+        return TargetPlatform::Web;
+    }
 
     #[cfg(not(any(
         target_os = "android",
@@ -135,17 +147,29 @@ pub fn target_platform() -> TargetPlatform {
 /// `const` contexts where the `target_platform()` function cannot.
 pub const DEFAULT_PLATFORM: TargetPlatform = {
     #[cfg(target_os = "android")]
-    { TargetPlatform::Android }
+    {
+        TargetPlatform::Android
+    }
     #[cfg(target_os = "ios")]
-    { TargetPlatform::IOS }
+    {
+        TargetPlatform::IOS
+    }
     #[cfg(target_os = "macos")]
-    { TargetPlatform::MacOS }
+    {
+        TargetPlatform::MacOS
+    }
     #[cfg(target_os = "linux")]
-    { TargetPlatform::Linux }
+    {
+        TargetPlatform::Linux
+    }
     #[cfg(target_os = "windows")]
-    { TargetPlatform::Windows }
+    {
+        TargetPlatform::Windows
+    }
     #[cfg(target_arch = "wasm32")]
-    { TargetPlatform::Web }
+    {
+        TargetPlatform::Web
+    }
     // Fallback for unknown targets — default to Linux so that `cargo doc`
     // and CI builds on uncommon hosts (e.g. FreeBSD) do not fail.
     #[cfg(not(any(
@@ -156,5 +180,7 @@ pub const DEFAULT_PLATFORM: TargetPlatform = {
         target_os = "windows",
         target_arch = "wasm32",
     )))]
-    { TargetPlatform::Linux }
+    {
+        TargetPlatform::Linux
+    }
 };

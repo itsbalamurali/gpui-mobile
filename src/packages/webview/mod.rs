@@ -54,7 +54,10 @@ fn ensure_factory_registered() {
         #[cfg(target_os = "android")]
         {
             use crate::android::platform_view::AndroidPlatformViewFactory;
-            registry.register("webview", Box::new(AndroidPlatformViewFactory::new("webview")));
+            registry.register(
+                "webview",
+                Box::new(AndroidPlatformViewFactory::new("webview")),
+            );
         }
         #[cfg(target_os = "ios")]
         {
@@ -64,11 +67,22 @@ fn ensure_factory_registered() {
     }
 }
 
-fn settings_to_creation_params(settings: &WebViewSettings) -> std::collections::HashMap<String, String> {
+fn settings_to_creation_params(
+    settings: &WebViewSettings,
+) -> std::collections::HashMap<String, String> {
     let mut params = std::collections::HashMap::new();
-    params.insert("javascript_enabled".to_string(), settings.javascript_enabled.to_string());
-    params.insert("dom_storage_enabled".to_string(), settings.dom_storage_enabled.to_string());
-    params.insert("zoom_enabled".to_string(), settings.zoom_enabled.to_string());
+    params.insert(
+        "javascript_enabled".to_string(),
+        settings.javascript_enabled.to_string(),
+    );
+    params.insert(
+        "dom_storage_enabled".to_string(),
+        settings.dom_storage_enabled.to_string(),
+    );
+    params.insert(
+        "zoom_enabled".to_string(),
+        settings.zoom_enabled.to_string(),
+    );
     if let Some(ref ua) = settings.user_agent {
         params.insert("user_agent".to_string(), ua.clone());
     }
@@ -89,7 +103,7 @@ pub fn load_url(url: &str, settings: &WebViewSettings) -> Result<WebViewHandle, 
         bounds: PlatformViewBounds {
             x: 0.0,
             y: settings.top_offset,
-            width: 0.0,  // Will be set by platform_view_element
+            width: 0.0, // Will be set by platform_view_element
             height: 0.0,
         },
         creation_params: params_map,

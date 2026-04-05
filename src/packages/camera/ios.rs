@@ -52,7 +52,9 @@ fn next_id() -> usize {
 /// Get the raw AVCaptureSession pointer for a given session ID.
 pub fn get_session_ptr(id: usize) -> Option<*mut Object> {
     let guard = sessions();
-    guard.as_ref().and_then(|map| map.get(&id).map(|s| s.session))
+    guard
+        .as_ref()
+        .and_then(|map| map.get(&id).map(|s| s.session))
 }
 
 // ── Photo capture delegate ──────────────────────────────────────────────────

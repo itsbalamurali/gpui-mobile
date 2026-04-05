@@ -29,9 +29,7 @@ use objc::{
     sel, sel_impl,
 };
 use parking_lot::Mutex;
-use raw_window_handle::{
-    HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle,
-};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -59,8 +57,7 @@ impl HasWindowHandle for RawIosWindow {
         &self,
     ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
     {
-        let view =
-            NonNull::new(self.view).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let view = NonNull::new(self.view).ok_or(raw_window_handle::HandleError::Unavailable)?;
         let handle = UiKitWindowHandle::new(view);
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
     }
@@ -643,8 +640,7 @@ impl IosWindow {
                         // Pre-populate gpu_context so WgpuRenderer::new()
                         // reuses our Metal-backed context (and its instance)
                         // instead of creating a Vulkan+GL one.
-                        let gpu_context: GpuContext =
-                            Rc::new(RefCell::new(Some(context)));
+                        let gpu_context: GpuContext = Rc::new(RefCell::new(Some(context)));
                         drop(surface); // no longer needed — new() creates its own
 
                         match WgpuRenderer::new(gpu_context, &raw_window, config, None) {

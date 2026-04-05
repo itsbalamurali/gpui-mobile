@@ -70,8 +70,7 @@ impl HasWindowHandle for RawAndroidWindow {
         &self,
     ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
     {
-        let ptr =
-            NonNull::new(self.nw_ptr).ok_or(raw_window_handle::HandleError::Unavailable)?;
+        let ptr = NonNull::new(self.nw_ptr).ok_or(raw_window_handle::HandleError::Unavailable)?;
         let handle = AndroidNdkWindowHandle::new(ptr);
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(handle.into()) })
     }
@@ -309,9 +308,14 @@ impl AndroidWindow {
             scale_factor
         );
 
-        let renderer =
-            Self::create_renderer(&native_window, Rc::clone(&gpu_context), width, height, transparent)
-                .context("failed to create gpui_wgpu renderer")?;
+        let renderer = Self::create_renderer(
+            &native_window,
+            Rc::clone(&gpu_context),
+            width,
+            height,
+            transparent,
+        )
+        .context("failed to create gpui_wgpu renderer")?;
 
         let id = native_window.ptr().as_ptr() as u64;
 
@@ -377,11 +381,7 @@ impl AndroidWindow {
 
     /// Called when `APP_CMD_INIT_WINDOW` fires and a new `NativeWindow` is
     /// available (e.g. after returning from the background).
-    pub fn init_window(
-        &self,
-        native_window: NativeWindow,
-        gpu_context: GpuContext,
-    ) -> Result<()> {
+    pub fn init_window(&self, native_window: NativeWindow, gpu_context: GpuContext) -> Result<()> {
         request_high_frame_rate(&native_window);
 
         let width = native_window.width();
@@ -426,9 +426,7 @@ impl AndroidWindow {
                 state.gpu_context = Rc::clone(&gpu_context);
                 gpu_context
             };
-            let renderer = Self::create_renderer(
-                &native_window, ctx, width, height, transparent,
-            )?;
+            let renderer = Self::create_renderer(&native_window, ctx, width, height, transparent)?;
             state.renderer = Some(renderer);
             log::info!(
                 "AndroidWindow::init_window — created new renderer {}×{}",

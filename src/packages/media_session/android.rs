@@ -76,16 +76,11 @@ pub fn release() -> Result<(), String> {
     jni_helpers::with_env(|env| {
         let cls = jni_helpers::find_app_class(env, HELPER_CLASS)?;
 
-        env.call_static_method(
-            &cls,
-            jni::jni_str!("release"),
-            jni::jni_sig!("()V"),
-            &[],
-        )
-        .map_err(|e| {
-            let _ = env.exception_clear();
-            e.to_string()
-        })?;
+        env.call_static_method(&cls, jni::jni_str!("release"), jni::jni_sig!("()V"), &[])
+            .map_err(|e| {
+                let _ = env.exception_clear();
+                e.to_string()
+            })?;
 
         Ok(())
     })

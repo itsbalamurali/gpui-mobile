@@ -172,13 +172,17 @@ pub fn create_camera(
 ) -> Result<CameraHandle, String> {
     #[cfg(target_os = "ios")]
     {
-        ios::create_camera(camera, resolution, enable_audio)
-            .map(|id| CameraHandle { id, preview_handle: None })
+        ios::create_camera(camera, resolution, enable_audio).map(|id| CameraHandle {
+            id,
+            preview_handle: None,
+        })
     }
     #[cfg(target_os = "android")]
     {
-        android::create_camera(camera, resolution, enable_audio)
-            .map(|id| CameraHandle { id, preview_handle: None })
+        android::create_camera(camera, resolution, enable_audio).map(|id| CameraHandle {
+            id,
+            preview_handle: None,
+        })
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
