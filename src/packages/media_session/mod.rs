@@ -42,6 +42,7 @@ pub fn set_seek_handler(handler: impl Fn(u64) + Send + 'static) {
 }
 
 /// Called from platform code when a media action is received.
+#[allow(dead_code)]
 pub(crate) fn notify_action(action: MediaAction) {
     if let Some(cb) = ACTION_CALLBACK.lock().unwrap().as_ref() {
         cb(action);
@@ -49,6 +50,7 @@ pub(crate) fn notify_action(action: MediaAction) {
 }
 
 /// Called from platform code when a seek request is received.
+#[allow(dead_code)]
 pub(crate) fn notify_seek(position_ms: u64) {
     if let Some(cb) = SEEK_CALLBACK.lock().unwrap().as_ref() {
         cb(position_ms);

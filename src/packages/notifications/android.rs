@@ -16,7 +16,7 @@ pub fn initialize() -> Result<(), String> {
             &[JValue::Object(&activity)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -58,7 +58,7 @@ pub fn show(notification: &Notification) -> Result<(), String> {
             ],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -79,7 +79,7 @@ pub fn cancel(id: i32) -> Result<(), String> {
             &[JValue::Object(&activity), JValue::Int(id)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -100,7 +100,7 @@ pub fn cancel_all() -> Result<(), String> {
             &[JValue::Object(&activity)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 

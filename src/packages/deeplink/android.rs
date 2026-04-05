@@ -20,7 +20,7 @@ pub fn get_initial_link() -> Result<Option<String>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

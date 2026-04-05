@@ -31,7 +31,7 @@ pub fn pick_image(options: &ImagePickerOptions) -> Result<Option<PickedFile>, St
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -65,7 +65,7 @@ pub fn pick_multi_image(
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -119,7 +119,7 @@ pub fn pick_video(
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

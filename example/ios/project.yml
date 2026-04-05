@@ -84,14 +84,20 @@ targets:
         VALID_ARCHS: "arm64"
         ARCHS: "arm64"
         ONLY_ACTIVE_ARCH: YES
+      settings:
+        base:
+          # SDK-conditional static lib path: simulator uses aarch64-apple-ios-sim,
+          # device uses aarch64-apple-ios.
+          "EXAMPLE_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios-sim/debug/libgpui_mobile_example.a"
+          "EXAMPLE_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libgpui_mobile_example.a"
       configs:
         Debug:
-          EXAMPLE_STATIC_LIB: "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libgpui_mobile_example.a"
           GCC_OPTIMIZATION_LEVEL: "0"
           DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
-          EXAMPLE_STATIC_LIB: "$(PROJECT_DIR)/../target/aarch64-apple-ios/release/libgpui_mobile_example.a"
+          "EXAMPLE_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios-sim/release/libgpui_mobile_example.a"
+          "EXAMPLE_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios/release/libgpui_mobile_example.a"
           GCC_OPTIMIZATION_LEVEL: "s"
           DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
           SWIFT_OPTIMIZATION_LEVEL: "-O"

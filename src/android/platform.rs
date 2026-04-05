@@ -59,7 +59,7 @@ use super::{
     window::{AndroidWindow, WindowList},
     AndroidBackend,
 };
-use gpui_wgpu::{GpuContext, WgpuContext};
+use gpui_wgpu::GpuContext;
 
 // ── stub: clipboard ───────────────────────────────────────────────────────────
 
@@ -852,7 +852,7 @@ impl AndroidPlatform {
             {
                 Ok(o) if !o.is_null() => o,
                 _ => {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     return Err("getSystemService(power) failed or returned null".to_string());
                 }
             };
@@ -869,7 +869,7 @@ impl AndroidPlatform {
             {
                 Ok(s) => s,
                 Err(_) => {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     return Err("getCurrentThermalStatus() failed".to_string());
                 }
             };
@@ -1192,7 +1192,7 @@ impl Platform for AndroidPlatform {
             .lock()
             .clipboard
             .read()
-            .map(|text| ClipboardItem::new_string(text))
+            .map(ClipboardItem::new_string)
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {

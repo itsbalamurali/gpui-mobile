@@ -18,7 +18,7 @@ pub fn launch_url(url: &str) -> Result<bool, String> {
         match result {
             Ok(_) => Ok(true),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }
@@ -59,7 +59,7 @@ pub fn can_launch_url(url: &str) -> Result<bool, String> {
         match resolved {
             Ok(r) => Ok(!r.is_null()),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }

@@ -39,7 +39,7 @@ use gpui::{
     PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
     RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
 };
-use gpui_wgpu::{wgpu, GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
+use gpui_wgpu::{wgpu, GpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use parking_lot::Mutex;
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, HasDisplayHandle, HasWindowHandle,
@@ -1786,7 +1786,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 )
                 .and_then(|v| v.l())
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     e.to_string()
                 })?;
             if imm.is_null() {
@@ -1801,7 +1801,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                     &[],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     e.to_string()
                 })?;
 
@@ -1817,7 +1817,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                     JValue::Int(0),
                 ],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
 
             let anchor_info = env
                 .call_method(
@@ -1828,7 +1828,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 )
                 .and_then(|v| v.l())
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     e.to_string()
                 })?;
             if anchor_info.is_null() {
@@ -1845,7 +1845,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 )
                 .and_then(|v| v.l())
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     e.to_string()
                 })?;
             if window.is_null() {
@@ -1861,7 +1861,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 )
                 .and_then(|v| v.l())
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     e.to_string()
                 })?;
             if decor_view.is_null() {
@@ -1875,7 +1875,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 jni::jni_sig!("(Landroid/view/View;Landroid/view/inputmethod/CursorAnchorInfo;)V"),
                 &[JValue::Object(&decor_view), JValue::Object(&anchor_info)],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
 
             log::trace!("update_ime_position: x={:.0} y={:.0} h={:.0}", x, y, h);
 

@@ -87,7 +87,7 @@ pub fn share_text(text: &str, subject: Option<&str>) -> Result<(), String> {
         match result {
             Ok(_) => Ok(()),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Err("Failed to start share activity".into())
             }
         }

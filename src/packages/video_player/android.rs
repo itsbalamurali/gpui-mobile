@@ -19,7 +19,7 @@ pub fn create_player() -> Result<u32, String> {
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -51,7 +51,7 @@ pub fn set_url(id: u32, url: &str) -> Result<VideoInfo, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -79,7 +79,7 @@ pub fn set_file_path(id: u32, path: &str) -> Result<VideoInfo, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -98,7 +98,7 @@ pub fn play(id: u32) -> Result<(), String> {
             &[JValue::Int(id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -115,7 +115,7 @@ pub fn pause(id: u32) -> Result<(), String> {
             &[JValue::Int(id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -132,7 +132,7 @@ pub fn seek(id: u32, position_ms: u64) -> Result<(), String> {
             &[JValue::Int(id as i32), JValue::Long(position_ms as i64)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -149,7 +149,7 @@ pub fn set_volume(id: u32, volume: f32) -> Result<(), String> {
             &[JValue::Int(id as i32), JValue::Float(volume)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -166,7 +166,7 @@ pub fn set_speed(id: u32, speed: f32) -> Result<(), String> {
             &[JValue::Int(id as i32), JValue::Float(speed)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -183,7 +183,7 @@ pub fn set_looping(id: u32, looping: bool) -> Result<(), String> {
             &[JValue::Int(id as i32), JValue::Bool(looping)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -202,7 +202,7 @@ pub fn position(id: u32) -> Result<u64, String> {
             )
             .and_then(|v| v.j())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
         Ok(pos.max(0) as u64)
@@ -221,7 +221,7 @@ pub fn duration(id: u32) -> Result<u64, String> {
             )
             .and_then(|v| v.j())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
         Ok(dur.max(0) as u64)
@@ -241,7 +241,7 @@ pub fn video_size(id: u32) -> Result<(u32, u32), String> {
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -254,7 +254,7 @@ pub fn video_size(id: u32) -> Result<(u32, u32), String> {
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -274,7 +274,7 @@ pub fn is_playing(id: u32) -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
         Ok(playing)
@@ -291,7 +291,7 @@ pub fn dispose(id: u32) -> Result<(), String> {
             &[JValue::Int(id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())

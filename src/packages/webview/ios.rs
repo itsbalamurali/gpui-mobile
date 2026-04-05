@@ -1,6 +1,4 @@
 use super::WebViewHandle;
-use objc::runtime::Object;
-use objc::{class, msg_send, sel, sel_impl};
 
 #[link(name = "WebKit", kind = "framework")]
 extern "C" {}

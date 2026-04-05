@@ -19,7 +19,7 @@ pub fn check_connectivity() -> ConnectivityStatus {
         {
             Ok(o) if !o.is_null() => o,
             _ => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(ConnectivityStatus::None);
             }
         };
@@ -36,7 +36,7 @@ pub fn check_connectivity() -> ConnectivityStatus {
         {
             Ok(o) if !o.is_null() => o,
             _ => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(ConnectivityStatus::None);
             }
         };
@@ -53,7 +53,7 @@ pub fn check_connectivity() -> ConnectivityStatus {
         {
             Ok(c) => c,
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(ConnectivityStatus::None);
             }
         };
@@ -75,7 +75,7 @@ pub fn check_connectivity() -> ConnectivityStatus {
             Ok(0) => Ok(ConnectivityStatus::Cellular), // TYPE_MOBILE
             Ok(_) => Ok(ConnectivityStatus::Wifi),     // Ethernet etc. treated as Wifi
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(ConnectivityStatus::None)
             }
         }

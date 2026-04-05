@@ -63,7 +63,7 @@ fn get_sensor_manager<'local>(
         .and_then(|v| v.l())
         .ok()?;
     if sm.is_null() {
-        let _ = env.exception_clear();
+        env.exception_clear();
         None
     } else {
         Some(sm)
@@ -82,7 +82,7 @@ fn has_sensor(env: &mut jni::Env<'_>, sm: &jni::objects::JObject<'_>, sensor_typ
     {
         Ok(sensor) => !sensor.is_null(),
         Err(_) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             false
         }
     }

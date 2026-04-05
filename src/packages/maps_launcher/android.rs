@@ -38,7 +38,7 @@ pub fn open_coordinates(
         ) {
             Ok(_) => Ok(true),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }
@@ -63,7 +63,7 @@ pub fn open_query(query: &str) -> Result<bool, String> {
         ) {
             Ok(_) => Ok(true),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }
@@ -108,7 +108,7 @@ pub fn open_directions(
         ) {
             Ok(_) => Ok(true),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 // Fallback to generic geo intent
                 let fallback_uri = format!(
                     "geo:{},{}?q={},{}",
@@ -125,7 +125,7 @@ pub fn open_directions(
                 ) {
                     Ok(_) => Ok(true),
                     Err(_) => {
-                        let _ = env.exception_clear();
+                        env.exception_clear();
                         Ok(false)
                     }
                 }
@@ -167,7 +167,7 @@ pub fn is_available() -> Result<bool, String> {
         match resolved {
             Ok(r) => Ok(!r.is_null()),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }

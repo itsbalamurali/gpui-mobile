@@ -50,7 +50,7 @@ pub fn is_battery_save_mode() -> bool {
         {
             Ok(o) if !o.is_null() => o,
             _ => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(false);
             }
         };
@@ -67,7 +67,7 @@ pub fn is_battery_save_mode() -> bool {
         {
             Ok(v) => Ok(v),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(false)
             }
         }

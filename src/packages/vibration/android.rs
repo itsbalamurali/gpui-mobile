@@ -26,11 +26,11 @@ pub fn vibrate(duration_ms: u32) -> Result<(), String> {
                         jni::jni_sig!("(Landroid/os/VibrationEffect;)V"),
                         &[JValue::Object(&effect)],
                     );
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     return Ok(());
                 }
             }
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
 
         // Fallback: vibrator.vibrate(long) for older APIs
@@ -40,7 +40,7 @@ pub fn vibrate(duration_ms: u32) -> Result<(), String> {
             jni::jni_sig!("(J)V"),
             &[JValue::Long(duration_ms as i64)],
         );
-        let _ = env.exception_clear();
+        env.exception_clear();
         Ok(())
     })
 }
@@ -93,7 +93,7 @@ pub fn haptic_feedback(feedback: HapticFeedback) -> Result<(), String> {
             jni::jni_sig!("(I)Z"),
             &[JValue::Int(constant)],
         );
-        let _ = env.exception_clear();
+        env.exception_clear();
         Ok(())
     })
 }

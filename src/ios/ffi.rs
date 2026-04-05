@@ -73,7 +73,7 @@ pub extern "C" fn gpui_ios_initialize() -> *mut c_void {
 
     // Return a non-null pointer to indicate success
     // The actual state is stored in the static
-    1 as *mut c_void
+    std::ptr::dangling_mut::<c_void>()
 }
 
 /// Register a window with the FFI layer.
@@ -431,6 +431,7 @@ pub extern "C" fn gpui_ios_handle_open_url(url_ptr: *mut c_void) {
 /// On iOS all UI work happens on the main thread.  The FFI entry points
 /// (`set_app_callback`, `run_app`, `gpui_ios_run_demo`) are only ever
 /// called from the main thread, so interior-mutable access is safe.
+#[allow(clippy::type_complexity)]
 struct AppCallbackCell(std::cell::UnsafeCell<Option<Box<dyn FnOnce(&mut App)>>>);
 
 // Safety: only accessed from the iOS main thread.
@@ -453,6 +454,7 @@ pub fn set_app_callback(cb: Box<dyn FnOnce(&mut App)>) {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn take_app_callback() -> Option<Box<dyn FnOnce(&mut App)>> {
     APP_CALLBACK
         .get()

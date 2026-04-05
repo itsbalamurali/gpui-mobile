@@ -1,9 +1,5 @@
 use super::{LatLng, MapMarker, MapType};
 
-#[cfg(target_os = "ios")]
-use objc::runtime::Object;
-#[cfg(target_os = "ios")]
-use objc::{class, msg_send, sel, sel_impl};
 
 // Note: MKMapView integration requires MapKit framework.
 // These are placeholder implementations that log the operations.

@@ -21,7 +21,7 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -54,7 +54,7 @@ pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -102,7 +102,7 @@ pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -131,7 +131,7 @@ pub fn get_directory_path(_initial_directory: Option<&str>) -> Result<Option<Str
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

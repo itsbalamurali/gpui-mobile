@@ -102,11 +102,11 @@ impl std::fmt::Display for TargetPlatform {
 pub fn target_platform() -> TargetPlatform {
     #[cfg(target_os = "android")]
     {
-        return TargetPlatform::Android;
+        TargetPlatform::Android
     }
     #[cfg(target_os = "ios")]
     {
-        return TargetPlatform::IOS;
+        TargetPlatform::IOS
     }
     #[cfg(target_os = "macos")]
     {

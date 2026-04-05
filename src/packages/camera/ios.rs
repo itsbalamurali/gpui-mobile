@@ -235,26 +235,6 @@ unsafe fn nsstring(s: &str) -> *mut Object {
     ]
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct CGSize {
-    width: f64,
-    height: f64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct CGRect {
-    origin: CGPoint,
-    size: CGSize,
-}
 
 fn resolution_to_preset(resolution: ResolutionPreset) -> &'static str {
     match resolution {

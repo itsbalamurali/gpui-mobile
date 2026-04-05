@@ -52,7 +52,7 @@ pub fn start_recording(config: &RecordingConfig) -> Result<String, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -84,7 +84,7 @@ pub fn stop_recording() -> Result<Recording, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

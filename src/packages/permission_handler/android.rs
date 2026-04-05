@@ -52,7 +52,7 @@ pub fn check_permission(permission: Permission) -> Result<PermissionStatus, Stri
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -82,7 +82,7 @@ pub fn request_permission(permission: Permission) -> Result<PermissionStatus, St
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -117,7 +117,7 @@ pub fn request_permissions(
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -173,7 +173,7 @@ pub fn service_status(permission: Permission) -> Result<ServiceStatus, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -201,7 +201,7 @@ pub fn open_app_settings() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -230,7 +230,7 @@ pub fn should_show_request_rationale(permission: Permission) -> Result<bool, Str
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

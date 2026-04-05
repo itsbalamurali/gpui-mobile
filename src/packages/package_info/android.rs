@@ -58,7 +58,7 @@ pub fn get_package_info() -> Result<PackageInfo, String> {
         {
             Ok(vn) => get_string(env, &vn),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 String::new()
             }
         };
@@ -70,7 +70,7 @@ pub fn get_package_info() -> Result<PackageInfo, String> {
         {
             Ok(vc) => vc.to_string(),
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 String::new()
             }
         };

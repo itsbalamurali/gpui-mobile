@@ -141,7 +141,7 @@ build_ios() {
     if [[ "$TARGET_KIND" == "simulator" ]]; then
         rust_target="aarch64-apple-ios-sim"
         xcode_sdk="iphonesimulator"
-        xcode_destination="platform=iOS Simulator,name=iPhone 16 Pro"
+        xcode_destination="platform=iOS Simulator,OS=18.6,name=iPhone 16 Pro"
     else
         rust_target="aarch64-apple-ios"
         xcode_sdk="iphoneos"

@@ -15,7 +15,7 @@ pub fn init() -> Result<(), String> {
             &[JValue::Object(&activity)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -41,7 +41,7 @@ pub fn set_metadata(title: &str, artist: &str, duration_ms: u64) -> Result<(), S
             ],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -64,7 +64,7 @@ pub fn set_playback_state(is_playing: bool, position_ms: u64, speed: f32) -> Res
             ],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -78,7 +78,7 @@ pub fn release() -> Result<(), String> {
 
         env.call_static_method(&cls, jni::jni_str!("release"), jni::jni_sig!("()V"), &[])
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

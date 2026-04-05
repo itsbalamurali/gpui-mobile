@@ -69,7 +69,7 @@ fn get_wifi_ip_address() -> Option<String> {
                         // Network byte order to dotted-quad
                         let ip_str = format!(
                             "{}.{}.{}.{}",
-                            (ip >> 0) & 0xFF,
+                            ip & 0xFF,
                             (ip >> 8) & 0xFF,
                             (ip >> 16) & 0xFF,
                             (ip >> 24) & 0xFF,

@@ -18,7 +18,7 @@ pub fn is_device_supported() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -41,7 +41,7 @@ pub fn can_authenticate() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -64,7 +64,7 @@ pub fn get_available_biometrics() -> Result<Vec<BiometricType>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -105,7 +105,7 @@ pub fn authenticate(reason: &str) -> Result<AuthResult, String> {
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

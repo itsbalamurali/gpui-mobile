@@ -18,7 +18,7 @@ pub fn get_calendars() -> Result<Vec<Calendar>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -80,7 +80,7 @@ pub fn get_events(
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -156,7 +156,7 @@ pub fn create_event(event: &CalendarEvent) -> Result<String, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -192,7 +192,7 @@ pub fn delete_event(event_id: &str) -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

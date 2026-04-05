@@ -192,7 +192,7 @@ pub fn find_app_class<'local>(
         )
         .and_then(|v| v.l())
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             let msg = format!("getClassLoader failed: {e}");
             log::error!("find_app_class({class_name}): {msg}");
             msg
@@ -210,8 +210,8 @@ pub fn find_app_class<'local>(
         .and_then(|v| v.l())
         .map_err(|e| {
             // Print full Java stack trace to logcat, then clear.
-            let _ = env.exception_describe();
-            let _ = env.exception_clear();
+            env.exception_describe();
+            env.exception_clear();
             let msg = format!("loadClass({class_name}) failed: {e}");
             log::error!("{msg}");
             msg
@@ -247,7 +247,7 @@ pub fn unicode_char_for_key_event(key_code: i32, action: i32, meta_state: i32) -
         ) {
             Ok(o) => o,
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(0);
             }
         };
@@ -262,7 +262,7 @@ pub fn unicode_char_for_key_event(key_code: i32, action: i32, meta_state: i32) -
                 Ok(if c > 0 { c as u32 } else { 0 })
             }
             Err(_) => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 Ok(0)
             }
         }
@@ -817,7 +817,7 @@ fn pause_platform_views() {
                 jni::jni_sig!("()V"),
                 &[],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
         Ok(())
     });
@@ -833,7 +833,7 @@ fn resume_platform_views() {
                 jni::jni_sig!("()V"),
                 &[],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
         Ok(())
     });
@@ -849,7 +849,7 @@ fn dispose_all_platform_views() {
                 jni::jni_sig!("()V"),
                 &[],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
         Ok(())
     });
@@ -1091,7 +1091,7 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
             )
             .and_then(|v: jni::objects::JValueOwned| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
         if window.is_null() {
@@ -1107,7 +1107,7 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
                 jni::jni_sig!("(I)V"),
                 &[JValue::Int(argb)],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
 
         // 3. Set navigation bar color if provided
@@ -1119,7 +1119,7 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
                 jni::jni_sig!("(I)V"),
                 &[JValue::Int(argb)],
             );
-            let _ = env.exception_clear();
+            env.exception_clear();
         }
 
         // 4. Set light/dark status bar icons via WindowInsetsController (API 30+)
@@ -1144,11 +1144,11 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
                         jni::jni_sig!("(II)V"),
                         &[JValue::Int(appearance), JValue::Int(mask)],
                     );
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                 }
             }
         } else {
-            let _ = env.exception_clear();
+            env.exception_clear();
 
             if let Ok(decor) = env
                 .call_method(
@@ -1179,7 +1179,7 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
                             jni::jni_sig!("(I)V"),
                             &[JValue::Int(new_flags)],
                         );
-                        let _ = env.exception_clear();
+                        env.exception_clear();
                     }
                 }
             }

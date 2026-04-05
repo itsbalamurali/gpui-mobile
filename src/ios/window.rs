@@ -439,6 +439,7 @@ enum TouchState {
     Scrolling { prev_x: f32, prev_y: f32 },
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) struct IosWindow {
     /// The UIWindow object
     window: *mut Object,
@@ -1441,7 +1442,7 @@ impl PlatformWindow for IosWindow {
             ];
 
             // Add buttons
-            for (_index, button) in answers.iter().enumerate() {
+            for button in answers.iter() {
                 let button_title: *mut Object = msg_send![
                     class!(NSString),
                     stringWithUTF8String: button.label().as_str().as_ptr()

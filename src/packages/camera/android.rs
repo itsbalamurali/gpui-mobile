@@ -22,7 +22,7 @@ pub fn available_cameras() -> Result<Vec<CameraDescription>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -88,7 +88,7 @@ pub fn create_camera(
             )
             .and_then(|v| v.i())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -112,7 +112,7 @@ pub fn stop_preview_session(handle: &CameraHandle) -> Result<(), String> {
             &[JValue::Int(handle.id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
         Ok(())
@@ -133,7 +133,7 @@ pub fn take_picture(handle: &CameraHandle) -> Result<CapturedImage, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -170,7 +170,7 @@ pub fn start_video_recording(handle: &CameraHandle) -> Result<(), String> {
             &[JValue::Int(handle.id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -191,7 +191,7 @@ pub fn stop_video_recording(handle: &CameraHandle) -> Result<RecordedVideo, Stri
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -221,7 +221,7 @@ pub fn set_flash_mode(handle: &CameraHandle, mode: FlashMode) -> Result<(), Stri
             &[JValue::Int(handle.id as i32), JValue::Int(mode_int)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -244,7 +244,7 @@ pub fn set_focus_mode(handle: &CameraHandle, mode: FocusMode) -> Result<(), Stri
             &[JValue::Int(handle.id as i32), JValue::Int(mode_int)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -267,7 +267,7 @@ pub fn set_exposure_mode(handle: &CameraHandle, mode: ExposureMode) -> Result<()
             &[JValue::Int(handle.id as i32), JValue::Int(mode_int)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -288,7 +288,7 @@ pub fn get_min_zoom(handle: &CameraHandle) -> Result<f64, String> {
             )
             .and_then(|v| v.f())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -309,7 +309,7 @@ pub fn get_max_zoom(handle: &CameraHandle) -> Result<f64, String> {
             )
             .and_then(|v| v.f())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -328,7 +328,7 @@ pub fn set_zoom(handle: &CameraHandle, zoom: f64) -> Result<(), String> {
             &[JValue::Int(handle.id as i32), JValue::Float(zoom as f32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -348,7 +348,7 @@ pub fn set_camera(handle: &CameraHandle, camera: &CameraDescription) -> Result<(
             &[JValue::Int(handle.id as i32), JValue::Object(&j_camera_id)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -367,7 +367,7 @@ pub fn dispose(handle: CameraHandle) -> Result<(), String> {
             &[JValue::Int(handle.id as i32)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 

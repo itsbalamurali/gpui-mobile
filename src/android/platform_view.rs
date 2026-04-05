@@ -93,7 +93,7 @@ impl AndroidPlatformView {
                     ],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     format!("createView JNI call failed: {}", e)
                 })?;
 
@@ -133,7 +133,7 @@ impl AndroidPlatformView {
                     ],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     format!("setBounds failed: {}", e)
                 })?;
             Ok(())
@@ -156,7 +156,7 @@ impl AndroidPlatformView {
                     &[JValue::Long(view_id), JValue::Bool(visible)],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     format!("setVisible failed: {}", e)
                 })?;
             Ok(())
@@ -179,7 +179,7 @@ impl AndroidPlatformView {
                     &[JValue::Long(view_id)],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     format!("disposeView failed: {}", e)
                 })?;
             Ok(())
@@ -229,7 +229,7 @@ impl PlatformView for AndroidPlatformView {
                     &[JValue::Long(view_id), JValue::Int(z_index)],
                 )
                 .map_err(|e| {
-                    let _ = env.exception_clear();
+                    env.exception_clear();
                     format!("setZIndex failed: {}", e)
                 })?;
             Ok(())

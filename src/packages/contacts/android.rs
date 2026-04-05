@@ -18,7 +18,7 @@ pub fn get_contacts() -> Result<Vec<Contact>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -50,7 +50,7 @@ pub fn search_contacts(query: &str) -> Result<Vec<Contact>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -82,7 +82,7 @@ pub fn get_contact(id: &str) -> Result<Option<Contact>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

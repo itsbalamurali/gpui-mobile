@@ -18,7 +18,7 @@ pub fn set_text(text: &str) -> Result<(), String> {
             &[JValue::Object(&activity), JValue::Object(&j_text)],
         )
         .map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             e.to_string()
         })?;
 
@@ -41,7 +41,7 @@ pub fn get_text() -> Result<Option<String>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -74,7 +74,7 @@ pub fn has_text() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

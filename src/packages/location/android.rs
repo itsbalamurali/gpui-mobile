@@ -18,7 +18,7 @@ pub fn is_location_service_enabled() -> Result<bool, String> {
             )
             .and_then(|v| v.z())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -43,7 +43,7 @@ pub fn get_current_position(settings: &LocationSettings) -> Result<Position, Str
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 
@@ -72,7 +72,7 @@ pub fn get_last_known_position() -> Result<Option<Position>, String> {
             )
             .and_then(|v| v.l())
             .map_err(|e| {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 e.to_string()
             })?;
 

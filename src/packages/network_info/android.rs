@@ -20,7 +20,7 @@ pub fn get_network_info() -> Result<NetworkInfo, String> {
         {
             Ok(o) if !o.is_null() => o,
             _ => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(info);
             }
         };
@@ -37,7 +37,7 @@ pub fn get_network_info() -> Result<NetworkInfo, String> {
         {
             Ok(o) if !o.is_null() => o,
             _ => {
-                let _ = env.exception_clear();
+                env.exception_clear();
                 return Ok(info);
             }
         };
