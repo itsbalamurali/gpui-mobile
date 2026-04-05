@@ -261,15 +261,9 @@ impl IosPlatformView {
         Ok(view)
     }
 
-    /// Create a retained NSString from a Rust `&str`.
     #[cfg(target_os = "ios")]
     unsafe fn make_nsstring(s: &str) -> *mut AnyObject {
-        let nsstring_class = class!(NSString);
-        let bytes = s.as_ptr();
-        let len = s.len();
-        let obj: *mut AnyObject = msg_send![nsstring_class, alloc];
-        let obj: *mut AnyObject = msg_send![obj, initWithBytes:bytes length:len encoding:4u64];
-        obj
+        crate::ios::util::nsstring(s)
     }
 
     /// Returns the raw pointer to the underlying `UIView`.

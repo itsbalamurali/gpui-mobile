@@ -369,15 +369,10 @@ fn cmtime_to_ms(time: CMTime) -> i64 {
 
 // ── ObjC string/URL helpers ─────────────────────────────────────────────────
 
+use crate::ios::util::nsstring;
+
 unsafe fn nsstring_from_str(s: &str) -> *mut AnyObject {
-    let cls = class!(NSString);
-    let bytes = s.as_ptr() as *const c_void;
-    let len = s.len();
-    // initWithBytes:length:encoding: — NSUTF8StringEncoding = 4
-    let ns_string: *mut AnyObject = msg_send![cls, alloc];
-    let ns_string: *mut AnyObject =
-        msg_send![ns_string, initWithBytes:bytes length:len encoding:4u64];
-    ns_string
+    nsstring(s)
 }
 
 unsafe fn nsurl_from_str(url: &str) -> Result<*mut AnyObject, String> {

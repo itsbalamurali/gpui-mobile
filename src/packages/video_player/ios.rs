@@ -287,15 +287,8 @@ fn cmtime_to_ms(time: CMTime) -> u64 {
     ((time.value as f64 / time.timescale as f64) * 1000.0).max(0.0) as u64
 }
 
-/// Create a retained NSString from a Rust `&str`.
 unsafe fn make_nsstring(s: &str) -> *mut AnyObject {
-    let nsstring_class = class!(NSString);
-    let bytes = s.as_ptr();
-    let len = s.len();
-    // NSUTF8StringEncoding = 4
-    let obj: *mut AnyObject = msg_send![nsstring_class, alloc];
-    let obj: *mut AnyObject = msg_send![obj, initWithBytes:bytes length:len encoding:4u64];
-    obj
+    crate::ios::util::nsstring(s)
 }
 
 /// Wait (up to 5 seconds) for the current AVPlayerItem to reach ReadyToPlay status.

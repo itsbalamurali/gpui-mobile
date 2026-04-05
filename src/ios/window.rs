@@ -696,19 +696,8 @@ impl IosWindow {
             let notification_center: *mut AnyObject =
                 msg_send![class!(NSNotificationCenter), defaultCenter];
 
-            // Helper to create an NSString from a Rust &str.
-            fn make_nsstring(s: &str) -> *mut AnyObject {
-                let cls = class!(NSString);
-                let bytes = s.as_ptr() as *const c_void;
-                let len = s.len();
-                unsafe {
-                    let ns: *mut AnyObject = msg_send![cls, alloc];
-                    msg_send![ns, initWithBytes:bytes length:len encoding:4u64] // NSUTF8StringEncoding
-                }
-            }
-
-            let show_name = make_nsstring("UIKeyboardWillShowNotification");
-            let hide_name = make_nsstring("UIKeyboardWillHideNotification");
+            let show_name = crate::ios::util::nsstring("UIKeyboardWillShowNotification");
+            let hide_name = crate::ios::util::nsstring("UIKeyboardWillHideNotification");
 
             // Block that fires when the keyboard appears — extracts the
             // end-frame height and stores it in the global atomic.
@@ -720,12 +709,12 @@ impl IosWindow {
                 if user_info.is_null() {
                     return;
                 }
-                let frame_key = unsafe { make_nsstring("UIKeyboardFrameEndUserInfoKey") };
+                let frame_key =
+                    unsafe { crate::ios::util::nsstring("UIKeyboardFrameEndUserInfoKey") };
                 let frame_value: *mut AnyObject =
                     unsafe { msg_send![user_info, objectForKey: frame_key] };
-                unsafe {
-                    let _: () = msg_send![frame_key, release];
-                }
+                // frame_key is autoreleased by util::nsstring — no manual release needed
+                let _ = frame_key;
                 if frame_value.is_null() {
                     return;
                 }
@@ -746,14 +735,13 @@ impl IosWindow {
                 queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*show_block
             ];
-            let _: () = msg_send![show_name, release];
             let _: *mut AnyObject = msg_send![notification_center,
                 addObserverForName: hide_name
                 object: std::ptr::null::<AnyObject>()
                 queue: std::ptr::null::<AnyObject>()
                 usingBlock: &*hide_block
             ];
-            let _: () = msg_send![hide_name, release];
+            // show_name and hide_name are autoreleased by util::nsstring
 
             // Leak the blocks so they live for the app lifetime.
             std::mem::forget(show_block);

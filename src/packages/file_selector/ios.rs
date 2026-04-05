@@ -147,14 +147,7 @@ unsafe fn uttype_from_mime(mime: &str) -> *mut AnyObject {
     msg_send![class!(UTType), typeWithMIMEType: ns_mime]
 }
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;
 
 unsafe fn nsarray_from_objects(objects: &[*mut AnyObject]) -> *mut AnyObject {
     msg_send![class!(NSArray),

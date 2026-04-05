@@ -137,16 +137,4 @@ pub fn cancel_all() -> Result<(), String> {
     }
 }
 
-/// Create an NSString from a Rust string slice.
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let cls = class!(NSString);
-    let bytes = s.as_ptr();
-    let len = s.len();
-    let obj: *mut AnyObject = msg_send![cls, alloc];
-    msg_send![
-        obj,
-        initWithBytes: bytes
-        length: len
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;

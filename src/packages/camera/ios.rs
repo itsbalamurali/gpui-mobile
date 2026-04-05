@@ -232,14 +232,7 @@ extern "C" fn video_did_finish(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;
 
 fn resolution_to_preset(resolution: ResolutionPreset) -> &'static str {
     match resolution {

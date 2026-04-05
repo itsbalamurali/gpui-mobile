@@ -229,14 +229,7 @@ unsafe fn uiimage_jpeg_representation(image: *mut AnyObject, quality: f64) -> *m
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;
 
 unsafe fn present_vc(vc: *mut AnyObject) -> Result<(), String> {
     let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];

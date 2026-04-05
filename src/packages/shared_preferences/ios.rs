@@ -123,14 +123,7 @@ unsafe fn user_defaults() -> *mut AnyObject {
     msg_send![class!(NSUserDefaults), standardUserDefaults]
 }
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    let ns: *mut AnyObject = msg_send![ns, initWithBytes: s.as_ptr()
-                  length: s.len()
-                  encoding: 4u64]; // NSUTF8StringEncoding
-                                   // autorelease so callers don't need to manage the lifetime manually
-    msg_send![ns, autorelease]
-}
+use crate::ios::util::nsstring;
 
 unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {
     let utf8: *const i8 = msg_send![ns, UTF8String];

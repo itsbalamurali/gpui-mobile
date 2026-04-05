@@ -47,9 +47,4 @@ unsafe fn nsdict_string(dict: *mut AnyObject, key: &str) -> Option<String> {
     Some(CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns_string: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns_string, initWithBytes: s.as_ptr()
-                         length: s.len()
-                         encoding: 4u64] // NSUTF8StringEncoding
-}
+use crate::ios::util::nsstring;

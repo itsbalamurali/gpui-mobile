@@ -196,14 +196,7 @@ pub fn get_amplitude() -> Result<f64, String> {
 
 // Helpers
 
-unsafe fn nsstring(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64 // NSUTF8StringEncoding
-    ]
-}
+use crate::ios::util::nsstring;
 
 unsafe fn number_with_int(val: i32) -> *mut AnyObject {
     msg_send![class!(NSNumber), numberWithInt: val]

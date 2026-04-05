@@ -44,15 +44,10 @@ unsafe fn nsstring_to_string(ns: *mut AnyObject) -> String {
     c_str.to_string_lossy().into_owned()
 }
 
-/// Create an NSString from a Rust &str.
+use crate::ios::util::nsstring;
+
 unsafe fn nsstring_from_str(s: &str) -> *mut AnyObject {
-    let ns: *mut AnyObject = msg_send![class!(NSString), alloc];
-    let ns: *mut AnyObject = msg_send![ns,
-        initWithBytes: s.as_ptr() as *const std::ffi::c_void
-        length: s.len()
-        encoding: 4u64  // NSUTF8StringEncoding
-    ];
-    ns
+    nsstring(s)
 }
 
 pub fn get_calendars() -> Result<Vec<Calendar>, String> {
