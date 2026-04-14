@@ -47,9 +47,10 @@ use raw_window_handle::{
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::{AndroidKeyEvent, Bounds, DevicePixels, Pixels, Point, Size, TouchPoint};
 use crate::momentum::{MomentumScroller, VelocityTracker};
@@ -125,19 +126,80 @@ struct MomentumState {
 // Re-export for use with raw-window-handle and the frame-rate helper.
 use ndk::native_window::NativeWindow;
 
-/// Request 120 Hz refresh rate from the native window.
-///
-/// Uses `ndk::NativeWindow::set_frame_rate_with_change_strategy` (API 31+).
-fn request_high_frame_rate(window: &NativeWindow) {
-    use ndk::native_window::{ChangeFrameRateStrategy, FrameRateCompatibility};
+type SetFrameRateFn = unsafe extern "C" fn(*mut ndk_sys::ANativeWindow, f32, i8) -> i32;
+type SetFrameRateWithChangeStrategyFn =
+    unsafe extern "C" fn(*mut ndk_sys::ANativeWindow, f32, i8, i8) -> i32;
 
-    match window.set_frame_rate_with_change_strategy(
-        120.0,
-        FrameRateCompatibility::Default,
-        ChangeFrameRateStrategy::OnlyIfSeamless,
-    ) {
-        Ok(()) => log::info!("Requested 120 Hz frame rate"),
-        Err(e) => log::warn!("set_frame_rate_with_change_strategy failed: {e}"),
+const DEFAULT_FRAME_RATE_COMPATIBILITY: i8 = 0;
+const ONLY_IF_SEAMLESS: i8 = 0;
+const HIGH_FRAME_RATE: f32 = 120.0;
+
+// Resolve an optional libandroid symbol at runtime.
+//
+// Linking API 30/31 frame-rate entry points directly would make the shared
+// library fail to `dlopen` on older devices before our own code runs, so we
+// always go through `dlsym`. Keep this dynamic lookup even if `ndk` grows
+// nicer wrappers — reintroducing a static link would crash on pre-API-30.
+fn load_libandroid_symbol(name: &[u8]) -> *mut c_void {
+    debug_assert_eq!(name.last().copied(), Some(0));
+    unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }
+}
+
+fn load_set_frame_rate() -> Option<SetFrameRateFn> {
+    static SYMBOL: OnceLock<Option<SetFrameRateFn>> = OnceLock::new();
+    *SYMBOL.get_or_init(|| {
+        let symbol = load_libandroid_symbol(b"ANativeWindow_setFrameRate\0");
+        if symbol.is_null() {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<*mut c_void, SetFrameRateFn>(symbol) })
+        }
+    })
+}
+
+fn load_set_frame_rate_with_change_strategy() -> Option<SetFrameRateWithChangeStrategyFn> {
+    static SYMBOL: OnceLock<Option<SetFrameRateWithChangeStrategyFn>> = OnceLock::new();
+    *SYMBOL.get_or_init(|| {
+        let symbol = load_libandroid_symbol(b"ANativeWindow_setFrameRateWithChangeStrategy\0");
+        if symbol.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                std::mem::transmute::<*mut c_void, SetFrameRateWithChangeStrategyFn>(symbol)
+            })
+        }
+    })
+}
+
+/// Request 120 Hz refresh rate from the native window when the platform exposes the API.
+///
+/// The NDK entry points are resolved with `dlsym` so this library still loads
+/// on pre-API-30/31 devices where the symbols do not exist.
+fn request_high_frame_rate(window: &NativeWindow) {
+    let api_level = unsafe { ndk_sys::android_get_device_api_level() };
+    let native_window = window.ptr().as_ptr();
+
+    let status = if api_level >= 31 {
+        load_set_frame_rate_with_change_strategy().map(|set_frame_rate| unsafe {
+            set_frame_rate(
+                native_window,
+                HIGH_FRAME_RATE,
+                DEFAULT_FRAME_RATE_COMPATIBILITY,
+                ONLY_IF_SEAMLESS,
+            )
+        })
+    } else if api_level >= 30 {
+        load_set_frame_rate().map(|set_frame_rate| unsafe {
+            set_frame_rate(native_window, HIGH_FRAME_RATE, DEFAULT_FRAME_RATE_COMPATIBILITY)
+        })
+    } else {
+        None
+    };
+
+    match status {
+        Some(0) => log::info!("Requested 120 Hz frame rate"),
+        Some(status) => log::warn!("ANativeWindow_setFrameRate* failed with status {status}"),
+        None => log::debug!("Skipping high frame rate request on API {api_level}"),
     }
 }
 
@@ -550,6 +612,21 @@ impl AndroidWindow {
 
     // ── drawing ───────────────────────────────────────────────────────────────
 
+    /// Returns `true` when the scene contains no renderable primitives.
+    ///
+    /// Checks every primitive bucket instead of just `quads`, because text
+    /// and images are emitted as sprite primitives.
+    fn scene_is_empty(scene: &gpui::Scene) -> bool {
+        scene.shadows.is_empty()
+            && scene.quads.is_empty()
+            && scene.paths.is_empty()
+            && scene.underlines.is_empty()
+            && scene.monochrome_sprites.is_empty()
+            && scene.subpixel_sprites.is_empty()
+            && scene.polychrome_sprites.is_empty()
+            && scene.surfaces.is_empty()
+    }
+
     /// Draw `scene` into the window's next frame.
     ///
     /// Accepts a `gpui::Scene` directly — the `gpui_wgpu::WgpuRenderer`
@@ -571,16 +648,12 @@ impl AndroidWindow {
     /// - Intermittently during fast scrolling if the layout pass
     ///   hasn't produced new content yet.
     pub fn draw(&self, scene: &gpui::Scene) {
-        // Skip the draw when the scene has zero quads.  Every GPUI view
-        // produces at least one background quad, so an empty quads list
-        // means the view tree hasn't been built yet (or layout produced
-        // nothing).  Drawing such a scene would clear the surface to the
-        // renderer's default background (transparent/black) and present
-        // a blank frame — causing the visible flash on startup and the
-        // intermittent text flicker during scrolling when a layout pass
-        // occasionally produces an empty scene between content frames.
-        if scene.quads.is_empty() {
-            log::trace!("AndroidWindow::draw — skipping empty scene (no quads)");
+        // Skip only truly empty scenes. Text and images are emitted as sprite
+        // primitives, not quads, so checking `scene.quads` alone can drop
+        // valid text-only frames during scroll or cache refresh and produce
+        // the flicker we were trying to avoid.
+        if Self::scene_is_empty(scene) {
+            log::trace!("AndroidWindow::draw — skipping empty scene");
             return;
         }
 
