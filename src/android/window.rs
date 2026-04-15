@@ -190,7 +190,11 @@ fn request_high_frame_rate(window: &NativeWindow) {
         })
     } else if api_level >= 30 {
         load_set_frame_rate().map(|set_frame_rate| unsafe {
-            set_frame_rate(native_window, HIGH_FRAME_RATE, DEFAULT_FRAME_RATE_COMPATIBILITY)
+            set_frame_rate(
+                native_window,
+                HIGH_FRAME_RATE,
+                DEFAULT_FRAME_RATE_COMPATIBILITY,
+            )
         })
     } else {
         None

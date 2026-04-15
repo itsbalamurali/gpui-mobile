@@ -105,8 +105,7 @@ extern "C" fn phpicker_did_finish(
                             msg_send![class!(NSFileManager), defaultManager];
                         let dest_url: *mut AnyObject =
                             msg_send![class!(NSURL), fileURLWithPath: nsstring(&path_copy)];
-                        let ok: Bool =
-                            msg_send![file_mgr, copyItemAtURL: url, toURL: dest_url, error: std::ptr::null_mut::<*mut AnyObject>()];
+                        let ok: Bool = msg_send![file_mgr, copyItemAtURL: url, toURL: dest_url, error: std::ptr::null_mut::<*mut AnyObject>()];
                         if ok.as_bool() {
                             let _ = item_tx.send(Some(path_copy.clone()));
                         } else {

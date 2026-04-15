@@ -7,8 +7,8 @@
 //! - Touch move → MouseMove events
 
 use gpui::{px, Pixels, Point, TouchPhase};
-use objc2::runtime::AnyObject;
 use objc2::msg_send;
+use objc2::runtime::AnyObject;
 
 use super::cg_types::ObjcCGPoint;
 

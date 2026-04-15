@@ -684,9 +684,13 @@ impl IosWindow {
         unsafe {
             let window_ptr = self as *const Self as *mut std::ffi::c_void;
             #[allow(deprecated)]
-            { *(*self.view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr; }
+            {
+                *(*self.view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
+            }
             #[allow(deprecated)]
-            { *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr; }
+            {
+                *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
+            }
             log::info!(
                 "GPUI iOS: Set window pointer {:p} on view {:p} and text input {:p}",
                 window_ptr,
@@ -719,10 +723,8 @@ impl IosWindow {
                 if user_info.is_null() {
                     return;
                 }
-                let frame_key =
-                    crate::ios::util::nsstring("UIKeyboardFrameEndUserInfoKey");
-                let frame_value: *mut AnyObject =
-                    msg_send![user_info, objectForKey: frame_key];
+                let frame_key = crate::ios::util::nsstring("UIKeyboardFrameEndUserInfoKey");
+                let frame_value: *mut AnyObject = msg_send![user_info, objectForKey: frame_key];
                 // frame_key is autoreleased by util::nsstring — no manual release needed
                 let _ = frame_key;
                 if frame_value.is_null() {
