@@ -74,7 +74,7 @@ objc2 = "0.6"
 core-foundation     = "0.10"
 core-foundation-sys = "0.8"
 core-graphics       = "0.24"
-core-text           = "=21.0.0"
+core-text           = "=22.0.0"
 uuid                = { version = "1", features = ["v4", "v5"] }
 block2              = "0.6"
 
