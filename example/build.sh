@@ -493,7 +493,7 @@ _android_install_and_launch() {
 
     # Check for connected device / running emulator
     local device_count
-    device_count=$(adb devices 2>/dev/null | grep -cE '\t(device|emulator)') || true
+    device_count=$(adb devices 2>/dev/null | grep -cE '[[:blank:]](device|emulator)') || true
 
     if [[ "$device_count" -eq 0 ]]; then
         if [[ "$TARGET_KIND" == "emulator" ]]; then
