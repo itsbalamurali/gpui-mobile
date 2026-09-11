@@ -897,7 +897,7 @@ impl IosWindow {
                 }
             }
 
-            UITouchPhase::Ended | UITouchPhase::Cancelled => {
+            UITouchPhase::Ended => {
                 self.touch_pressed.set(false);
                 match ts {
                     TouchState::Pending { start_x, start_y } => {
@@ -960,6 +960,23 @@ impl IosWindow {
                 ts = TouchState::Idle;
             }
 
+            UITouchPhase::Cancelled => {
+                self.touch_pressed.set(false);
+                self.momentum_scroller.borrow_mut().cancel();
+                self.velocity_tracker.borrow_mut().reset();
+                // UIKit cancellation must never commit a deferred tap or start
+                // a fling. Only unwind a scroll that was actually started.
+                if matches!(ts, TouchState::Scrolling { .. }) {
+                    emit(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position,
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(0.))),
+                        modifiers,
+                        touch_phase: gpui::TouchPhase::Cancelled,
+                    }));
+                }
+                ts = TouchState::Idle;
+            }
+
             UITouchPhase::Stationary => {
                 // No change — ignore.
                 return;
@@ -967,6 +984,29 @@ impl IosWindow {
         }
 
         self.touch_state.set(ts);
+        if matches!(phase, UITouchPhase::Ended | UITouchPhase::Cancelled) {
+            self.clear_touch_hover();
+        }
+    }
+
+    /// A lifted finger is not a mouse parked over the last touched control.
+    /// GPUI keeps its own mouse position, so MouseExited alone does not clear
+    /// hit testing on the next frame. Move outside before notifying listeners.
+    fn clear_touch_hover(&self) {
+        let position = point(px(-1.), px(-1.));
+        self.mouse_position.set(position);
+        if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
+            callback(PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,
+                modifiers: self.modifiers.get(),
+                pressed_button: None,
+            }));
+            callback(PlatformInput::MouseExited(gpui::MouseExitEvent {
+                position,
+                modifiers: self.modifiers.get(),
+                pressed_button: None,
+            }));
+        }
     }
 
     /// Query the safe area insets from the UIView.
@@ -1070,6 +1110,8 @@ impl IosWindow {
                 }));
             }
         }
+        drop(scroller);
+        self.clear_touch_hover();
     }
 
     /// Show the software keyboard with the specified keyboard type.
