@@ -35,9 +35,9 @@
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
+    ForegroundExecutor, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
 };
 use gpui_wgpu::CosmicTextSystem;
@@ -1119,6 +1119,10 @@ impl Platform for AndroidPlatform {
         // Mobile foreground transitions are handled by the native app lifecycle.
     }
 
+    fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {
+        // Mobile background transitions are handled by the native app lifecycle.
+    }
+
     fn hide_cursor_until_mouse_moves(&self) {
         // The native mobile UI manages pointer visibility.
     }
@@ -1167,6 +1171,12 @@ impl Platform for AndroidPlatform {
         //
         // For devices below API 29 this is a silent no-op.
         self.register_thermal_listener(callback);
+    }
+
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        Task::ready(Err(anyhow::anyhow!(
+            "Idle sleep prevention for {reason:?} is not supported on Android"
+        )))
     }
 
     fn app_path(&self) -> Result<PathBuf> {
@@ -1377,6 +1387,9 @@ impl Platform for SharedPlatform {
     fn on_system_wake(&self, callback: Box<dyn FnMut()>) {
         <AndroidPlatform as Platform>::on_system_wake(&self.0, callback)
     }
+    fn on_system_sleep(&self, callback: Box<dyn FnMut()>) {
+        <AndroidPlatform as Platform>::on_system_sleep(&self.0, callback)
+    }
     fn hide_cursor_until_mouse_moves(&self) {
         <AndroidPlatform as Platform>::hide_cursor_until_mouse_moves(&self.0)
     }
@@ -1406,6 +1419,9 @@ impl Platform for SharedPlatform {
     }
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>) {
         <AndroidPlatform as Platform>::on_thermal_state_change(&self.0, callback)
+    }
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        <AndroidPlatform as Platform>::prevent_idle_sleep(&self.0, reason)
     }
     fn app_path(&self) -> Result<PathBuf> {
         <AndroidPlatform as Platform>::app_path(&self.0)

@@ -12,10 +12,10 @@ use super::{IosDispatcher, IosDisplay, IosWindow};
 use anyhow::anyhow;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
-    ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result,
-    Task, ThermalState, WindowAppearance, WindowParams,
+    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
+    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    PlatformWindow, Result, Task, ThermalState, WindowAppearance, WindowParams,
 };
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
@@ -243,6 +243,10 @@ impl Platform for IosPlatform {
         // Mobile foreground transitions are handled by the native app lifecycle.
     }
 
+    fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {
+        // Mobile background transitions are handled by the native app lifecycle.
+    }
+
     fn hide_cursor_until_mouse_moves(&self) {
         // The native mobile UI manages pointer visibility.
     }
@@ -356,6 +360,12 @@ impl Platform for IosPlatform {
         self.0.lock().thermal_state_callback = Some(callback);
         // In a full implementation, we would register for
         // NSProcessInfoThermalStateDidChangeNotification
+    }
+
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        Task::ready(Err(anyhow!(
+            "Idle sleep prevention for {reason:?} is not supported on iOS"
+        )))
     }
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout> {

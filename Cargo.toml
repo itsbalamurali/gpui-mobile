@@ -62,7 +62,7 @@ futures      = "0.3"
 raw-window-handle = "0.6"
 
 # ── GPUI core crate (provides Platform trait, event types, geometry, etc.) ───
-gpui = { package = "gpui-pre", version = "=0.3.4", default-features = false }
+gpui = { package = "gpui-pre", version = "=0.3.5", default-features = false }
 
 # ── iOS ──────────────────────────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ uuid                = { version = "1", features = ["v4", "v5"] }
 block2              = "0.6"
 
 # wgpu renderer (Metal backend on iOS/Android)
-gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.4", features = ["font-kit"] }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5", features = ["font-kit"] }
 wgpu = "29.0.4"
 
 # Text / font stack
@@ -110,7 +110,7 @@ android_logger = "0.15"
 
 # wgpu renderer (Vulkan backend on Android)
 # Android uses Cosmic Text and system fonts; font-kit pulls in desktop Fontconfig.
-gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.4" }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5" }
 
 # rustc-hash is required by the PlatformKeyboardMapper trait signature
 rustc-hash = "2"
