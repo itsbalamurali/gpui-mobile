@@ -151,10 +151,12 @@ pub fn size<T>(width: T, height: T) -> Size<T> {
 
 pub mod dispatcher;
 pub mod display;
+mod document_picker;
 pub mod jni;
 pub mod keyboard;
 pub mod platform;
 pub mod platform_view;
+mod text_input;
 pub mod window;
 
 // ── public re-exports ─────────────────────────────────────────────────────────

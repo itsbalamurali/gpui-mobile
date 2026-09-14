@@ -109,7 +109,8 @@ android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
 
 # wgpu renderer (Vulkan backend on Android)
-gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.4", features = ["font-kit"] }
+# Android uses Cosmic Text and system fonts; font-kit pulls in desktop Fontconfig.
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.4" }
 
 # rustc-hash is required by the PlatformKeyboardMapper trait signature
 rustc-hash = "2"
