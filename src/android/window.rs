@@ -277,6 +277,19 @@ struct WindowState {
     /// Whether the window background should be transparent.
     transparent: bool,
 
+    /// Address of the `ANativeWindow` the renderer's wgpu surface was created from.
+    ///
+    /// Vulkan permits one surface per native window, and `replace_surface` builds the
+    /// new surface *before* dropping the old one. The framework sometimes hands a
+    /// recreated `SurfaceView` back the very same `ANativeWindow`, and building a second
+    /// surface for it aborts inside wgpu-hal with `ERROR_NATIVE_WINDOW_IN_USE_KHR`.
+    /// Comparing against this address lets `init_window` release the old surface before
+    /// creating the new one. The field is never cleared in `term_window` —
+    /// `unconfigure_surface` keeps the wgpu surface (and therefore the native window)
+    /// alive, so a matching address always means the *same live* object rather than a
+    /// recycled allocation.
+    surface_window_addr: usize,
+
     // ── callbacks ─────────────────────────────────────────────────────────
     request_frame_callback: Option<RequestFrameCallback>,
     touch_callback: Option<TouchCallback>,
@@ -311,6 +324,13 @@ pub struct AndroidWindow {
     /// lifecycle handlers can set it without acquiring the state lock
     /// (which may be held by a background render thread).
     active: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the window gets a *new* surface, cleared by the next frame.
+    ///
+    /// A replaced swapchain starts out empty, but GPUI only repaints what it
+    /// considers dirty — after a surface swap nothing is, so the first frames
+    /// present an empty image (a black screen). One `force_render` frame
+    /// repopulates it.
+    force_render_once: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // SAFETY: `WindowState` is protected by a `Mutex`.
@@ -361,6 +381,7 @@ impl AndroidWindow {
         .context("failed to create gpui_wgpu renderer")?;
 
         let id = native_window.ptr().as_ptr() as u64;
+        let surface_window_addr = native_window.ptr().as_ptr() as usize;
 
         let state = Arc::new(Mutex::new(WindowState {
             native_window: Some(native_window),
@@ -373,6 +394,7 @@ impl AndroidWindow {
             appearance: WindowAppearance::Light,
             is_active: true,
             transparent,
+            surface_window_addr,
             request_frame_callback: None,
             touch_callback: None,
             key_callback: None,
@@ -387,6 +409,7 @@ impl AndroidWindow {
             state,
             id,
             active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            force_render_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }))
     }
 
@@ -405,6 +428,7 @@ impl AndroidWindow {
             appearance: WindowAppearance::Light,
             is_active: false,
             transparent: false,
+            surface_window_addr: 0,
             request_frame_callback: None,
             touch_callback: None,
             key_callback: None,
@@ -419,6 +443,7 @@ impl AndroidWindow {
             state,
             id: ((width as u64) << 32) | (height as u64),
             active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            force_render_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
 
@@ -438,7 +463,39 @@ impl AndroidWindow {
         // If a renderer already exists (kept alive across term_window), just
         // replace its surface.  This preserves the atlas and all cached
         // AtlasTextureIds so GPUI's scene cache remains valid.
-        if state.renderer.is_some() {
+        let incoming_addr = native_window.ptr().as_ptr() as usize;
+        if state.renderer.is_some() && state.surface_window_addr == incoming_addr {
+            // Same live `ANativeWindow` as the surface we already hold. Two things
+            // rule out the paths used elsewhere in this function:
+            //
+            // - `replace_surface` creates the new surface *before* dropping the old
+            //   one, and Vulkan refuses a second surface on a window that is still
+            //   connected (`ERROR_NATIVE_WINDOW_IN_USE_KHR`, an `expect` inside
+            //   wgpu-hal that cannot be caught).
+            // - `update_drawable_size` alone is not enough: `term_window` left the
+            //   surface unconfigured, and nothing but a surface rebuild re-arms it,
+            //   so `draw` would keep bailing out and the window would stay black.
+            //
+            // `destroy` releases the old surface first; `recover` then rebuilds the
+            // renderer on the same window while keeping the atlas `Arc` that GPUI
+            // holds (its tiles are cleared and re-rasterised on the next paint, which
+            // `force_render_once` below guarantees).
+            log::info!(
+                "AndroidWindow::init_window — same native window, rebuilding surface {}×{}",
+                width,
+                height
+            );
+            let raw = Self::raw_window(&native_window);
+            let renderer = state.renderer.as_mut().unwrap();
+            renderer.destroy();
+            renderer
+                .recover(&raw)
+                .context("failed to rebuild the wgpu surface on the same native window")?;
+            renderer.update_drawable_size(gpui::size(
+                gpui::DevicePixels(width),
+                gpui::DevicePixels(height),
+            ));
+        } else if state.renderer.is_some() {
             let raw = Self::raw_window(&native_window);
             let config = WgpuSurfaceConfig {
                 size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
@@ -457,6 +514,7 @@ impl AndroidWindow {
                 .as_mut()
                 .unwrap()
                 .replace_surface(&raw, config, &instance)?;
+            state.surface_window_addr = incoming_addr;
             log::info!(
                 "AndroidWindow::init_window — replaced surface {}×{}",
                 width,
@@ -473,6 +531,7 @@ impl AndroidWindow {
             };
             let renderer = Self::create_renderer(&native_window, ctx, width, height, transparent)?;
             state.renderer = Some(renderer);
+            state.surface_window_addr = incoming_addr;
             log::info!(
                 "AndroidWindow::init_window — created new renderer {}×{}",
                 width,
@@ -481,14 +540,55 @@ impl AndroidWindow {
         }
 
         // Store the new native window (drops previous one if any).
+        let size_changed = state.width != width || state.height != height;
         state.native_window = Some(native_window);
         state.width = width;
         state.height = height;
         state.is_active = true;
         self.active
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // The swapchain behind this surface is empty — make the next frame repaint
+        // everything instead of only what GPUI currently considers dirty.
+        self.force_render_once
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(state);
+
+        // A recreated Activity can hand back a surface of a *different* size (the
+        // classic case being a rotation that recreates the Activity). `handle_resize`
+        // compares the native window against the dimensions we just stored and would
+        // conclude nothing changed, leaving GPUI laid out for the old size — content
+        // drawn into a corner of the new surface. Notify it directly instead.
+        if size_changed {
+            self.notify_resize();
+        }
 
         Ok(())
+    }
+
+    /// Fire GPUI's resize callback with the dimensions currently stored for this
+    /// window, whether or not they differ from what GPUI last saw.
+    fn notify_resize(&self) {
+        let (width, height, scale) = {
+            let state = self.state.lock();
+            (state.width, state.height, state.scale_factor)
+        };
+        let cb = {
+            let mut state = self.state.lock();
+            state.resize_callback.take()
+        };
+        if let Some(mut cb) = cb {
+            cb(
+                Size {
+                    width: DevicePixels(width),
+                    height: DevicePixels(height),
+                },
+                scale,
+            );
+            let mut state = self.state.lock();
+            if state.resize_callback.is_none() {
+                state.resize_callback = Some(cb);
+            }
+        }
     }
 
     /// Called when `APP_CMD_TERM_WINDOW` fires and the surface is about to be
@@ -1293,16 +1393,19 @@ impl PlatformWindow for AndroidPlatformWindow {
             unsafe { std::mem::transmute(callback) };
         let send_callback = Mutex::new(send_callback);
 
+        let force_render_once = Arc::clone(&self.window.force_render_once);
         self.window.on_request_frame(move || {
             // Check if text input arrived since last frame — if so, force a
             // render so drain_pending_text() runs and the UI updates.
             let text_dirty =
                 crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+            // A freshly attached surface has an empty swapchain; repaint in full.
+            let surface_new = force_render_once.swap(false, std::sync::atomic::Ordering::AcqRel);
 
             let mut cb = send_callback.lock();
             cb(RequestFrameOptions {
                 require_presentation: false,
-                force_render: text_dirty,
+                force_render: text_dirty || surface_new,
             });
         });
     }

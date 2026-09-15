@@ -491,7 +491,10 @@ impl AndroidPlatform {
         if let Some(app) = super::jni::android_app() {
             super::jni::run_event_loop(&app);
         } else {
-            // Headless / test mode — just invoke the callback immediately.
+            // No `AndroidApp` to drive: either headless / test mode, or the host-driven
+            // entry point (`super::host`), whose render thread owns the loop and keeps
+            // the app alive through `Application::run_embedded`. Invoke the callback
+            // immediately and return.
             let cb = self.state.lock().finish_launching.take();
             if let Some(cb) = cb {
                 cb();
