@@ -36,9 +36,10 @@ use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
     Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
-    ForegroundExecutor, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions,
-    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
+    ForegroundExecutor, GestureTuning, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem,
+    PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState,
+    WindowAppearance, WindowParams,
 };
 use gpui_wgpu::CosmicTextSystem;
 use parking_lot::Mutex;
@@ -952,6 +953,31 @@ impl AndroidPlatform {
     }
 }
 
+/// Android's feel constants for GPUI's portable gesture recognizers.
+///
+/// Without this GPUI falls back to [`GestureTuning::default`], whose scroll
+/// physics are `UIScrollView`'s — an exponential decay that coasts noticeably
+/// longer than Android's, so a fling reads as unresponsive to anyone used to
+/// the platform.
+struct AndroidGestures;
+
+impl PlatformGestures for AndroidGestures {
+    fn tuning(&self) -> GestureTuning {
+        GestureTuning {
+            // AOSP's `OverScroller` friction spline. GPUI flings in logical
+            // pixels, and this window's scale factor is Android's display
+            // density, so logical pixels are density-independent pixels and
+            // the nominal 160 dpi pairing this constructor documents is the
+            // right one.
+            scroll_physics: ScrollPhysics::android(),
+            // The rest of `ViewConfiguration` (touch slop, tap timeouts) is
+            // close enough to GPUI's defaults to leave alone; reading the real
+            // values over JNI is a separate change.
+            ..GestureTuning::default()
+        }
+    }
+}
+
 // ── impl Platform ─────────────────────────────────────────────────────────────
 //
 // Implementation of the GPUI `Platform` trait for Android.
@@ -961,6 +987,10 @@ impl AndroidPlatform {
 // file pickers, etc.) are no-ops or return sensible defaults.
 
 impl Platform for AndroidPlatform {
+    fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
+        Some(Rc::new(AndroidGestures))
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         let dispatcher: Arc<dyn gpui::PlatformDispatcher> = self.state.lock().dispatcher.clone();
         BackgroundExecutor::new(dispatcher)
@@ -1310,6 +1340,9 @@ impl SharedPlatform {
 /// so the compiler never accidentally picks the inherent method (which may
 /// have a different return type).
 impl Platform for SharedPlatform {
+    fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
+        <AndroidPlatform as Platform>::gestures(&self.0)
+    }
     fn background_executor(&self) -> BackgroundExecutor {
         <AndroidPlatform as Platform>::background_executor(&self.0)
     }
