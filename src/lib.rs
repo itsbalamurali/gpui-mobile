@@ -74,6 +74,8 @@ pub use gpui;
 pub mod components;
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
 pub(crate) mod frame_demand;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) mod frame_pacer;
 pub mod momentum;
 pub mod packages;
 pub mod platform_view;
@@ -161,6 +163,8 @@ pub(crate) fn mark_text_input_dirty() {
     TEXT_INPUT_DIRTY.store(true, Ordering::Release);
     #[cfg(target_os = "ios")]
     ios::ffi::wake_windows();
+    #[cfg(target_os = "android")]
+    android::frame_source::wake();
 }
 
 thread_local! {

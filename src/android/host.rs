@@ -39,7 +39,9 @@
 //! # Threading contract
 //!
 //! - `render thread` — owns the `ALooper`, the `AndroidPlatform`, GPUI's `App` and the
-//!   `ApplicationHandle` that keeps it alive. Everything GPUI touches stays here.
+//!   `ApplicationHandle` that keeps it alive. Everything GPUI touches stays here. It
+//!   sleeps on the looper between commands and draws once per vsync that GPUI asked
+//!   for (see [`super::frame_source`]).
 //! - `Java UI thread` — calls the functions below. They only touch the command queue
 //!   and a few atomics, never GPUI state.
 //! - [`surface_destroyed`] **blocks** until the render thread has stopped using the
@@ -171,6 +173,7 @@ fn render_thread(launch: Launch) {
     );
     *LOOPER.lock().expect("poisoned") = Some(LooperPtr(looper));
     log::info!("gpui-main: render thread started, looper={looper:p}");
+    super::frame_source::install();
 
     // The platform must be built **here**: `AndroidDispatcher::new()` captures
     // `ALooper_forThread()`, and GPUI compares it against the calling thread forever after.
@@ -227,19 +230,27 @@ fn render_thread(launch: Launch) {
 
         platform.tick();
         platform.flush_main_thread_tasks();
-        if let Some(win) = platform.primary_window() {
-            if win.is_active() {
+        if crate::TEXT_INPUT_DIRTY.load(Ordering::Acquire) {
+            // Software-keyboard text bypasses GPUI's invalidator; the frame
+            // callback turns it into a forced render.
+            super::frame_source::schedule_frame();
+        }
+        let window = platform.primary_window();
+        let can_draw = window.as_ref().is_some_and(|win| win.is_active());
+        if can_draw && super::frame_source::take_frame() {
+            if let Some(win) = &window {
                 win.request_frame();
             }
         }
 
-        // Sleep on the looper until woken by a command or a dispatcher task.
-        // The short timeout keeps animations ticking; a demand-driven version can
-        // drop it once frame scheduling moves to `AChoreographer`.
+        // Sleep on the looper until a command, a dispatcher task or the vsync
+        // callback for a wanted frame arrives; the timeout only covers delayed
+        // dispatcher tasks and the clock fallback without a choreographer.
+        let timeout = super::frame_source::poll_timeout(platform.next_delayed_due(), can_draw);
         // SAFETY: called only from the thread that owns this looper.
         unsafe {
             ndk_sys::ALooper_pollOnce(
-                8,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
