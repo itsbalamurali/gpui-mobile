@@ -119,6 +119,7 @@ uuid       = { version = "1", features = ["v5"] }
 # ── dev ──────────────────────────────────────────────────────────────────────
 
 [dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.5", default-features = false, features = ["test-support"] }
 
 # ── profiles ─────────────────────────────────────────────────────────────────
 
