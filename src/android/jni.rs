@@ -34,6 +34,12 @@
 //! Lifecycle events (window creation/destruction, focus changes, etc.) are
 //! delivered via `AndroidApp::poll_events()`.  Input events are obtained via
 //! `AndroidApp::input_events_iter()`.
+//!
+//! ## Frames
+//!
+//! The loop blocks on the looper between events and draws only when GPUI
+//! asked for a frame and a vsync has passed since — see
+//! [`super::frame_source`].
 
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
@@ -87,6 +93,7 @@ use super::platform::{AndroidPlatform, SharedPlatform};
 
 use jni::objects::{JObject, JString, JValue};
 use jni::JavaVM;
+use std::sync::{atomic::AtomicPtr, Mutex};
 
 // ── JNI helpers (safe `jni` crate wrappers) ──────────────────────────────────
 
@@ -269,6 +276,50 @@ pub fn unicode_char_for_key_event(key_code: i32, action: i32, meta_state: i32) -
 
 // ── public accessors ──────────────────────────────────────────────────────────
 
+/// JVM for the **host-driven** entry point ([`super::host`]), which has no
+/// `AndroidApp` to read it from.
+static HOST_VM: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Current Activity for the host-driven entry point, as a JNI global reference we
+/// own. Replaced on every Activity creation so [`activity_as_ptr`] always names the
+/// *live* Activity.
+///
+/// The outgoing reference is kept one generation longer: `activity_as_ptr` hands out a
+/// raw `jobject`, and a call on the render thread may still be using the previous
+/// Activity while the UI thread installs the next one.
+static HOST_ACTIVITY: Mutex<HostActivity> = Mutex::new(HostActivity {
+    current: None,
+    previous: None,
+});
+
+struct HostActivity {
+    current: Option<jni::refs::Global<JObject<'static>>>,
+    previous: Option<jni::refs::Global<JObject<'static>>>,
+}
+
+/// Register the current Activity when running without `android-activity`.
+///
+/// Call from a JNI entry point in `Activity.onCreate`, every time — a recreated
+/// Activity is a new object. This module takes its own global reference and records
+/// the JVM, so `java_vm()` / `activity_as_ptr()` and everything built on them (IME,
+/// safe areas, file pickers, `rustls-platform-verifier`) work exactly as on the
+/// `android-activity` path. A no-op when `android-activity` owns the process.
+pub fn set_host_activity(env: &mut jni::Env<'_>, activity: &JObject<'_>) -> Result<(), String> {
+    if ANDROID_APP.get().is_some() {
+        return Ok(());
+    }
+    let global = env.new_global_ref(activity).e()?;
+    let vm = env.get_java_vm().e()?;
+    HOST_VM.store(
+        vm.get_raw() as *mut c_void,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let mut slot = HOST_ACTIVITY.lock().expect("poisoned");
+    slot.previous = slot.current.take();
+    slot.current = Some(global);
+    Ok(())
+}
+
 /// Public accessor for the JavaVM pointer.
 ///
 /// Uses `AndroidApp::vm_as_ptr()` from the stored `AndroidApp`.
@@ -277,7 +328,7 @@ pub fn java_vm() -> *mut c_void {
     ANDROID_APP
         .get()
         .map(|app| app.vm_as_ptr())
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or_else(|| HOST_VM.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// Public accessor for the current Activity's JNI object reference.
@@ -293,12 +344,30 @@ pub fn activity_as_ptr() -> *mut c_void {
     ANDROID_APP
         .get()
         .map(|app| app.activity_as_ptr())
-        .unwrap_or(std::ptr::null_mut())
+        .unwrap_or_else(|| {
+            HOST_ACTIVITY
+                .lock()
+                .expect("poisoned")
+                .current
+                .as_ref()
+                .map(|activity| activity.as_raw() as *mut c_void)
+                .unwrap_or(std::ptr::null_mut())
+        })
 }
 
 /// Returns a clone of the stored `AndroidApp`, if initialised.
 pub fn android_app() -> Option<AndroidApp> {
     ANDROID_APP.get().cloned()
+}
+
+/// Install the platform built by the host-driven path (`super::host`).
+///
+/// The `android-activity` path calls `init_platform` instead; both end up in the same
+/// slot so every accessor in this module keeps working regardless of entry point.
+pub(crate) fn set_host_platform(platform: Arc<AndroidPlatform>) {
+    if PLATFORM.set(platform).is_err() {
+        log::warn!("set_host_platform: PLATFORM already set — both entry points in one process?");
+    }
 }
 
 /// Returns a reference to the global `AndroidPlatform`, if initialised.
@@ -330,6 +399,7 @@ pub fn shared_platform() -> Option<SharedPlatform> {
 const AMOTION_EVENT_ACTION_DOWN: u32 = 0;
 const AMOTION_EVENT_ACTION_UP: u32 = 1;
 const AMOTION_EVENT_ACTION_MOVE: u32 = 2;
+const AMOTION_EVENT_ACTION_CANCEL: u32 = 3;
 
 // ── night mode query via NDK Configuration ───────────────────────────────────
 
@@ -449,7 +519,7 @@ fn process_input_events(app: &AndroidApp) {
                                         AMOTION_EVENT_ACTION_UP
                                     }
                                     MotionAction::Move => AMOTION_EVENT_ACTION_MOVE,
-                                    MotionAction::Cancel => AMOTION_EVENT_ACTION_UP,
+                                    MotionAction::Cancel => AMOTION_EVENT_ACTION_CANCEL,
                                     _ => continue,
                                 };
 
@@ -544,6 +614,8 @@ pub fn run_event_loop(app: &AndroidApp) {
     // the callback is still pending, invoke it *after* poll_events has
     // returned so focus/input events have already been drained.
     INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
+    // Vsync pacing lives on this thread's looper.
+    super::frame_source::install();
     let mut iteration: u64 = 0;
     let mut last_heartbeat = std::time::Instant::now();
     let mut app_is_active = false;
@@ -573,12 +645,20 @@ pub fn run_event_loop(app: &AndroidApp) {
             platform.tick();
         }
 
-        // ── Poll for events (non-blocking) ──
+        // ── Poll for events ──
         //
-        // Non-blocking poll: process any pending events then immediately
-        // continue to rendering. No sleep — the GPU present call
-        // (get_current_texture / Mailbox) provides natural frame pacing.
-        app.poll_events(Some(Duration::ZERO), |event| match event {
+        // Blocks until something reaches the looper: a lifecycle command,
+        // input, a main-thread task, or the vsync callback that
+        // `frame_source` posted for a wanted frame. The timeout only covers
+        // the delayed dispatcher tasks `platform.tick()` has to release and
+        // the clock fallback without a choreographer.
+        let timeout = super::frame_source::poll_timeout(
+            PLATFORM
+                .get()
+                .and_then(|platform| platform.next_delayed_due()),
+            INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active,
+        );
+        app.poll_events(Some(timeout), |event| match event {
             PollEvent::Main(main_event) => {
                 handle_main_event(app, main_event);
             }
@@ -784,21 +864,24 @@ pub fn run_event_loop(app: &AndroidApp) {
         if let Some(platform) = PLATFORM.get() {
             if INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active {
                 platform.flush_main_thread_tasks();
-                if let Some(win) = platform.primary_window() {
-                    win.request_frame();
+                // Software-keyboard text bypasses GPUI's invalidator; the
+                // frame callback turns it into a forced render.
+                if crate::TEXT_INPUT_DIRTY.load(Ordering::Acquire) {
+                    super::frame_source::schedule_frame();
                 }
+                if super::frame_source::take_frame() {
+                    if let Some(win) = platform.primary_window() {
+                        win.request_frame();
+                    }
 
-                // Drain lifecycle events that arrived during rendering
-                // (e.g. rotation triggers TerminateWindow while we were
-                // in get_current_texture / present).
-                drain_events(app);
-                process_input_events(app);
+                    // Drain lifecycle events that arrived during rendering
+                    // (e.g. rotation triggers TerminateWindow while we were
+                    // in get_current_texture / present).
+                    drain_events(app);
+                    process_input_events(app);
+                }
             }
         }
-
-        // Yield CPU to avoid starving system threads and causing ANR.
-        // Keep this short — at 120Hz the frame budget is only 8.3ms.
-        std::thread::sleep(Duration::from_micros(500));
     }
 
     log::info!("run_event_loop: exiting main loop");
@@ -1200,31 +1283,124 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
 
 // ── software keyboard (IME) control ───────────────────────────────────────────
 
-/// Show the software keyboard on Android with a specific keyboard type.
-/// Show the software keyboard on Android.
+/// The keyboard type currently requested, or `None` when hidden.
 ///
-/// Uses the NDK `ANativeActivity_showSoftInput` via `android-activity`.
-/// The previous EditText/JNI approach silently failed with
-/// `CalledFromWrongThreadException` because all JNI View operations
-/// must run on the Android UI thread, not the native Rust thread.
-/// The NDK function handles the UI-thread dispatch internally.
+/// The Java-side `InputProxy` belongs to the Activity, so an Activity recreation takes
+/// the IME with it — while GPUI still considers the same field focused and therefore
+/// never asks for the keyboard again. Remembering the request lets a new Activity put
+/// the IME back; see [`restore_keyboard`].
+static SHOWN_KEYBOARD: std::sync::Mutex<Option<crate::KeyboardType>> = std::sync::Mutex::new(None);
+
+/// Re-request the keyboard on the current Activity if one was showing.
 ///
-/// Text input arrives via `KeyEvent`s through `process_input_events()`.
-pub fn show_keyboard_android(_keyboard_type: crate::KeyboardType) {
-    if let Some(app) = android_app() {
-        log::info!("show_keyboard_android: using NDK show_soft_input");
-        app.show_soft_input(false);
+/// Called by [`super::host`] once a recreated Activity's surface is attached. A fresh
+/// IME session is started, which is what we want: the proxy is a new object.
+pub(crate) fn restore_keyboard() {
+    let keyboard_type = *SHOWN_KEYBOARD.lock().expect("poisoned");
+    if let Some(keyboard_type) = keyboard_type {
+        log::info!("restore_keyboard: re-showing {keyboard_type:?} on the new Activity");
+        show_keyboard_android(keyboard_type);
+    }
+}
+
+/// Show the UI-thread EditText proxy supplied by GpuiInputActivity.
+///
+/// Unlike NativeActivity's key-event-only connection, its InputConnection
+/// supports composing text, commits and Unicode surrounding-text deletion.
+pub fn show_keyboard_android(keyboard_type: crate::KeyboardType) {
+    *SHOWN_KEYBOARD.lock().expect("poisoned") = Some(keyboard_type);
+    let kind = match keyboard_type {
+        crate::KeyboardType::Default => 0,
+        crate::KeyboardType::EmailAddress => 1,
+        crate::KeyboardType::Phone => 2,
+        crate::KeyboardType::NumberPad => 3,
+        crate::KeyboardType::URL => 4,
+        crate::KeyboardType::Decimal => 5,
+    };
+    let session = super::text_input::new_session();
+    if let Err(error) = with_env(|env| {
+        let activity = activity(env)?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("gpuiShowKeyboard"),
+            jni::jni_sig!("(IJ)V"),
+            &[JValue::Int(kind), JValue::Long(session as i64)],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }) {
+        log::warn!("IME requires GpuiInputActivity: {error}");
+        let _ = with_env(|env| {
+            env.exception_clear();
+            Ok(())
+        });
     }
 }
 
 /// Hide the software keyboard on Android.
 ///
-/// Uses the NDK `ANativeActivity_hideSoftInput` via `android-activity`.
+/// Invalidates queued IME callbacks and clears the native composition buffer.
 pub fn hide_keyboard_android() {
+    *SHOWN_KEYBOARD.lock().expect("poisoned") = None;
+    let session = super::text_input::new_session();
+    let _ = with_env(|env| {
+        let activity = activity(env)?;
+        let result = env.call_method(
+            &activity,
+            jni::jni_str!("gpuiHideKeyboard"),
+            jni::jni_sig!("(J)V"),
+            &[JValue::Long(session as i64)],
+        );
+        env.exception_clear();
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    });
     if let Some(app) = android_app() {
-        log::info!("hide_keyboard_android: using NDK hide_soft_input");
         app.hide_soft_input(false);
     }
+}
+
+pub(super) fn reset_keyboard_composition() {
+    let session = super::text_input::new_session();
+    let _ = with_env(|env| {
+        let activity = activity(env)?;
+        let result = env.call_method(
+            &activity,
+            jni::jni_str!("gpuiResetComposition"),
+            jni::jni_sig!("(J)V"),
+            &[JValue::Long(session as i64)],
+        );
+        env.exception_clear();
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    });
+}
+
+/// Receive Java InputConnection updates without touching GPUI on the UI thread.
+///
+/// # Safety
+/// Called by JNI with a valid Java string and JNI call frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiInputActivity_nativeIme(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    session: i64,
+    kind: i32,
+    text: *mut c_void,
+    start: i32,
+    end: i32,
+) {
+    let _ = with_env(|env| {
+        let text = unsafe { JObject::from_raw(env, text as jni::sys::jobject) };
+        super::text_input::enqueue(super::text_input::ImeEvent {
+            session: session as u64,
+            kind,
+            text: get_string(env, &text),
+            start: start.max(0) as usize,
+            end: end.max(0) as usize,
+        });
+        Ok(())
+    });
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
