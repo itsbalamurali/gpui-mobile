@@ -18,7 +18,7 @@ use gpui::{
     Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers, Pixels,
     PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TileId, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, WindowVisibility,
 };
 use gpui_wgpu::{GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use objc2::encode::{Encode, Encoding, RefEncode};
@@ -464,6 +464,7 @@ pub(crate) struct IosWindow {
     input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>>,
     /// Callback for active status changes
     active_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
+    visibility_callback: RefCell<Option<Box<dyn FnMut(WindowVisibility)>>>,
     /// Callback for hover status changes (not really applicable on iOS)
     hover_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
     /// Callback for resize events
@@ -514,8 +515,12 @@ impl IosWindow {
             // Create UIWindow
             let screen_obj: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
             let screen_bounds_cg: ObjcCGRect = msg_send![screen_obj, bounds];
-            let window: *mut AnyObject = msg_send![class!(UIWindow), alloc];
-            let window: *mut AnyObject = msg_send![window, initWithFrame: screen_bounds_cg];
+            let window: *mut AnyObject = if super::ffi::is_embedded() {
+                ptr::null_mut()
+            } else {
+                let window: *mut AnyObject = msg_send![class!(UIWindow), alloc];
+                msg_send![window, initWithFrame: screen_bounds_cg]
+            };
 
             // Create our custom UIViewController subclass that supports
             // dynamic `preferredStatusBarStyle` overrides.
@@ -546,10 +551,14 @@ impl IosWindow {
             let _: () = msg_send![view_controller, setView: view];
 
             // Set the root view controller
-            let _: () = msg_send![window, setRootViewController: view_controller];
+            if !window.is_null() {
+                let _: () = msg_send![window, setRootViewController: view_controller];
+            }
 
             // Make the window visible
-            let _: () = msg_send![window, makeKeyAndVisible];
+            if !window.is_null() {
+                let _: () = msg_send![window, makeKeyAndVisible];
+            }
 
             // Create a hidden text input view for keyboard handling.
             // Uses our custom GPUITextInputView which implements UIKeyInput
@@ -579,6 +588,7 @@ impl IosWindow {
                 request_frame_callback: RefCell::new(None),
                 input_callback: RefCell::new(None),
                 active_status_callback: RefCell::new(None),
+                visibility_callback: RefCell::new(None),
                 hover_status_callback: RefCell::new(None),
                 resize_callback: RefCell::new(None),
                 moved_callback: RefCell::new(None),
@@ -607,17 +617,19 @@ impl IosWindow {
                 preferred_present_mode: None,
             };
 
+            let raw_window = RawIosWindow {
+                view: ios_window.view as *mut c_void,
+            };
+
             let metal_instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::METAL,
                 flags: wgpu::InstanceFlags::default(),
                 backend_options: wgpu::BackendOptions::default(),
                 memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-                display: None,
+                // wgpu 29 uses the instance display when the renderer creates
+                // a surface without an explicit raw display handle.
+                display: Some(Box::new(raw_window)),
             });
-
-            let raw_window = RawIosWindow {
-                view: ios_window.view as *mut c_void,
-            };
 
             // Build a temporary surface for WgpuContext initialisation
             // (adapter selection needs a surface to test compatibility).
@@ -1264,6 +1276,13 @@ impl IosWindow {
         if let Some(callback) = self.active_status_callback.borrow_mut().as_mut() {
             callback(is_active);
         }
+        if let Some(callback) = self.visibility_callback.borrow_mut().as_mut() {
+            callback(if is_active {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            });
+        }
     }
 
     /// Handle a layout change (e.g. rotation, split-screen resize).
@@ -1279,6 +1298,9 @@ impl IosWindow {
 
             let new_w = view_bounds.width as f32;
             let new_h = view_bounds.height as f32;
+            if new_w <= 0.0 || new_h <= 0.0 {
+                return;
+            }
             let new_scale = scale as f32;
 
             let old_bounds = self.bounds.get();
@@ -1483,7 +1505,9 @@ impl PlatformWindow for IosWindow {
 
     fn activate(&self) {
         unsafe {
-            let _: () = msg_send![self.window, makeKeyAndVisible];
+            if !self.window.is_null() {
+                let _: () = msg_send![self.window, makeKeyAndVisible];
+            }
         }
     }
 
@@ -1491,7 +1515,16 @@ impl PlatformWindow for IosWindow {
         unsafe {
             let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
             let key_window: *mut AnyObject = msg_send![app, keyWindow];
-            self.window == key_window
+            let host_window: *mut AnyObject = msg_send![self.view, window];
+            !host_window.is_null() && host_window == key_window
+        }
+    }
+
+    fn visibility(&self) -> WindowVisibility {
+        if self.is_active() {
+            WindowVisibility::Visible
+        } else {
+            WindowVisibility::Hidden
         }
     }
 
@@ -1538,6 +1571,10 @@ impl PlatformWindow for IosWindow {
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         *self.active_status_callback.borrow_mut() = Some(callback);
+    }
+
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        *self.visibility_callback.borrow_mut() = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
@@ -1634,14 +1671,14 @@ impl FallbackAtlas {
 impl PlatformAtlas for FallbackAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(Size<DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<AtlasTile>> {
         let mut state = self.state.lock();
 
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(tile.clone()));
         }
 
@@ -1663,7 +1700,7 @@ impl PlatformAtlas for FallbackAtlas {
                 },
             };
 
-            state.tiles.insert(key.clone(), tile.clone());
+            state.tiles.insert(key, tile.clone());
             Ok(Some(tile))
         } else {
             Ok(None)
