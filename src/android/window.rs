@@ -38,6 +38,7 @@ use gpui::{
     self, AtlasKey, AtlasTile, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
     PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
     RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowVisibility,
 };
 use gpui_wgpu::{wgpu, GpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use parking_lot::Mutex;
@@ -53,7 +54,6 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 use super::{AndroidKeyEvent, Bounds, DevicePixels, Pixels, Point, Size, TouchPoint};
-use crate::momentum::{MomentumScroller, VelocityTracker};
 
 /// Lightweight, owned window handle for wgpu surface creation.
 /// Stores the raw ANativeWindow pointer and implements the traits
@@ -88,39 +88,6 @@ impl HasDisplayHandle for RawAndroidWindow {
             ))
         })
     }
-}
-
-/// Shared momentum scrolling state, accessible from both the touch callback
-/// (which starts/cancels flings and records velocity samples) and the
-/// request-frame callback (which pumps the decelerating animation).
-///
-/// ## Coalesced scroll deltas
-///
-/// Android can deliver many `ACTION_MOVE` events between frames.  Instead of
-/// dispatching a `ScrollWheel` event for every single move (which triggers a
-/// full GPUI layout+paint each time), the touch callback **accumulates** the
-/// delta into `pending_scroll_dx/dy`.  The `on_request_frame` callback then
-/// drains the accumulated delta and emits a single `ScrollWheel` event per
-/// frame.  This dramatically reduces the number of layout passes during a
-/// drag and eliminates the "laggy" feeling on complex screens.
-struct MomentumState {
-    velocity_tracker: VelocityTracker,
-    scroller: MomentumScroller,
-
-    // ── Coalesced scroll state ───────────────────────────────────────────
-    /// Accumulated scroll delta (logical px) from touch MOVE events since
-    /// the last frame.  Drained by the frame callback.
-    pending_scroll_dx: f32,
-    pending_scroll_dy: f32,
-    /// The most recent touch position (logical px) for the coalesced event.
-    /// Updated on every MOVE so the ScrollWheel `position` field is correct.
-    pending_scroll_pos_x: f32,
-    pending_scroll_pos_y: f32,
-    /// Whether there is a pending scroll delta to emit.
-    has_pending_scroll: bool,
-    /// The touch phase for the pending scroll event (Started for the first
-    /// coalesced batch, Moved for subsequent ones).
-    pending_scroll_phase: gpui::TouchPhase,
 }
 
 // Re-export for use with raw-window-handle and the frame-rate helper.
@@ -218,6 +185,9 @@ pub type TouchCallback = Box<dyn FnMut(TouchPoint) + Send + 'static>;
 /// Called when the window's active status changes (foreground/background).
 pub type ActiveStatusCallback = Box<dyn FnMut(bool) + Send + 'static>;
 
+/// Called when the window becomes visible or hidden.
+pub type VisibilityCallback = Box<dyn FnMut(bool) + Send + 'static>;
+
 /// Called when a key event arrives.
 pub type KeyCallback = Box<dyn FnMut(AndroidKeyEvent) + Send + 'static>;
 
@@ -307,6 +277,19 @@ struct WindowState {
     /// Whether the window background should be transparent.
     transparent: bool,
 
+    /// Address of the `ANativeWindow` the renderer's wgpu surface was created from.
+    ///
+    /// Vulkan permits one surface per native window, and `replace_surface` builds the
+    /// new surface *before* dropping the old one. The framework sometimes hands a
+    /// recreated `SurfaceView` back the very same `ANativeWindow`, and building a second
+    /// surface for it aborts inside wgpu-hal with `ERROR_NATIVE_WINDOW_IN_USE_KHR`.
+    /// Comparing against this address lets `init_window` release the old surface before
+    /// creating the new one. The field is never cleared in `term_window` —
+    /// `unconfigure_surface` keeps the wgpu surface (and therefore the native window)
+    /// alive, so a matching address always means the *same live* object rather than a
+    /// recycled allocation.
+    surface_window_addr: usize,
+
     // ── callbacks ─────────────────────────────────────────────────────────
     request_frame_callback: Option<RequestFrameCallback>,
     touch_callback: Option<TouchCallback>,
@@ -315,6 +298,7 @@ struct WindowState {
     close_callback: Option<CloseCallback>,
     appearance_callback: Option<AppearanceCallback>,
     active_status_callback: Option<ActiveStatusCallback>,
+    visibility_callback: Option<VisibilityCallback>,
 }
 
 // SAFETY: `WindowState` is only ever accessed while holding the
@@ -340,6 +324,13 @@ pub struct AndroidWindow {
     /// lifecycle handlers can set it without acquiring the state lock
     /// (which may be held by a background render thread).
     active: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the window gets a *new* surface, cleared by the next frame.
+    ///
+    /// A replaced swapchain starts out empty, but GPUI only repaints what it
+    /// considers dirty — after a surface swap nothing is, so the first frames
+    /// present an empty image (a black screen). One `force_render` frame
+    /// repopulates it.
+    force_render_once: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // SAFETY: `WindowState` is protected by a `Mutex`.
@@ -390,6 +381,7 @@ impl AndroidWindow {
         .context("failed to create gpui_wgpu renderer")?;
 
         let id = native_window.ptr().as_ptr() as u64;
+        let surface_window_addr = native_window.ptr().as_ptr() as usize;
 
         let state = Arc::new(Mutex::new(WindowState {
             native_window: Some(native_window),
@@ -402,6 +394,7 @@ impl AndroidWindow {
             appearance: WindowAppearance::Light,
             is_active: true,
             transparent,
+            surface_window_addr,
             request_frame_callback: None,
             touch_callback: None,
             key_callback: None,
@@ -409,12 +402,14 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Ok(Arc::new(Self {
             state,
             id,
             active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            force_render_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }))
     }
 
@@ -433,6 +428,7 @@ impl AndroidWindow {
             appearance: WindowAppearance::Light,
             is_active: false,
             transparent: false,
+            surface_window_addr: 0,
             request_frame_callback: None,
             touch_callback: None,
             key_callback: None,
@@ -440,12 +436,14 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Arc::new(Self {
             state,
             id: ((width as u64) << 32) | (height as u64),
             active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            force_render_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
 
@@ -465,7 +463,39 @@ impl AndroidWindow {
         // If a renderer already exists (kept alive across term_window), just
         // replace its surface.  This preserves the atlas and all cached
         // AtlasTextureIds so GPUI's scene cache remains valid.
-        if state.renderer.is_some() {
+        let incoming_addr = native_window.ptr().as_ptr() as usize;
+        if state.renderer.is_some() && state.surface_window_addr == incoming_addr {
+            // Same live `ANativeWindow` as the surface we already hold. Two things
+            // rule out the paths used elsewhere in this function:
+            //
+            // - `replace_surface` creates the new surface *before* dropping the old
+            //   one, and Vulkan refuses a second surface on a window that is still
+            //   connected (`ERROR_NATIVE_WINDOW_IN_USE_KHR`, an `expect` inside
+            //   wgpu-hal that cannot be caught).
+            // - `update_drawable_size` alone is not enough: `term_window` left the
+            //   surface unconfigured, and nothing but a surface rebuild re-arms it,
+            //   so `draw` would keep bailing out and the window would stay black.
+            //
+            // `destroy` releases the old surface first; `recover` then rebuilds the
+            // renderer on the same window while keeping the atlas `Arc` that GPUI
+            // holds (its tiles are cleared and re-rasterised on the next paint, which
+            // `force_render_once` below guarantees).
+            log::info!(
+                "AndroidWindow::init_window — same native window, rebuilding surface {}×{}",
+                width,
+                height
+            );
+            let raw = Self::raw_window(&native_window);
+            let renderer = state.renderer.as_mut().unwrap();
+            renderer.destroy();
+            renderer
+                .recover(&raw)
+                .context("failed to rebuild the wgpu surface on the same native window")?;
+            renderer.update_drawable_size(gpui::size(
+                gpui::DevicePixels(width),
+                gpui::DevicePixels(height),
+            ));
+        } else if state.renderer.is_some() {
             let raw = Self::raw_window(&native_window);
             let config = WgpuSurfaceConfig {
                 size: gpui::size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
@@ -484,6 +514,7 @@ impl AndroidWindow {
                 .as_mut()
                 .unwrap()
                 .replace_surface(&raw, config, &instance)?;
+            state.surface_window_addr = incoming_addr;
             log::info!(
                 "AndroidWindow::init_window — replaced surface {}×{}",
                 width,
@@ -500,6 +531,7 @@ impl AndroidWindow {
             };
             let renderer = Self::create_renderer(&native_window, ctx, width, height, transparent)?;
             state.renderer = Some(renderer);
+            state.surface_window_addr = incoming_addr;
             log::info!(
                 "AndroidWindow::init_window — created new renderer {}×{}",
                 width,
@@ -508,14 +540,58 @@ impl AndroidWindow {
         }
 
         // Store the new native window (drops previous one if any).
+        let size_changed = state.width != width || state.height != height;
         state.native_window = Some(native_window);
         state.width = width;
         state.height = height;
         state.is_active = true;
         self.active
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // The swapchain behind this surface is empty — make the next frame repaint
+        // everything instead of only what GPUI currently considers dirty.
+        self.force_render_once
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(state);
+        // That repaint is not something GPUI knows it wants: ask the loop for
+        // the frame ourselves.
+        super::frame_source::resume();
+
+        // A recreated Activity can hand back a surface of a *different* size (the
+        // classic case being a rotation that recreates the Activity). `handle_resize`
+        // compares the native window against the dimensions we just stored and would
+        // conclude nothing changed, leaving GPUI laid out for the old size — content
+        // drawn into a corner of the new surface. Notify it directly instead.
+        if size_changed {
+            self.notify_resize();
+        }
 
         Ok(())
+    }
+
+    /// Fire GPUI's resize callback with the dimensions currently stored for this
+    /// window, whether or not they differ from what GPUI last saw.
+    fn notify_resize(&self) {
+        let (width, height, scale) = {
+            let state = self.state.lock();
+            (state.width, state.height, state.scale_factor)
+        };
+        let cb = {
+            let mut state = self.state.lock();
+            state.resize_callback.take()
+        };
+        if let Some(mut cb) = cb {
+            cb(
+                Size {
+                    width: DevicePixels(width),
+                    height: DevicePixels(height),
+                },
+                scale,
+            );
+            let mut state = self.state.lock();
+            if state.resize_callback.is_none() {
+                state.resize_callback = Some(cb);
+            }
+        }
     }
 
     /// Called when `APP_CMD_TERM_WINDOW` fires and the surface is about to be
@@ -684,7 +760,8 @@ impl AndroidWindow {
 
     /// Invoke the `request_frame_callback` if one is registered.
     ///
-    /// Called by the event loop on every iteration (~60 fps).
+    /// Called by the event loop once per vsync that GPUI asked for (see
+    /// `frame_source`); the callback draws only if the window is dirty.
     ///
     /// **Important**: The callback is taken out of the lock before being
     /// invoked and put back afterwards.  This avoids a deadlock: the GPUI
@@ -812,9 +889,11 @@ impl AndroidWindow {
             // closure that acquires its own Mutex (and may call back into
             // GPUI), so calling it under the state lock deadlocks.
             let mut taken_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
+            let mut visibility_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
             if let Some(mut state) = self.state.try_lock() {
                 state.is_active = active;
                 taken_cb = state.active_status_callback.take();
+                visibility_cb = state.visibility_callback.take();
             } else {
                 log::info!(
                     "AndroidWindow::set_active({}) — lock busy, skipping",
@@ -829,7 +908,18 @@ impl AndroidWindow {
                     state.active_status_callback = Some(cb);
                 }
             }
+            if let Some(mut cb) = visibility_cb {
+                cb(active);
+                if let Some(mut state) = self.state.try_lock() {
+                    state.visibility_callback = Some(cb);
+                }
+            }
             log::info!("AndroidWindow::set_active({}) — done", active);
+        }
+        if active {
+            // A vsync callback posted before the app left the foreground may
+            // never fire; post afresh so demand raised meanwhile is served.
+            super::frame_source::resume();
         }
     }
 
@@ -1013,6 +1103,13 @@ impl AndroidWindow {
         self.state.lock().active_status_callback = Some(Box::new(cb));
     }
 
+    pub fn on_visibility_change<F>(&self, cb: F)
+    where
+        F: FnMut(bool) + Send + 'static,
+    {
+        self.state.lock().visibility_callback = Some(Box::new(cb));
+    }
+
     // ── GPU introspection ─────────────────────────────────────────────────────
 
     /// Whether the GPU supports dual-source blending (subpixel text AA).
@@ -1089,40 +1186,21 @@ impl Drop for AndroidWindow {
 pub struct AndroidPlatformWindow {
     window: Arc<AndroidWindow>,
     display: Option<Rc<dyn PlatformDisplay>>,
-    input_handler: Option<PlatformInputHandler>,
-    title: String,
-    /// Shared momentum scrolling state — used by both the touch callback
-    /// (to start/cancel flings) and the frame callback (to pump inertia).
-    momentum: Arc<Mutex<MomentumState>>,
-    /// Shared reference to the GPUI input callback, so the frame callback can
-    /// emit synthetic momentum ScrollWheel events.  Initialised to a no-op;
-    /// replaced when `on_input` is called.
-    momentum_input_cb:
+    input_handler: Rc<RefCell<Option<PlatformInputHandler>>>,
+    ime_input_callback:
         Arc<Mutex<Box<dyn FnMut(gpui::PlatformInput) -> DispatchEventResult + Send>>>,
+    title: String,
 }
 
 impl AndroidPlatformWindow {
     /// Create a new `AndroidPlatformWindow` wrapping an existing `AndroidWindow`.
     pub fn new(window: Arc<AndroidWindow>, display: Option<Rc<dyn PlatformDisplay>>) -> Self {
-        // No-op input callback used until on_input is called.
-        let noop_input_cb: Box<dyn FnMut(gpui::PlatformInput) -> DispatchEventResult + Send> =
-            Box::new(|_| DispatchEventResult::default());
         Self {
             window,
             display,
-            input_handler: None,
+            input_handler: Rc::new(RefCell::new(None)),
+            ime_input_callback: Arc::new(Mutex::new(Box::new(|_| DispatchEventResult::default()))),
             title: String::new(),
-            momentum: Arc::new(Mutex::new(MomentumState {
-                velocity_tracker: VelocityTracker::new(),
-                scroller: MomentumScroller::new(),
-                pending_scroll_dx: 0.0,
-                pending_scroll_dy: 0.0,
-                pending_scroll_pos_x: 0.0,
-                pending_scroll_pos_y: 0.0,
-                has_pending_scroll: false,
-                pending_scroll_phase: gpui::TouchPhase::Moved,
-            })),
-            momentum_input_cb: Arc::new(Mutex::new(noop_input_cb)),
         }
     }
 
@@ -1178,6 +1256,14 @@ impl PlatformWindow for AndroidPlatformWindow {
         true
     }
 
+    fn visibility(&self) -> WindowVisibility {
+        if self.window.is_active() {
+            WindowVisibility::Visible
+        } else {
+            WindowVisibility::Hidden
+        }
+    }
+
     fn window_bounds(&self) -> WindowBounds {
         // Android windows are always fullscreen.
         WindowBounds::Fullscreen(self.bounds())
@@ -1226,11 +1312,21 @@ impl PlatformWindow for AndroidPlatformWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.input_handler = Some(input_handler);
+        *self.input_handler.borrow_mut() = Some(input_handler);
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.input_handler.take()
+        self.input_handler.borrow_mut().take()
+    }
+
+    fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
+        match change {
+            gpui::TextInputStateChange::FocusGained => {
+                super::jni::show_keyboard_android(crate::KeyboardType::Default);
+            }
+            gpui::TextInputStateChange::FocusLost => super::jni::hide_keyboard_android(),
+            _ => {}
+        }
     }
 
     fn prompt(
@@ -1291,6 +1387,13 @@ impl PlatformWindow for AndroidPlatformWindow {
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+        let input_handler = Rc::clone(&self.input_handler);
+        let input_callback = Arc::clone(&self.ime_input_callback);
+        let mut callback = callback;
+        let callback: Box<dyn FnMut(RequestFrameOptions)> = Box::new(move |options| {
+            super::text_input::drain(&input_handler, &mut **input_callback.lock());
+            callback(options);
+        });
         // PlatformWindow gives us Box<dyn FnMut(...)> (not Send).
         // AndroidWindow::on_request_frame requires Send.  On Android the
         // request-frame callback is always invoked on the main thread, so
@@ -1299,134 +1402,38 @@ impl PlatformWindow for AndroidPlatformWindow {
             unsafe { std::mem::transmute(callback) };
         let send_callback = Mutex::new(send_callback);
 
-        // Also capture the input callback so we can emit momentum scroll
-        // events before the GPUI render pass.  The input_callback is stored
-        // as an Arc<Mutex<…>> by on_input — we clone the same Arc here.
-        //
-        // We need a reference to the shared momentum state and the shared
-        // input callback so that the frame callback can pump inertia.
-        let momentum = Arc::clone(&self.momentum);
-        // The input_cb Arc is set up by on_input.  We store a clone of it
-        // on the struct so on_request_frame can capture it.
-        let input_cb = Arc::clone(&self.momentum_input_cb);
-
+        let force_render_once = Arc::clone(&self.window.force_render_once);
         self.window.on_request_frame(move || {
-            // ── Drain coalesced touch-scroll deltas ──────────────────
-            // The touch callback accumulates scroll deltas into
-            // MomentumState rather than emitting ScrollWheel events
-            // immediately.  We drain the accumulated delta here,
-            // emitting at most ONE ScrollWheel event per frame.
-            // This avoids redundant layout passes when Android
-            // delivers many MOVE events between frames.
-            {
-                let mut ms = momentum.lock();
-
-                if ms.has_pending_scroll {
-                    let dx = ms.pending_scroll_dx;
-                    let dy = ms.pending_scroll_dy;
-                    let pos_x = ms.pending_scroll_pos_x;
-                    let pos_y = ms.pending_scroll_pos_y;
-                    let phase = ms.pending_scroll_phase;
-
-                    // Reset the accumulator.
-                    ms.pending_scroll_dx = 0.0;
-                    ms.pending_scroll_dy = 0.0;
-                    ms.has_pending_scroll = false;
-
-                    // Drop the lock before calling the input callback
-                    // to avoid holding it during GPUI dispatch.
-                    drop(ms);
-
-                    let position = gpui::point(gpui::px(pos_x), gpui::px(pos_y));
-                    if let Some(mut guard) = input_cb.try_lock() {
-                        let _ = guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                            position,
-                            delta: gpui::ScrollDelta::Pixels(gpui::point(
-                                gpui::px(dx),
-                                gpui::px(dy),
-                            )),
-                            modifiers: gpui::Modifiers::default(),
-                            touch_phase: phase,
-                        }));
-                    }
-                } else if ms.scroller.is_active() {
-                    // ── Momentum scrolling pump ──────────────────────
-                    // No active touch drag — pump the momentum scroller.
-                    if let Some(delta) = ms.scroller.step() {
-                        let position =
-                            gpui::point(gpui::px(delta.position_x), gpui::px(delta.position_y));
-                        let fling_ended = !ms.scroller.is_active();
-
-                        // Drop the lock before calling the input callback.
-                        drop(ms);
-
-                        if let Some(mut guard) = input_cb.try_lock() {
-                            let _ =
-                                guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                                    position,
-                                    delta: gpui::ScrollDelta::Pixels(gpui::point(
-                                        gpui::px(delta.dx),
-                                        gpui::px(delta.dy),
-                                    )),
-                                    modifiers: gpui::Modifiers::default(),
-                                    touch_phase: gpui::TouchPhase::Moved,
-                                }));
-
-                            // If this was the last momentum frame (scroller
-                            // deactivated during step), send the Ended event
-                            // now so GPUI knows the gesture is complete.
-                            if fling_ended {
-                                let _ = guard(gpui::PlatformInput::ScrollWheel(
-                                    gpui::ScrollWheelEvent {
-                                        position,
-                                        delta: gpui::ScrollDelta::Pixels(gpui::point(
-                                            gpui::px(0.0),
-                                            gpui::px(0.0),
-                                        )),
-                                        modifiers: gpui::Modifiers::default(),
-                                        touch_phase: gpui::TouchPhase::Ended,
-                                    },
-                                ));
-                            }
-                        }
-                    } else {
-                        // Fling finished — emit a zero-delta Ended event.
-                        let pos = gpui::point(
-                            gpui::px(ms.scroller.position_x()),
-                            gpui::px(ms.scroller.position_y()),
-                        );
-                        drop(ms);
-
-                        if let Some(mut guard) = input_cb.try_lock() {
-                            let _ =
-                                guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                                    position: pos,
-                                    delta: gpui::ScrollDelta::Pixels(gpui::point(
-                                        gpui::px(0.0),
-                                        gpui::px(0.0),
-                                    )),
-                                    modifiers: gpui::Modifiers::default(),
-                                    touch_phase: gpui::TouchPhase::Ended,
-                                }));
-                        }
-                    }
-                }
-            }
-
             // Check if text input arrived since last frame — if so, force a
             // render so drain_pending_text() runs and the UI updates.
             let text_dirty =
                 crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+            // A freshly attached surface has an empty swapchain; repaint in full.
+            let surface_new = force_render_once.swap(false, std::sync::atomic::Ordering::AcqRel);
 
             let mut cb = send_callback.lock();
             cb(RequestFrameOptions {
-                require_presentation: true,
-                force_render: text_dirty,
+                require_presentation: false,
+                force_render: text_dirty || surface_new,
             });
         });
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(gpui::PlatformInput) -> DispatchEventResult>) {
+        let input_handler = Rc::clone(&self.input_handler);
+        let mut callback = callback;
+        let callback: Box<dyn FnMut(gpui::PlatformInput) -> DispatchEventResult> = Box::new(
+            move |event| {
+                if matches!(&event, gpui::PlatformInput::Touch(touch) if touch.phase == gpui::TouchPhase::Started)
+                {
+                    // Apply any last IME update to the old input before a tap can
+                    // change focus. A new native session rejects late IME callbacks.
+                    super::text_input::drain(&input_handler, &mut callback);
+                    super::text_input::finish_composition(&input_handler);
+                }
+                callback(event)
+            },
+        );
         // Bridge AndroidWindow touch/key callbacks → gpui::PlatformInput.
         //
         // PlatformWindow gives us Box<dyn FnMut(...)> (not Send).
@@ -1435,253 +1442,59 @@ impl PlatformWindow for AndroidPlatformWindow {
         // transmute is safe in practice.
         let send_callback: Box<dyn FnMut(gpui::PlatformInput) -> DispatchEventResult + Send> =
             unsafe { std::mem::transmute(callback) };
-        let input_cb = Arc::new(Mutex::new(send_callback));
+        *self.ime_input_callback.lock() = send_callback;
+        let input_cb = Arc::clone(&self.ime_input_callback);
 
-        // Store a clone for the momentum pump in on_request_frame.
-        *self.momentum_input_cb.lock() = {
-            let cb = Arc::clone(&input_cb);
-            Box::new(move |input: gpui::PlatformInput| -> DispatchEventResult { cb.lock()(input) })
-        };
-
-        // ── Touch events → PlatformInput ─────────────────────────────────
-        //
-        // Android touch events must be translated into both mouse events
-        // (for taps / clicks) and scroll-wheel events (for drag-to-scroll).
-        //
-        // A small state machine distinguishes the two gestures:
-        //
-        //   DOWN  → record start position, enter "pending" state
-        //   MOVE  → if finger moved > threshold → switch to "scrolling",
-        //           cancel the mouse-down, emit ScrollWheel deltas
-        //   UP    → if still "pending" → emit MouseDown + MouseUp (tap)
-        //           if "scrolling"   → emit final ScrollWheel (Ended) +
-        //           start momentum fling
-        //
-        // The threshold is in logical pixels (~8 px ≈ ~3 mm at 160 dpi).
+        // Preserve raw contacts so GPUI can arbitrate long presses, claimed
+        // control drags and ordinary pans, including hover suppression and inertia.
+        // `FlingGuard` keeps a contact that stops a fling from inheriting its axis.
         {
             let cb = Arc::clone(&input_cb);
-            let scale_factor = self.window.scale_factor();
-            let momentum = Arc::clone(&self.momentum);
-
-            /// Distance (logical px) the finger must travel before a touch
-            /// is promoted from a potential tap to a scroll gesture.
-            const SCROLL_SLOP: f32 = 8.0;
-
-            /// Tracks the current touch gesture.
-            #[derive(Clone, Copy, Debug)]
-            enum TouchState {
-                /// No active touch.
-                Idle,
-                /// Finger is down but hasn't moved beyond the slop threshold.
-                Pending { start_x: f32, start_y: f32 },
-                /// Finger has moved beyond the threshold — we are scrolling.
-                Scrolling { prev_x: f32, prev_y: f32 },
-            }
-
-            let state = Mutex::new(TouchState::Idle);
-
+            let window = Arc::downgrade(&self.window);
+            let mut next_id = 0u64;
+            let mut next_touch_id = move || {
+                let id = gpui::TouchId(next_id);
+                next_id = next_id.checked_add(1).expect("touch ID exhausted");
+                id
+            };
+            let mut active_touches = HashMap::new();
+            let mut fling_guard = crate::fling_guard::FlingGuard::new();
             self.window.on_touch(move |touch| {
-                // Android delivers touch coordinates in physical (device)
-                // pixels, but GPUI performs layout and hit-testing in logical
-                // pixels.  Divide by scale factor.
-                let logical_x = touch.x / scale_factor;
-                let logical_y = touch.y / scale_factor;
-                let modifiers = gpui::Modifiers::default();
-
-                let mut ts = state.lock();
-
-                match touch.action {
-                    // ── ACTION_DOWN ──────────────────────────────────────
-                    0 => {
-                        // Cancel any active momentum fling — the user
-                        // touched the screen, so inertia must stop.
-                        // Also flush any pending coalesced scroll.
-                        {
-                            let mut ms = momentum.lock();
-                            ms.scroller.cancel();
-                            ms.velocity_tracker.reset();
-                            ms.pending_scroll_dx = 0.0;
-                            ms.pending_scroll_dy = 0.0;
-                            ms.has_pending_scroll = false;
-                        }
-                        *ts = TouchState::Pending {
-                            start_x: logical_x,
-                            start_y: logical_y,
-                        };
-                        // Do NOT emit MouseDown here — wait until we know
-                        // whether this is a tap or a scroll.  Emitting
-                        // MouseDown immediately causes accidental navigation
-                        // when the user starts scrolling near a button/tab.
-                        //
-                        // - Tap (finger lifts within slop) → emit MouseDown +
-                        //   MouseUp together in ACTION_UP.
-                        // - Scroll (finger exceeds slop) → emit only
-                        //   MouseMove + ScrollWheel, no MouseDown.
-                    }
-
-                    // ── ACTION_MOVE ──────────────────────────────────────
-                    2 => {
-                        // Instead of emitting a ScrollWheel event for every
-                        // single MOVE, accumulate the delta in MomentumState.
-                        // The frame callback will drain and emit one coalesced
-                        // ScrollWheel per frame.  This is the key optimisation
-                        // that prevents N layout passes per frame during a drag.
-                        //
-                        // We DO emit MouseMove immediately for every MOVE so
-                        // that interactive screens (Animations drag line,
-                        // Shaders touch position) update in real time.
-                        let mut ms = momentum.lock();
-
-                        // Record every move for velocity estimation.
-                        ms.velocity_tracker.record(logical_x, logical_y);
-
-                        match *ts {
-                            TouchState::Pending { start_x, start_y } => {
-                                let dx = logical_x - start_x;
-                                let dy = logical_y - start_y;
-                                let distance = (dx * dx + dy * dy).sqrt();
-
-                                if distance > SCROLL_SLOP {
-                                    // Promote to scrolling — accumulate the
-                                    // first scroll delta from the start pos.
-                                    *ts = TouchState::Scrolling {
-                                        prev_x: logical_x,
-                                        prev_y: logical_y,
-                                    };
-                                    ms.pending_scroll_dx += dx;
-                                    ms.pending_scroll_dy += dy;
-                                    ms.pending_scroll_pos_x = logical_x;
-                                    ms.pending_scroll_pos_y = logical_y;
-                                    // Use Started phase for the first batch.
-                                    if !ms.has_pending_scroll {
-                                        ms.pending_scroll_phase = gpui::TouchPhase::Started;
-                                    }
-                                    ms.has_pending_scroll = true;
-                                }
-                                // else: still within slop, stay Pending
-                            }
-                            TouchState::Scrolling { prev_x, prev_y } => {
-                                let dx = logical_x - prev_x;
-                                let dy = logical_y - prev_y;
-                                *ts = TouchState::Scrolling {
-                                    prev_x: logical_x,
-                                    prev_y: logical_y,
-                                };
-                                ms.pending_scroll_dx += dx;
-                                ms.pending_scroll_dy += dy;
-                                ms.pending_scroll_pos_x = logical_x;
-                                ms.pending_scroll_pos_y = logical_y;
-                                if !ms.has_pending_scroll {
-                                    ms.pending_scroll_phase = gpui::TouchPhase::Moved;
-                                }
-                                ms.has_pending_scroll = true;
-                            }
-                            TouchState::Idle => {
-                                // Spurious move without a preceding down — ignore.
-                            }
-                        }
-
-                        // Drop momentum lock before dispatching MouseMove.
-                        drop(ms);
-
-                        // Always emit MouseMove so interactive screens can
-                        // track finger position (drag line in Animations,
-                        // gradient control in Shaders).
-                        let position = gpui::point(gpui::px(logical_x), gpui::px(logical_y));
-                        let mut guard = cb.lock();
-                        let _ = guard(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                            position,
-                            modifiers,
-                            pressed_button: Some(gpui::MouseButton::Left),
-                        }));
-                    }
-
-                    // ── ACTION_UP / ACTION_CANCEL ────────────────────────
-                    1 | 3 => {
-                        let position = gpui::point(gpui::px(logical_x), gpui::px(logical_y));
-
-                        match *ts {
-                            TouchState::Pending { start_x, start_y } => {
-                                // Finger lifted without exceeding slop →
-                                // this is a tap.  Emit MouseDown + MouseUp
-                                // together at the original down position so
-                                // hit-testing matches the initial touch point.
-                                {
-                                    let mut ms = momentum.lock();
-                                    ms.velocity_tracker.reset();
-                                    ms.has_pending_scroll = false;
-                                }
-                                let tap_pos = gpui::point(gpui::px(start_x), gpui::px(start_y));
-                                let mut guard = cb.lock();
-                                let _ =
-                                    guard(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                                        button: gpui::MouseButton::Left,
-                                        position: tap_pos,
-                                        modifiers,
-                                        click_count: 1,
-                                        first_mouse: false,
-                                    }));
-                                let _ = guard(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                                    button: gpui::MouseButton::Left,
-                                    position: tap_pos,
-                                    modifiers,
-                                    click_count: 1,
-                                }));
-                            }
-                            TouchState::Scrolling { prev_x, prev_y } => {
-                                // End the active touch-scroll gesture.
-                                // Include the final delta in the coalesced
-                                // accumulator, then flush it immediately
-                                // as an Ended event so the momentum fling
-                                // starts cleanly.
-                                let dx = logical_x - prev_x;
-                                let dy = logical_y - prev_y;
-                                let mut ms = momentum.lock();
-
-                                // Flush any accumulated delta + this final
-                                // move as a single Ended scroll event.
-                                let total_dx = ms.pending_scroll_dx + dx;
-                                let total_dy = ms.pending_scroll_dy + dy;
-                                ms.pending_scroll_dx = 0.0;
-                                ms.pending_scroll_dy = 0.0;
-                                ms.has_pending_scroll = false;
-
-                                // Compute release velocity and start fling.
-                                let (vx, vy) = ms.velocity_tracker.velocity();
-                                ms.velocity_tracker.reset();
-                                ms.scroller.fling(vx, vy, logical_x, logical_y);
-
-                                // Drop momentum lock before dispatching.
-                                drop(ms);
-
-                                let mut guard = cb.lock();
-                                // ScrollWheel Ended for scroll containers.
-                                let _ = guard(gpui::PlatformInput::ScrollWheel(
-                                    gpui::ScrollWheelEvent {
-                                        position,
-                                        delta: gpui::ScrollDelta::Pixels(gpui::point(
-                                            gpui::px(total_dx),
-                                            gpui::px(total_dy),
-                                        )),
-                                        modifiers,
-                                        touch_phase: gpui::TouchPhase::Ended,
-                                    },
-                                ));
-                                // MouseUp for interactive screens (Animations
-                                // drag-to-throw, Shaders touch release).
-                                let _ = guard(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                                    button: gpui::MouseButton::Left,
-                                    position,
-                                    modifiers,
-                                    click_count: 1,
-                                }));
-                            }
-                            TouchState::Idle => {}
-                        }
-                        *ts = TouchState::Idle;
-                    }
-
-                    _ => {} // Unknown action, ignore
+                let phase = match touch.action {
+                    0 => gpui::TouchPhase::Started,
+                    1 => gpui::TouchPhase::Ended,
+                    2 => gpui::TouchPhase::Moved,
+                    3 => gpui::TouchPhase::Cancelled,
+                    _ => return,
+                };
+                let id = if phase == gpui::TouchPhase::Started {
+                    // Android pointer IDs are reused after release.
+                    let id = next_touch_id();
+                    active_touches.insert(touch.id, id);
+                    id
+                } else {
+                    let Some(id) = active_touches.get(&touch.id).copied() else {
+                        return;
+                    };
+                    id
+                };
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+                let scale = window.scale_factor();
+                let event = gpui::TouchEvent {
+                    id,
+                    phase,
+                    position: gpui::point(gpui::px(touch.x / scale), gpui::px(touch.y / scale)),
+                    predicted_position: None,
+                    force: None,
+                };
+                let mut cb = cb.lock();
+                fling_guard.relay(event, &mut next_touch_id, |event| {
+                    cb(gpui::PlatformInput::Touch(event));
+                });
+                if matches!(phase, gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled) {
+                    active_touches.remove(&touch.id);
                 }
             });
         }
@@ -1755,6 +1568,20 @@ impl PlatformWindow for AndroidPlatformWindow {
         });
     }
 
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        let send_callback: Box<dyn FnMut(WindowVisibility) + Send> =
+            unsafe { std::mem::transmute(callback) };
+        let send_callback = Mutex::new(send_callback);
+        self.window.on_visibility_change(move |visible| {
+            let mut cb = send_callback.lock();
+            cb(if visible {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            });
+        });
+    }
+
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         let _callback = Mutex::new(callback);
         // No hover concept on touch devices
@@ -1814,6 +1641,16 @@ impl PlatformWindow for AndroidPlatformWindow {
         });
     }
 
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        // GPUI calls this when a window turns dirty; the loop draws at the
+        // next vsync (see `frame_source`).
+        Some(Rc::new(super::frame_source::schedule_frame))
+    }
+
+    fn schedule_frame(&self) {
+        super::frame_source::schedule_frame();
+    }
+
     fn draw(&self, scene: &gpui::Scene) {
         // gpui_wgpu::WgpuRenderer natively consumes gpui::Scene — no bridging needed.
         log::trace!(
@@ -1823,10 +1660,6 @@ impl PlatformWindow for AndroidPlatformWindow {
         );
 
         self.window.draw(scene);
-    }
-
-    fn completed_frame(&self) {
-        // No-op — frame completion is handled by wgpu's present.
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -1997,14 +1830,14 @@ impl FallbackAtlas {
 impl PlatformAtlas for FallbackAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(gpui::Size<gpui::DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<AtlasTile>> {
         let mut state = self.state.lock();
 
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(tile.clone()));
         }
 
@@ -2026,7 +1859,7 @@ impl PlatformAtlas for FallbackAtlas {
                 },
             };
 
-            state.tiles.insert(key.clone(), tile.clone());
+            state.tiles.insert(key, tile.clone());
             Ok(Some(tile))
         } else {
             Ok(None)
@@ -2265,8 +2098,108 @@ mod tests {
     }
 
     #[test]
-    fn gpu_info_none_for_headless() {
+    fn gpu_specs_none_for_headless() {
         let w = AndroidWindow::headless(1080, 1920, 2.0);
-        assert!(w.gpu_info().is_none());
+        assert!(w.gpu_specs().is_none());
+    }
+
+    fn touch_input_harness() -> (
+        Arc<AndroidWindow>,
+        AndroidPlatformWindow,
+        Arc<Mutex<Vec<gpui::PlatformInput>>>,
+    ) {
+        let window = AndroidWindow::headless(400, 800, 2.0);
+        let platform = AndroidPlatformWindow::new(window.clone(), None);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        platform.on_input(Box::new({
+            let events = events.clone();
+            move |event| {
+                events.lock().push(event);
+                DispatchEventResult::default()
+            }
+        }));
+        platform.on_request_frame(Box::new(|_| {}));
+        (window, platform, events)
+    }
+
+    fn send_touch(window: &AndroidWindow, action: u32, y: f32) {
+        window.handle_touch(TouchPoint {
+            id: 1,
+            x: 100.,
+            y,
+            action,
+        });
+    }
+
+    #[test]
+    fn touch_contacts_preserve_phases_and_logical_coordinates() {
+        let (window, _platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        send_touch(&window, 2, 240.);
+        send_touch(&window, 1, 242.);
+        let events = events.lock();
+        assert_eq!(events.len(), 3);
+        let contacts = events
+            .iter()
+            .map(|event| {
+                let gpui::PlatformInput::Touch(touch) = event else {
+                    panic!("touch must not be downgraded to mouse or scroll");
+                };
+                touch
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(contacts[0].phase, gpui::TouchPhase::Started);
+        assert_eq!(contacts[1].phase, gpui::TouchPhase::Moved);
+        assert_eq!(contacts[2].phase, gpui::TouchPhase::Ended);
+        assert_eq!(
+            contacts[0].position,
+            gpui::point(gpui::px(50.), gpui::px(100.))
+        );
+        assert_eq!(contacts[1].position.y, gpui::px(120.));
+        assert_eq!(contacts[2].position.y, gpui::px(121.));
+        assert!(contacts.iter().all(|touch| touch.id == contacts[0].id));
+    }
+
+    #[test]
+    fn touch_cancel_is_forwarded_and_discards_stray_moves() {
+        let (window, _platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        send_touch(&window, 2, 250.);
+        send_touch(&window, 3, 250.);
+        send_touch(&window, 2, 280.);
+        send_touch(&window, 1, 280.);
+        window.request_frame();
+        let events = events.lock();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[2], gpui::PlatformInput::Touch(event)
+            if event.phase == gpui::TouchPhase::Cancelled));
+    }
+
+    #[test]
+    fn touch_pointer_ids_are_not_reused_across_contacts() {
+        let (window, _platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        window.handle_touch(TouchPoint {
+            id: 2,
+            x: 120.,
+            y: 220.,
+            action: 0,
+        });
+        send_touch(&window, 1, 200.);
+        send_touch(&window, 0, 200.);
+        let events = events.lock();
+        let ids = events
+            .iter()
+            .map(|event| {
+                let gpui::PlatformInput::Touch(event) = event else {
+                    panic!("expected touch")
+                };
+                event.id
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(ids[0], ids[2]);
+        assert_ne!(ids[0], ids[3]);
+        assert_ne!(ids[1], ids[3]);
     }
 }
