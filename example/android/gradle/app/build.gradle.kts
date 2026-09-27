@@ -95,7 +95,7 @@ android {
 
 dependencies {
     // AndroidX core for NotificationCompat (used by GpuiNotifications)
-    implementation("androidx.core:core:1.12.0")
+    implementation("androidx.core:core:1.18.0")
     // AndroidX SplashScreen compat (used by GpuiActivity to hold splash until native init)
     implementation("androidx.core:core-splashscreen:1.0.1")
     // AndroidX Biometric for BiometricPrompt (used by GpuiAuthActivity)
