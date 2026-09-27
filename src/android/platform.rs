@@ -1078,11 +1078,9 @@ impl Platform for AndroidPlatform {
 
     fn prompt_for_paths(
         &self,
-        _options: PathPromptOptions,
+        options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-        let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Ok(None));
-        rx
+        super::document_picker::prompt(options)
     }
 
     fn prompt_for_new_path(

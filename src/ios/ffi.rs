@@ -289,13 +289,6 @@ pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
     // Safety: window_ptr must be a valid pointer to an IosWindow
     let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
 
-    // ── Momentum scrolling ───────────────────────────────────────────────
-    // Pump the momentum scroller BEFORE the render callback so that any
-    // synthetic ScrollWheel events are processed during this frame's
-    // layout/paint cycle.  This produces the smooth, decelerating inertia
-    // scroll that users expect on iOS after a fling gesture.
-    window.pump_momentum();
-
     // Check if text input arrived since last frame — if so, force a render
     // so drain_pending_text() runs and the UI updates.
     let text_dirty = crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
