@@ -12,10 +12,10 @@
 //!
 //! ## Integration with GPUI
 //!
-//! This crate depends on the `gpui` crate from the Zed repository for all
+//! This crate depends on the `gpui-pre` snapshot (imported as `gpui`) for all
 //! core types: `Platform`, `PlatformWindow`, `PlatformDisplay`, `Pixels`,
 //! `DevicePixels`, `Size`, `Point`, `Bounds`, event types, text system traits,
-//! etc.  It also depends on `gpui_wgpu` for the GPU renderer (`WgpuRenderer`)
+//! etc. It also depends on `gpui-pre-wgpu` for the GPU renderer (`WgpuRenderer`)
 //! and text system (`CosmicTextSystem`) on both platforms.
 //!
 //! ## iOS
@@ -72,6 +72,10 @@ pub use gpui;
 // ── shared modules ───────────────────────────────────────────────────────────
 
 pub mod components;
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) mod frame_demand;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) mod frame_pacer;
 pub mod momentum;
 pub mod packages;
 pub mod platform_view;
@@ -152,6 +156,17 @@ type TextInputCallbackFn = Box<dyn FnMut(&str)>;
 /// which in turn calls `drain_pending_text()` and updates the UI.
 pub static TEXT_INPUT_DIRTY: AtomicBool = AtomicBool::new(false);
 
+/// Marks text input as waiting and asks the platform for the frame that will
+/// process it — a host that paused its frame source on an idle screen has
+/// to be woken, since typing does not go through GPUI's invalidator.
+pub(crate) fn mark_text_input_dirty() {
+    TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+    #[cfg(target_os = "ios")]
+    ios::ffi::wake_windows();
+    #[cfg(target_os = "android")]
+    android::frame_source::wake();
+}
+
 thread_local! {
     /// Global text input callback — set by the active text input component.
     /// When the software keyboard sends text, this callback is invoked.
@@ -168,6 +183,13 @@ pub fn set_text_input_callback(callback: Option<TextInputCallbackFn>) {
     });
 }
 
+/// Whether a software keyboard text callback is registered. A callback that
+/// is currently being invoked counts as registered.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn has_text_input_callback() -> bool {
+    TEXT_INPUT_CALLBACK.with(|cb| cb.try_borrow().map_or(true, |cb| cb.is_some()))
+}
+
 /// Dispatch text input to the registered callback.
 ///
 /// Called internally by the platform layer when keyboard text is received.
@@ -177,7 +199,7 @@ pub fn dispatch_text_input(text: &str) -> bool {
     TEXT_INPUT_CALLBACK.with(|cb| {
         if let Some(callback) = cb.borrow_mut().as_mut() {
             callback(text);
-            TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+            mark_text_input_dirty();
             true
         } else {
             false
@@ -291,7 +313,7 @@ pub fn set_keyboard_height(height: f32) {
     let prev = f32::from_bits(KEYBOARD_HEIGHT_BITS.load(Ordering::Relaxed));
     if (prev - height).abs() > 0.5 {
         KEYBOARD_HEIGHT_BITS.store(height.to_bits(), Ordering::Release);
-        TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+        mark_text_input_dirty();
     }
 }
 
