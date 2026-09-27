@@ -12,6 +12,8 @@
 //! - **Animations** — bouncing balls with physics, trails, and particle effects.
 //! - **Shaders** — dynamic gradients, floating orbs, and ripple effects.
 
+#[cfg(target_os = "ios")]
+pub mod ai_chat;
 pub mod about;
 pub mod audio_player;
 pub mod chat;
@@ -20,6 +22,7 @@ pub mod counter;
 pub mod feed;
 pub mod form;
 pub mod home;
+pub mod markdown;
 pub mod packages_demo;
 pub mod settings;
 pub mod swiper;
@@ -56,6 +59,7 @@ pub enum Screen {
     Chat,
     AudioPlayer,
     VideoPlayer,
+    Markdown,
 }
 
 impl Screen {
@@ -77,6 +81,7 @@ impl Screen {
             return None;
         }
         match path.to_ascii_lowercase().as_str() {
+            "markdown" | "textview" => Some(Screen::Markdown),
             "home" => Some(Screen::Home),
             "counter" => Some(Screen::Counter),
             "settings" => Some(Screen::Settings),
@@ -100,6 +105,7 @@ impl Screen {
     /// Human-readable title for the screen (used in the nav bar).
     pub fn title(&self) -> &'static str {
         match self {
+            Screen::Markdown => "Markdown",
             Screen::Home => "Home",
             Screen::Counter => "Counter",
             Screen::Settings => "Settings",
@@ -478,6 +484,7 @@ impl Router {
         }
 
         let screen_content = match self.current_screen {
+            Screen::Markdown => markdown::render(cx).into_any_element(),
             Screen::Home => self.render_home_screen(cx).into_any_element(),
             Screen::Counter => self.render_counter_screen(cx).into_any_element(),
             Screen::Settings => self.render_settings_screen(cx).into_any_element(),

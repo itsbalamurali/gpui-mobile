@@ -38,6 +38,7 @@ use gpui::{
     self, AtlasKey, AtlasTile, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
     PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
     RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowVisibility,
 };
 use gpui_wgpu::{wgpu, GpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use parking_lot::Mutex;
@@ -121,6 +122,22 @@ struct MomentumState {
     /// The touch phase for the pending scroll event (Started for the first
     /// coalesced batch, Moved for subsequent ones).
     pending_scroll_phase: gpui::TouchPhase,
+}
+
+/// Release synthetic pointer hover without changing the preceding tap/scroll coordinates.
+fn clear_touch_hover(callback: &mut dyn FnMut(gpui::PlatformInput) -> DispatchEventResult) {
+    let position = gpui::point(gpui::px(-1.), gpui::px(-1.));
+    let modifiers = gpui::Modifiers::default();
+    callback(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+        position,
+        modifiers,
+        pressed_button: None,
+    }));
+    callback(gpui::PlatformInput::MouseExited(gpui::MouseExitEvent {
+        position,
+        modifiers,
+        pressed_button: None,
+    }));
 }
 
 // Re-export for use with raw-window-handle and the frame-rate helper.
@@ -217,6 +234,9 @@ pub type TouchCallback = Box<dyn FnMut(TouchPoint) + Send + 'static>;
 
 /// Called when the window's active status changes (foreground/background).
 pub type ActiveStatusCallback = Box<dyn FnMut(bool) + Send + 'static>;
+
+/// Called when the window becomes visible or hidden.
+pub type VisibilityCallback = Box<dyn FnMut(bool) + Send + 'static>;
 
 /// Called when a key event arrives.
 pub type KeyCallback = Box<dyn FnMut(AndroidKeyEvent) + Send + 'static>;
@@ -315,6 +335,7 @@ struct WindowState {
     close_callback: Option<CloseCallback>,
     appearance_callback: Option<AppearanceCallback>,
     active_status_callback: Option<ActiveStatusCallback>,
+    visibility_callback: Option<VisibilityCallback>,
 }
 
 // SAFETY: `WindowState` is only ever accessed while holding the
@@ -409,6 +430,7 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Ok(Arc::new(Self {
@@ -440,6 +462,7 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Arc::new(Self {
@@ -812,9 +835,11 @@ impl AndroidWindow {
             // closure that acquires its own Mutex (and may call back into
             // GPUI), so calling it under the state lock deadlocks.
             let mut taken_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
+            let mut visibility_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
             if let Some(mut state) = self.state.try_lock() {
                 state.is_active = active;
                 taken_cb = state.active_status_callback.take();
+                visibility_cb = state.visibility_callback.take();
             } else {
                 log::info!(
                     "AndroidWindow::set_active({}) — lock busy, skipping",
@@ -827,6 +852,12 @@ impl AndroidWindow {
                 // Put it back so future calls still fire.
                 if let Some(mut state) = self.state.try_lock() {
                     state.active_status_callback = Some(cb);
+                }
+            }
+            if let Some(mut cb) = visibility_cb {
+                cb(active);
+                if let Some(mut state) = self.state.try_lock() {
+                    state.visibility_callback = Some(cb);
                 }
             }
             log::info!("AndroidWindow::set_active({}) — done", active);
@@ -1013,6 +1044,13 @@ impl AndroidWindow {
         self.state.lock().active_status_callback = Some(Box::new(cb));
     }
 
+    pub fn on_visibility_change<F>(&self, cb: F)
+    where
+        F: FnMut(bool) + Send + 'static,
+    {
+        self.state.lock().visibility_callback = Some(Box::new(cb));
+    }
+
     // ── GPU introspection ─────────────────────────────────────────────────────
 
     /// Whether the GPU supports dual-source blending (subpixel text AA).
@@ -1176,6 +1214,14 @@ impl PlatformWindow for AndroidPlatformWindow {
     fn is_maximized(&self) -> bool {
         // Android windows are always effectively maximized (fullscreen).
         true
+    }
+
+    fn visibility(&self) -> WindowVisibility {
+        if self.window.is_active() {
+            WindowVisibility::Visible
+        } else {
+            WindowVisibility::Hidden
+        }
     }
 
     fn window_bounds(&self) -> WindowBounds {
@@ -1388,6 +1434,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                                     },
                                 ));
                             }
+                            clear_touch_hover(&mut **guard);
                         }
                     } else {
                         // Fling finished — emit a zero-delta Ended event.
@@ -1408,6 +1455,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                                     modifiers: gpui::Modifiers::default(),
                                     touch_phase: gpui::TouchPhase::Ended,
                                 }));
+                            clear_touch_hover(&mut **guard);
                         }
                     }
                 }
@@ -1521,6 +1569,9 @@ impl PlatformWindow for AndroidPlatformWindow {
 
                     // ── ACTION_MOVE ──────────────────────────────────────
                     2 => {
+                        if matches!(*ts, TouchState::Idle) {
+                            return;
+                        }
                         // Instead of emitting a ScrollWheel event for every
                         // single MOVE, accumulate the delta in MomentumState.
                         // The frame callback will drain and emit one coalesced
@@ -1596,8 +1647,8 @@ impl PlatformWindow for AndroidPlatformWindow {
                         }));
                     }
 
-                    // ── ACTION_UP / ACTION_CANCEL ────────────────────────
-                    1 | 3 => {
+                    // ── ACTION_UP ────────────────────────────────────────
+                    1 => {
                         let position = gpui::point(gpui::px(logical_x), gpui::px(logical_y));
 
                         match *ts {
@@ -1679,6 +1730,37 @@ impl PlatformWindow for AndroidPlatformWindow {
                             TouchState::Idle => {}
                         }
                         *ts = TouchState::Idle;
+                        clear_touch_hover(&mut **cb.lock());
+                    }
+
+                    // ── ACTION_CANCEL ────────────────────────────────────
+                    3 => {
+                        // Discard undelivered coalesced motion. A cancelled
+                        // gesture must not turn into a tap or an inertia fling.
+                        {
+                            let mut ms = momentum.lock();
+                            ms.scroller.cancel();
+                            ms.velocity_tracker.reset();
+                            ms.pending_scroll_dx = 0.0;
+                            ms.pending_scroll_dy = 0.0;
+                            ms.has_pending_scroll = false;
+                        }
+                        let scrolling = matches!(*ts, TouchState::Scrolling { .. });
+                        *ts = TouchState::Idle;
+                        let mut guard = cb.lock();
+                        if scrolling {
+                            let _ =
+                                guard(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                    position: gpui::point(gpui::px(logical_x), gpui::px(logical_y)),
+                                    delta: gpui::ScrollDelta::Pixels(gpui::point(
+                                        gpui::px(0.),
+                                        gpui::px(0.),
+                                    )),
+                                    modifiers,
+                                    touch_phase: gpui::TouchPhase::Cancelled,
+                                }));
+                        }
+                        clear_touch_hover(&mut **guard);
                     }
 
                     _ => {} // Unknown action, ignore
@@ -1755,6 +1837,20 @@ impl PlatformWindow for AndroidPlatformWindow {
         });
     }
 
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        let send_callback: Box<dyn FnMut(WindowVisibility) + Send> =
+            unsafe { std::mem::transmute(callback) };
+        let send_callback = Mutex::new(send_callback);
+        self.window.on_visibility_change(move |visible| {
+            let mut cb = send_callback.lock();
+            cb(if visible {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            });
+        });
+    }
+
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         let _callback = Mutex::new(callback);
         // No hover concept on touch devices
@@ -1823,10 +1919,6 @@ impl PlatformWindow for AndroidPlatformWindow {
         );
 
         self.window.draw(scene);
-    }
-
-    fn completed_frame(&self) {
-        // No-op — frame completion is handled by wgpu's present.
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -1997,14 +2089,14 @@ impl FallbackAtlas {
 impl PlatformAtlas for FallbackAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(gpui::Size<gpui::DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<AtlasTile>> {
         let mut state = self.state.lock();
 
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(tile.clone()));
         }
 
@@ -2026,7 +2118,7 @@ impl PlatformAtlas for FallbackAtlas {
                 },
             };
 
-            state.tiles.insert(key.clone(), tile.clone());
+            state.tiles.insert(key, tile.clone());
             Ok(Some(tile))
         } else {
             Ok(None)
@@ -2265,8 +2357,119 @@ mod tests {
     }
 
     #[test]
-    fn gpu_info_none_for_headless() {
+    fn gpu_specs_none_for_headless() {
         let w = AndroidWindow::headless(1080, 1920, 2.0);
-        assert!(w.gpu_info().is_none());
+        assert!(w.gpu_specs().is_none());
+    }
+
+    fn touch_input_harness() -> (
+        Arc<AndroidWindow>,
+        AndroidPlatformWindow,
+        Arc<Mutex<Vec<gpui::PlatformInput>>>,
+    ) {
+        let window = AndroidWindow::headless(400, 800, 2.0);
+        let platform = AndroidPlatformWindow::new(window.clone(), None);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        platform.on_input(Box::new({
+            let events = events.clone();
+            move |event| {
+                events.lock().push(event);
+                DispatchEventResult::default()
+            }
+        }));
+        platform.on_request_frame(Box::new(|_| {}));
+        (window, platform, events)
+    }
+
+    fn send_touch(window: &AndroidWindow, action: u32, y: f32) {
+        window.handle_touch(TouchPoint {
+            id: 1,
+            x: 100.,
+            y,
+            action,
+        });
+    }
+
+    fn assert_hover_cleared(events: &[gpui::PlatformInput]) {
+        assert!(
+            matches!(events.last(), Some(gpui::PlatformInput::MouseExited(event))
+            if event.pressed_button.is_none())
+        );
+        assert!(
+            matches!(&events[events.len() - 2], gpui::PlatformInput::MouseMove(event)
+            if event.position.x < gpui::px(0.) && event.position.y < gpui::px(0.)
+                && event.pressed_button.is_none())
+        );
+    }
+
+    #[test]
+    fn touch_tap_preserves_coordinates_then_clears_hover() {
+        let (window, _platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        assert!(events.lock().is_empty());
+        send_touch(&window, 1, 202.);
+        let events = events.lock();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], gpui::PlatformInput::MouseDown(event)
+            if event.position == gpui::point(gpui::px(50.), gpui::px(100.))));
+        assert!(matches!(&events[1], gpui::PlatformInput::MouseUp(event)
+            if event.position == gpui::point(gpui::px(50.), gpui::px(100.))));
+        assert_hover_cleared(&events);
+    }
+
+    #[test]
+    fn touch_cancel_does_not_commit_pending_tap_or_accept_stray_move() {
+        let (window, platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        send_touch(&window, 3, 200.);
+        send_touch(&window, 2, 250.);
+        window.request_frame();
+        let events = events.lock();
+        assert_eq!(events.len(), 2);
+        assert_hover_cleared(&events);
+        assert!(!platform.momentum.lock().scroller.is_active());
+    }
+
+    #[test]
+    fn touch_cancel_discards_coalesced_scroll_and_inertia() {
+        let (window, platform, events) = touch_input_harness();
+        send_touch(&window, 0, 200.);
+        send_touch(&window, 2, 250.);
+        window.request_frame();
+        assert!(events.lock().iter().any(|e| matches!(e,
+            gpui::PlatformInput::ScrollWheel(e) if e.touch_phase == gpui::TouchPhase::Started)));
+        send_touch(&window, 2, 280.);
+        assert!(platform.momentum.lock().has_pending_scroll);
+        events.lock().clear();
+        send_touch(&window, 3, 300.);
+        window.request_frame();
+        let events = events.lock();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], gpui::PlatformInput::ScrollWheel(event)
+            if event.touch_phase == gpui::TouchPhase::Cancelled));
+        assert_hover_cleared(&events);
+        let momentum = platform.momentum.lock();
+        assert!(!momentum.scroller.is_active());
+        assert!(!momentum.has_pending_scroll);
+        assert_eq!(
+            (momentum.pending_scroll_dx, momentum.pending_scroll_dy),
+            (0., 0.)
+        );
+    }
+
+    #[test]
+    fn touch_momentum_frame_clears_hover_after_scrolling() {
+        let (window, platform, events) = touch_input_harness();
+        platform
+            .momentum
+            .lock()
+            .scroller
+            .fling(1200., 0., 50., 100.);
+        window.request_frame();
+        let events = events.lock();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, gpui::PlatformInput::ScrollWheel(_))));
+        assert_hover_cleared(&events);
     }
 }
