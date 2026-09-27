@@ -179,6 +179,13 @@ pub fn set_text_input_callback(callback: Option<TextInputCallbackFn>) {
     });
 }
 
+/// Whether a software keyboard text callback is registered. A callback that
+/// is currently being invoked counts as registered.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn has_text_input_callback() -> bool {
+    TEXT_INPUT_CALLBACK.with(|cb| cb.try_borrow().map_or(true, |cb| cb.is_some()))
+}
+
 /// Dispatch text input to the registered callback.
 ///
 /// Called internally by the platform layer when keyboard text is received.
