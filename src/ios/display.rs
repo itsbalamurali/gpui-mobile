@@ -67,7 +67,7 @@ impl IosDisplay {
 impl PlatformDisplay for IosDisplay {
     fn id(&self) -> DisplayId {
         // iOS doesn't have display IDs like macOS, so we use the screen pointer as an ID
-        DisplayId::new(self.screen as u32)
+        DisplayId::new(self.screen as u64)
     }
 
     fn uuid(&self) -> Result<Uuid> {

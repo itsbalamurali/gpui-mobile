@@ -35,9 +35,9 @@
 use anyhow::Result;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
+    ForegroundExecutor, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions,
+    Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
 };
 use gpui_wgpu::CosmicTextSystem;
@@ -146,7 +146,7 @@ struct AndroidPlatformState {
     finish_launching: Option<Box<dyn FnOnce() + Send>>,
 
     /// Called when the app is about to quit.
-    quit_callback: Option<Box<dyn FnMut() + Send>>,
+    quit_callback: Option<Box<dyn FnMut() -> bool + Send>>,
 
     /// Called when the app is re-opened (e.g. tapped in the recents screen
     /// while already running).
@@ -515,17 +515,15 @@ impl AndroidPlatform {
     /// Invokes the registered quit callback before returning.
     pub fn quit(&self) {
         log::info!("AndroidPlatform::quit");
-        self.should_quit.store(true, Ordering::SeqCst);
-
-        let cb = self.state.lock().quit_callback.as_mut().map(|cb| {
-            // We cannot move out of an `&mut FnMut`, so we call it in place.
-            cb as *mut Box<dyn FnMut() + Send>
-        });
-
-        if let Some(cb_ptr) = cb {
-            // SAFETY: The pointer is valid for the duration of this call
-            // because we hold the lock-guard's lifetime indirectly.
-            unsafe { (*cb_ptr)() };
+        // GPUI may defer shutdown while its App is borrowed. Take the callback
+        // out of the mutex so it can call back into the platform safely.
+        let mut callback = self.state.lock().quit_callback.take();
+        let can_quit = callback.as_mut().map_or(true, |callback| callback());
+        if let Some(callback) = callback {
+            self.state.lock().quit_callback.get_or_insert(callback);
+        }
+        if can_quit {
+            self.should_quit.store(true, Ordering::SeqCst);
         }
     }
 
@@ -893,11 +891,14 @@ impl AndroidPlatform {
     // ── callback registration ─────────────────────────────────────────────────
 
     /// Register a callback invoked when the app is about to quit.
-    pub fn on_quit<F>(&self, cb: F)
+    pub fn on_quit<F>(&self, mut cb: F)
     where
         F: FnMut() + Send + 'static,
     {
-        self.state.lock().quit_callback = Some(Box::new(cb));
+        self.state.lock().quit_callback = Some(Box::new(move || {
+            cb();
+            true
+        }));
     }
 
     /// Register a callback invoked when the app is re-opened.
@@ -975,24 +976,10 @@ impl Platform for AndroidPlatform {
     }
 
     fn quit(&self) {
-        log::info!("AndroidPlatform::quit");
-        self.should_quit.store(true, Ordering::SeqCst);
-
-        let cb = self
-            .state
-            .lock()
-            .quit_callback
-            .as_mut()
-            .map(|cb| cb as *mut Box<dyn FnMut() + Send>);
-
-        if let Some(cb_ptr) = cb {
-            // SAFETY: pointer is valid for the duration of this call because
-            // we hold the lock-guard's lifetime indirectly.
-            unsafe { (*cb_ptr)() };
-        }
+        AndroidPlatform::quit(self);
     }
 
-    fn restart(&self, _binary_path: Option<PathBuf>) {
+    fn restart(&self, _binary_path: Option<PathBuf>, _arguments: Vec<std::ffi::OsString>) {
         log::warn!("AndroidPlatform::restart — not supported on Android");
     }
 
@@ -1091,11 +1078,9 @@ impl Platform for AndroidPlatform {
 
     fn prompt_for_paths(
         &self,
-        _options: PathPromptOptions,
+        options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-        let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Ok(None));
-        rx
+        super::document_picker::prompt(options)
     }
 
     fn prompt_for_new_path(
@@ -1122,10 +1107,28 @@ impl Platform for AndroidPlatform {
         log::info!("AndroidPlatform::open_with_system — Intent launch not yet implemented");
     }
 
-    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+    fn on_quit(&self, callback: Box<dyn FnMut() -> bool>) {
         self.state.lock().quit_callback = Some(unsafe {
-            std::mem::transmute::<Box<dyn FnMut()>, Box<dyn FnMut() + Send>>(callback)
+            std::mem::transmute::<Box<dyn FnMut() -> bool>, Box<dyn FnMut() -> bool + Send>>(
+                callback,
+            )
         });
+    }
+
+    fn on_system_wake(&self, _callback: Box<dyn FnMut()>) {
+        // Mobile foreground transitions are handled by the native app lifecycle.
+    }
+
+    fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {
+        // Mobile background transitions are handled by the native app lifecycle.
+    }
+
+    fn hide_cursor_until_mouse_moves(&self) {
+        // The native mobile UI manages pointer visibility.
+    }
+
+    fn is_cursor_visible(&self) -> bool {
+        false
     }
 
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
@@ -1168,6 +1171,12 @@ impl Platform for AndroidPlatform {
         //
         // For devices below API 29 this is a silent no-op.
         self.register_thermal_listener(callback);
+    }
+
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        Task::ready(Err(anyhow::anyhow!(
+            "Idle sleep prevention for {reason:?} is not supported on Android"
+        )))
     }
 
     fn app_path(&self) -> Result<PathBuf> {
@@ -1307,8 +1316,8 @@ impl Platform for SharedPlatform {
     fn quit(&self) {
         <AndroidPlatform as Platform>::quit(&self.0)
     }
-    fn restart(&self, binary_path: Option<PathBuf>) {
-        <AndroidPlatform as Platform>::restart(&self.0, binary_path)
+    fn restart(&self, binary_path: Option<PathBuf>, arguments: Vec<std::ffi::OsString>) {
+        <AndroidPlatform as Platform>::restart(&self.0, binary_path, arguments)
     }
     fn activate(&self, ignoring_other_apps: bool) {
         <AndroidPlatform as Platform>::activate(&self.0, ignoring_other_apps)
@@ -1372,8 +1381,20 @@ impl Platform for SharedPlatform {
     fn open_with_system(&self, path: &Path) {
         <AndroidPlatform as Platform>::open_with_system(&self.0, path)
     }
-    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+    fn on_quit(&self, callback: Box<dyn FnMut() -> bool>) {
         <AndroidPlatform as Platform>::on_quit(&self.0, callback)
+    }
+    fn on_system_wake(&self, callback: Box<dyn FnMut()>) {
+        <AndroidPlatform as Platform>::on_system_wake(&self.0, callback)
+    }
+    fn on_system_sleep(&self, callback: Box<dyn FnMut()>) {
+        <AndroidPlatform as Platform>::on_system_sleep(&self.0, callback)
+    }
+    fn hide_cursor_until_mouse_moves(&self) {
+        <AndroidPlatform as Platform>::hide_cursor_until_mouse_moves(&self.0)
+    }
+    fn is_cursor_visible(&self) -> bool {
+        <AndroidPlatform as Platform>::is_cursor_visible(&self.0)
     }
     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
         <AndroidPlatform as Platform>::on_reopen(&self.0, callback)
@@ -1398,6 +1419,9 @@ impl Platform for SharedPlatform {
     }
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>) {
         <AndroidPlatform as Platform>::on_thermal_state_change(&self.0, callback)
+    }
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        <AndroidPlatform as Platform>::prevent_idle_sleep(&self.0, reason)
     }
     fn app_path(&self) -> Result<PathBuf> {
         <AndroidPlatform as Platform>::app_path(&self.0)
