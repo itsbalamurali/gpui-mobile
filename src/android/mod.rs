@@ -152,6 +152,7 @@ pub fn size<T>(width: T, height: T) -> Size<T> {
 pub mod dispatcher;
 pub mod display;
 mod document_picker;
+pub(crate) mod frame_source;
 pub mod host;
 pub mod jni;
 pub mod keyboard;
