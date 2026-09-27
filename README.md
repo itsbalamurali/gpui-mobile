@@ -15,6 +15,16 @@ Implements the `gpui::Platform` trait for mobile targets, following the same arc
 
 **Highlights:** GPU-accelerated rendering, touch input with momentum scrolling, keyboard support, safe area insets, dark mode, and emoji rendering.
 
+## Custom Android hosts
+
+Custom Android hosts should extend `dev.gpui.mobile.GpuiInputActivity` instead of
+`android.app.NativeActivity` to receive multistage IME composition through a
+native `InputConnection`. Include `GpuiInputActivity.java` and retain the usual
+`android.app.lib_name` metadata. For GPUI file prompts, also package
+`GpuiPathPicker.java` and register its non-exported Activity as shown in the
+example manifest. The picker imports documents into app cache before returning
+filesystem paths; it does not require broad storage permissions.
+
 ## Quick Start
 
 ### Prerequisites
