@@ -9,7 +9,8 @@
 //! ```text
 //! gpui_ios_run_demo()          // sets up platform + invokes finish-launching
 //! gpui_ios_get_window()        // retrieve the GPUI window pointer
-//! gpui_ios_request_frame(ptr)  // called every CADisplayLink tick
+//! gpui_ios_set_frame_waker(ptr, waker, ctx) // optional: lets the host pause its display link
+//! gpui_ios_request_frame(ptr)  // called every CADisplayLink tick; returns whether GPUI wants another
 //! ```
 
 use gpui::{App, AppContext, Application, RequestFrameOptions, WindowOptions};
@@ -276,29 +277,35 @@ pub extern "C" fn gpui_ios_handle_touch(
     );
 }
 
-/// Request a frame to be rendered.
+/// Give GPUI a frame. Returns whether GPUI wants another one.
 ///
-/// This should be called from CADisplayLink callback to trigger GPUI rendering.
+/// Call this from the `CADisplayLink` callback. GPUI draws only if something
+/// changed; the return value says whether more frames are wanted (a view was
+/// notified during this one, an animation asked for the next frame, text
+/// input is waiting). A host that registered a waker with
+/// [`gpui_ios_set_frame_waker`] can pause its display link on `false` and
+/// resume it from the waker; a host that ticks unconditionally may ignore
+/// the return value. A null `window_ptr` returns `false`: there is no window
+/// to draw, so a pausing host stays paused until it registers a real one.
+///
 /// The window_ptr should be the value returned by gpui_ios_get_window().
 #[unsafe(no_mangle)]
-pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
+pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) -> bool {
     if window_ptr.is_null() {
-        return;
+        return false;
     }
 
     // Safety: window_ptr must be a valid pointer to an IosWindow
     let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
 
-    // ── Momentum scrolling ───────────────────────────────────────────────
-    // Pump the momentum scroller BEFORE the render callback so that any
-    // synthetic ScrollWheel events are processed during this frame's
-    // layout/paint cycle.  This produces the smooth, decelerating inertia
-    // scroll that users expect on iOS after a fling gesture.
-    window.pump_momentum();
-
     // Check if text input arrived since last frame — if so, force a render
     // so drain_pending_text() runs and the UI updates.
     let text_dirty = crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+
+    // Demand raised during the frame (a view notified mid-draw, an animation
+    // asking for its next frame) must survive into the return value, so the
+    // slate is cleared before the frame, not after.
+    window.frame_demand.clear();
 
     // Take the callback, invoke it, then restore it
     // We must complete the borrow before invoking the callback,
@@ -311,6 +318,46 @@ pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
         });
         // Restore the callback for the next frame
         window.request_frame_callback.borrow_mut().replace(cb);
+    }
+
+    window.frame_demand.is_pending()
+        || crate::TEXT_INPUT_DIRTY.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Register the host callback that resumes frame delivery.
+///
+/// GPUI calls `waker(context)` on the main thread whenever it wants a frame
+/// and the host may have stopped ticking: after `gpui_ios_request_frame`
+/// returned `false`, a notified view, an animation, arriving text input.
+/// Typically the callback un-pauses the `CADisplayLink`. Pass a null `waker`
+/// to clear it; the host must keep `context` valid until then.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_set_frame_waker(
+    window_ptr: *mut c_void,
+    waker: Option<unsafe extern "C" fn(*mut c_void)>,
+    context: *mut c_void,
+) {
+    if window_ptr.is_null() {
+        return;
+    }
+    // Safety: window_ptr must be a valid pointer to an IosWindow
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
+    window
+        .frame_demand
+        .set_host_waker(waker.map(|waker| (waker, context)));
+}
+
+/// Ask every registered window for a frame. Used for demand that arrives
+/// outside GPUI, such as text from the software keyboard.
+pub(crate) fn wake_windows() {
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            for &window in (*wrapper.0.get()).iter() {
+                if !window.is_null() {
+                    (*window).frame_demand.wake();
+                }
+            }
+        }
     }
 }
 
@@ -440,6 +487,14 @@ unsafe impl Sync for AppCallbackCell {}
 
 static APP_CALLBACK: OnceLock<AppCallbackCell> = OnceLock::new();
 
+thread_local! {
+    // UIKit owns the run loop. Keep GPUI alive after the launch callback returns
+    // so native window pointers and their callbacks remain valid.
+    static IOS_APPLICATION: std::cell::RefCell<Option<gpui::ApplicationHandle>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 /// Register a callback that will be invoked inside `Application::run`.
 ///
 /// This must be called **before** [`run_app`] so that the run-loop
@@ -490,7 +545,7 @@ pub fn run_app() {
     }
 
     let platform = Rc::new(super::IosPlatform::new());
-    Application::with_platform(platform).run(|cx: &mut App| {
+    let application = Application::with_platform(platform).run_embedded(|cx: &mut App| {
         if let Some(cb) = take_app_callback() {
             log::info!("GPUI iOS: Invoking user-provided app callback");
             cb(cx);
@@ -508,7 +563,9 @@ pub fn run_app() {
         }
     });
 
-    // On iOS, Application::run() stores the callback and returns immediately.
+    IOS_APPLICATION.with(|slot| *slot.borrow_mut() = Some(application));
+
+    // On iOS, run_embedded() stores the callback and returns immediately.
     // The finish-launching callback is forwarded to set_finish_launching_callback
     // and invoked here synchronously (in a real app the app delegate does this).
     if let Some(state) = IOS_APP_STATE.get() {
@@ -516,6 +573,52 @@ pub fn run_app() {
         if let Some(callback) = callback {
             log::info!("GPUI iOS: Invoking Application::run callback");
             callback();
+        }
+    }
+}
+
+// Embedded mode is configured on the UIKit main thread before startup.
+thread_local! {
+    static EMBEDDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn is_embedded() -> bool {
+    EMBEDDED.with(|value| value.get())
+}
+
+/// Select view embedding before starting the application (main thread only).
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_set_embedded() {
+    EMBEDDED.with(|value| value.set(true));
+}
+
+/// Borrow the GPUI controller for UIKit child-controller containment.
+/// The application must remain alive while the host uses this controller.
+///
+/// # Safety
+/// Call on the main thread with null or a live pointer from `gpui_ios_get_window`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpui_ios_view_controller(window: *mut c_void) -> *mut c_void {
+    if window.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        (&*(window as *const super::window::IosWindow))
+            .view_controller_ptr()
+            .cast()
+    }
+}
+
+/// Forward host layout changes after assigning the embedded view's bounds.
+///
+/// # Safety
+/// Call on the main thread with null or a live pointer from `gpui_ios_get_window`.
+/// Do not call re-entrantly from a GPUI update.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpui_ios_layout_view(window: *mut c_void) {
+    if !window.is_null() {
+        unsafe {
+            (&*(window as *const super::window::IosWindow)).handle_layout_change();
         }
     }
 }

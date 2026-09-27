@@ -26,6 +26,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
 
       - name: Cache Cargo registry + git deps
         uses: actions/cache@v5
@@ -50,20 +52,26 @@ jobs:
             exit 1
           fi
 
+      - name: Check iOS backends before publishing
+        run: |
+          cargo check --target aarch64-apple-ios
+          cargo check --target aarch64-apple-ios-sim
+          cargo check --manifest-path example/Cargo.toml --target aarch64-apple-ios
+
       - name: Run tests before publishing
         run: cargo test --lib
 
       - name: Dry-run publish
-        if: github.event_name == 'workflow_dispatch' && inputs.dry-run == 'true'
-        run: cargo publish --dry-run
+        if: github.event_name == 'workflow_dispatch' && inputs.dry-run
+        run: cargo publish --dry-run --target aarch64-apple-ios
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish to crates.io
         if: >-
           (github.event_name == 'release') ||
-          (github.event_name == 'workflow_dispatch' && inputs.dry-run != 'true')
-        run: cargo publish
+          (github.event_name == 'workflow_dispatch' && !inputs.dry-run)
+        run: cargo publish --target aarch64-apple-ios
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
