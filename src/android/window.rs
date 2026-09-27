@@ -1825,10 +1825,6 @@ impl PlatformWindow for AndroidPlatformWindow {
         self.window.draw(scene);
     }
 
-    fn completed_frame(&self) {
-        // No-op — frame completion is handled by wgpu's present.
-    }
-
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.window
             .sprite_atlas()
