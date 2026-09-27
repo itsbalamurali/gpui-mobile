@@ -122,6 +122,12 @@ pub struct Pointer {
 }
 
 type Launch = Box<dyn FnOnce(&mut App) + Send>;
+/// Applied to the `Application` before `run_embedded`, so a host can register things
+/// that must exist before the first frame — an asset source, most importantly.
+type Configure = Box<dyn FnOnce(Application) -> Application + Send>;
+
+/// Set by [`start_with_assets`], consumed when the app is built.
+static CONFIGURE: Mutex<Option<Configure>> = Mutex::new(None);
 
 /// GPUI's application, owned by the render thread.
 struct HostApp {
@@ -143,6 +149,23 @@ fn wake_render_thread() {
         // which is the lifetime of the process.
         unsafe { ndk_sys::ALooper_wake(looper.0) };
     }
+}
+
+/// Like [`start`], but also registers an [`gpui::AssetSource`] on the `Application`
+/// GPUI builds on the render thread.
+///
+/// `Application::with_assets` consumes the builder before `run_embedded`, so a host that
+/// only gets `&mut App` in its launch closure has no way to install one — anything
+/// resolved through the asset source (icons, SVGs) would silently come back empty.
+pub fn start_with_assets<A, F>(assets: A, launch: F)
+where
+    A: gpui::AssetSource,
+    F: FnOnce(&mut App) + Send + 'static,
+{
+    *CONFIGURE.lock().expect("poisoned") = Some(Box::new(move |application: Application| {
+        application.with_assets(assets)
+    }));
+    start(launch);
 }
 
 /// Start the render thread. Idempotent — later calls are no-ops, which is what makes
@@ -305,8 +328,11 @@ fn on_surface_created(
                 // Without an `AndroidApp` to drive, `AndroidPlatform::run` invokes the
                 // callback immediately and returns — the shape `run_embedded` expects.
                 // The handle is what keeps the `App` alive afterwards.
-                let application =
+                let mut application =
                     Application::with_platform(SharedPlatform::new(Arc::clone(platform)).into_rc());
+                if let Some(configure) = CONFIGURE.lock().expect("poisoned").take() {
+                    application = configure(application);
+                }
                 app.handle = Some(application.run_embedded(launch));
             }
         }
