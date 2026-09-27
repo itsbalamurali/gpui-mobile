@@ -16,7 +16,7 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: main.m
+      - path: App.swift
         type: file
         buildPhase: sources
       - path: gpui_ios.h
@@ -39,6 +39,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: Z4NN89S239
         SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: "Embedding.h"
         CLANG_ENABLE_MODULES: YES
         CLANG_ENABLE_OBJC_ARC: YES
         ENABLE_BITCODE: NO
@@ -84,12 +85,9 @@ targets:
         VALID_ARCHS: "arm64"
         ARCHS: "arm64"
         ONLY_ACTIVE_ARCH: YES
-      settings:
-        base:
-          # SDK-conditional static lib path: simulator uses aarch64-apple-ios-sim,
-          # device uses aarch64-apple-ios.
-          "EXAMPLE_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios-sim/debug/libgpui_mobile_example.a"
-          "EXAMPLE_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libgpui_mobile_example.a"
+        # SDK-conditional static lib path for debug builds.
+        "EXAMPLE_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios-sim/debug/libgpui_mobile_example.a"
+        "EXAMPLE_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libgpui_mobile_example.a"
       configs:
         Debug:
           GCC_OPTIMIZATION_LEVEL: "0"
@@ -106,7 +104,7 @@ targets:
         script: |
           set -euo pipefail
 
-          RUST_PROJECT_DIR="${PROJECT_DIR}/../.."
+          RUST_PROJECT_DIR="${PROJECT_DIR}/.."
           cd "${RUST_PROJECT_DIR}"
 
           # Determine the Rust target triple based on Xcode SDK
@@ -129,7 +127,7 @@ targets:
           rustup target add "${RUST_TARGET}" 2>/dev/null || true
 
           # Build the Rust static library
-          cargo build --target "${RUST_TARGET}" ${CARGO_FLAGS} 2>&1
+          cargo build --lib --target "${RUST_TARGET}" ${CARGO_FLAGS} 2>&1
 
           echo "Rust build complete for ${RUST_TARGET}"
         shell: /bin/bash

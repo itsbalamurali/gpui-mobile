@@ -63,11 +63,3 @@ pub fn touch_phase(touch: *mut AnyObject) -> UITouchPhase {
         UITouchPhase::from(phase)
     }
 }
-
-/// Get the number of taps for a touch (for detecting double-tap, etc.)
-pub fn touch_tap_count(touch: *mut AnyObject) -> u32 {
-    unsafe {
-        let count: i64 = msg_send![touch, tapCount];
-        count as u32
-    }
-}
