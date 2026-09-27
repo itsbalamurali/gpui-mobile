@@ -604,6 +604,16 @@ pub(crate) struct IosWindow {
 unsafe impl Send for IosWindow {}
 unsafe impl Sync for IosWindow {}
 
+impl Drop for IosWindow {
+    fn drop(&mut self) {
+        // Remove our raw pointer from the FFI window list before the address goes
+        // away, so `gpui_ios_get_window` / the app-lifecycle iterators never touch
+        // freed memory. Pointer matches the one passed to `register_with_ffi`
+        // (the window lives at a stable address in a Box for its whole lifetime).
+        super::ffi::deregister_window(self as *const Self);
+    }
+}
+
 impl IosWindow {
     pub fn new(handle: AnyWindowHandle, _params: WindowParams) -> anyhow::Result<Self> {
         // Create the window on the main screen
