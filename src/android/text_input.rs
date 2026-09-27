@@ -33,7 +33,7 @@ pub(super) fn new_session() -> u64 {
 pub(super) fn enqueue(event: ImeEvent) {
     if event.session == SESSION.load(Ordering::Acquire) {
         EVENTS.lock().push_back(event);
-        crate::TEXT_INPUT_DIRTY.store(true, Ordering::Release);
+        crate::mark_text_input_dirty();
     }
 }
 

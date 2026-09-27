@@ -9,7 +9,8 @@
 //! ```text
 //! gpui_ios_run_demo()          // sets up platform + invokes finish-launching
 //! gpui_ios_get_window()        // retrieve the GPUI window pointer
-//! gpui_ios_request_frame(ptr)  // called every CADisplayLink tick
+//! gpui_ios_set_frame_waker(ptr, waker, ctx) // optional: lets the host pause its display link
+//! gpui_ios_request_frame(ptr)  // called every CADisplayLink tick; returns whether GPUI wants another
 //! ```
 
 use gpui::{App, AppContext, Application, RequestFrameOptions, WindowOptions};
@@ -276,14 +277,22 @@ pub extern "C" fn gpui_ios_handle_touch(
     );
 }
 
-/// Request a frame to be rendered.
+/// Give GPUI a frame. Returns whether GPUI wants another one.
 ///
-/// This should be called from CADisplayLink callback to trigger GPUI rendering.
+/// Call this from the `CADisplayLink` callback. GPUI draws only if something
+/// changed; the return value says whether more frames are wanted (a view was
+/// notified during this one, an animation asked for the next frame, text
+/// input is waiting). A host that registered a waker with
+/// [`gpui_ios_set_frame_waker`] can pause its display link on `false` and
+/// resume it from the waker; a host that ticks unconditionally may ignore
+/// the return value. A null `window_ptr` returns `false`: there is no window
+/// to draw, so a pausing host stays paused until it registers a real one.
+///
 /// The window_ptr should be the value returned by gpui_ios_get_window().
 #[unsafe(no_mangle)]
-pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
+pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) -> bool {
     if window_ptr.is_null() {
-        return;
+        return false;
     }
 
     // Safety: window_ptr must be a valid pointer to an IosWindow
@@ -292,6 +301,11 @@ pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
     // Check if text input arrived since last frame — if so, force a render
     // so drain_pending_text() runs and the UI updates.
     let text_dirty = crate::TEXT_INPUT_DIRTY.swap(false, std::sync::atomic::Ordering::AcqRel);
+
+    // Demand raised during the frame (a view notified mid-draw, an animation
+    // asking for its next frame) must survive into the return value, so the
+    // slate is cleared before the frame, not after.
+    window.frame_demand.clear();
 
     // Take the callback, invoke it, then restore it
     // We must complete the borrow before invoking the callback,
@@ -304,6 +318,46 @@ pub extern "C" fn gpui_ios_request_frame(window_ptr: *mut c_void) {
         });
         // Restore the callback for the next frame
         window.request_frame_callback.borrow_mut().replace(cb);
+    }
+
+    window.frame_demand.is_pending()
+        || crate::TEXT_INPUT_DIRTY.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Register the host callback that resumes frame delivery.
+///
+/// GPUI calls `waker(context)` on the main thread whenever it wants a frame
+/// and the host may have stopped ticking: after `gpui_ios_request_frame`
+/// returned `false`, a notified view, an animation, arriving text input.
+/// Typically the callback un-pauses the `CADisplayLink`. Pass a null `waker`
+/// to clear it; the host must keep `context` valid until then.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_set_frame_waker(
+    window_ptr: *mut c_void,
+    waker: Option<unsafe extern "C" fn(*mut c_void)>,
+    context: *mut c_void,
+) {
+    if window_ptr.is_null() {
+        return;
+    }
+    // Safety: window_ptr must be a valid pointer to an IosWindow
+    let window = unsafe { &*(window_ptr as *const super::window::IosWindow) };
+    window
+        .frame_demand
+        .set_host_waker(waker.map(|waker| (waker, context)));
+}
+
+/// Ask every registered window for a frame. Used for demand that arrives
+/// outside GPUI, such as text from the software keyboard.
+pub(crate) fn wake_windows() {
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            for &window in (*wrapper.0.get()).iter() {
+                if !window.is_null() {
+                    (*window).frame_demand.wake();
+                }
+            }
+        }
     }
 }
 
