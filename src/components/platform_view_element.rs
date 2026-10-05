@@ -30,7 +30,7 @@ use std::sync::Arc;
 /// The returned element can be styled with `.w()`, `.h()`, `.size()`,
 /// `.flex_grow()`, etc. to control how much space it occupies in the layout.
 pub fn platform_view_element(handle: Arc<PlatformViewHandle>) -> gpui::Div {
-    div().child(
+    div().size_full().child(
         gpui::canvas(
             // Prepaint: capture bounds
             move |bounds, _window, _cx| bounds,
