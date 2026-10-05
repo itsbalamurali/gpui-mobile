@@ -71,6 +71,34 @@ impl HasDisplayHandle for RawIosWindow {
     }
 }
 
+// wgpu 29 requires the instance display when surface creation omits an explicit
+// raw display handle. Keep the UIKit display attached for renderer re-creation too.
+fn metal_instance_descriptor(window: RawIosWindow) -> wgpu::InstanceDescriptor {
+    wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::METAL,
+        flags: wgpu::InstanceFlags::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        display: Some(Box::new(window)),
+    }
+}
+
+#[cfg(test)]
+mod display_handle_tests {
+    use super::*;
+
+    #[test]
+    fn metal_instance_preserves_uikit_display() {
+        let descriptor = metal_instance_descriptor(RawIosWindow { view: ptr::null_mut() });
+        assert_eq!(descriptor.backends, wgpu::Backends::METAL);
+        let display = descriptor.display.expect("Metal requires a UIKit display");
+        assert!(matches!(
+            display.display_handle().expect("UIKit display is available").as_raw(),
+            raw_window_handle::RawDisplayHandle::UiKit(_)
+        ));
+    }
+}
+
 static METAL_VIEW_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
 static VC_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
 static TEXT_INPUT_VIEW_CLASS_REGISTERED: std::sync::Once = std::sync::Once::new();
@@ -607,17 +635,10 @@ impl IosWindow {
                 preferred_present_mode: None,
             };
 
-            let metal_instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::METAL,
-                flags: wgpu::InstanceFlags::default(),
-                backend_options: wgpu::BackendOptions::default(),
-                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-                display: None,
-            });
-
             let raw_window = RawIosWindow {
                 view: ios_window.view as *mut c_void,
             };
+            let metal_instance = wgpu::Instance::new(metal_instance_descriptor(raw_window));
 
             // Build a temporary surface for WgpuContext initialisation
             // (adapter selection needs a surface to test compatibility).

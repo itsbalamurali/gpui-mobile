@@ -29,6 +29,8 @@ android_logger = "0.15"
 android-activity = { version = "0.6", features = ["native-activity"] }
 
 [patch.crates-io]
+# Backport upstream xattr 1.6 without changing Zed's async-tar 0.5 API.
+async-tar = { git = "https://github.com/tao-io/async-tar", rev = "807e638ac2cfcbf29e2574573ef380702e7b9382" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 
 [profile.release]

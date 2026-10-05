@@ -37,6 +37,25 @@ cd example
 ./build.sh android --device --release
 ```
 
+### Android dependency compatibility
+
+The pinned Zed revision depends on async-tar 0.5.1. Both this crate and the
+independent example manifest patch it to a pinned maintenance fork that uses
+xattr 1.6, preserving extended attributes while avoiding the removed Android
+`libc::ENOATTR` constant. Downstream application manifests must copy this
+`[patch.crates-io]` entry: Cargo ignores patches in dependencies.
+
+### iOS dependency compatibility
+
+libc 0.2.190 incorrectly hides SDK-public dyld image functions on iOS, breaking
+backtrace compilation. The library manifest pins a minimal platform restoration.
+Copy its libc `[patch.crates-io]` entry into downstream app manifests too;
+Cargo does not apply patches declared by dependencies.
+
+The iOS Metal instance carries a UIKit display handle, as required by wgpu 29
+when creating a surface without an explicit raw display handle. This startup fix
+is backported from upstream [PR #49](https://github.com/itsbalamurali/gpui-mobile/pull/49).
+
 ### Manual Build
 
 ```bash
