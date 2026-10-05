@@ -130,6 +130,10 @@ libc = { git = "https://github.com/tao-io/libc", rev = "04b1c8a98689864dcba18e84
 async-tar = { git = "https://github.com/tao-io/async-tar", rev = "807e638ac2cfcbf29e2574573ef380702e7b9382" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
 
+[patch."https://github.com/zed-industries/zed"]
+gpui = { path = "/Users/admin/.cargo/git/checkouts/zed-a70e2ad075855582/5688167/crates/gpui" }
+gpui_wgpu = { path = "/Users/admin/.cargo/git/checkouts/zed-a70e2ad075855582/5688167/crates/gpui_wgpu" }
+
 # ── profiles ─────────────────────────────────────────────────────────────────
 
 [profile.release]

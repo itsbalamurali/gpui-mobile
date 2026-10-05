@@ -85,7 +85,7 @@ use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use super::platform::{AndroidPlatform, SharedPlatform};
 
-use jni::objects::{JObject, JString, JValue};
+use jni::objects::{Global, JObject, JString, JValue};
 use jni::JavaVM;
 
 // ── JNI helpers (safe `jni` crate wrappers) ──────────────────────────────────
@@ -171,32 +171,48 @@ impl<T> JniExt<T> for jni::errors::Result<T> {
 /// which doesn't know about application classes.  This helper uses the
 /// Activity's classloader via `activity.getClass().getClassLoader().loadClass(name)`.
 ///
-/// `class_name` uses Java dot notation (e.g. `"dev.gpui.mobile.GpuiHelper"`).
+static APP_CLASS_LOADER: OnceLock<Global<JObject<'static>>> = OnceLock::new();
+static PLATFORM_VIEW_CLASS: OnceLock<Global<JObject<'static>>> = OnceLock::new();
+
+/// Find an application class by name using the Activity's classloader.
+///
+/// Caches the Application ClassLoader and GpuiPlatformView class globally so
+/// native thread frames never fail with ClassNotFoundException or throw on getClassLoader.
 pub fn find_app_class<'local>(
     env: &mut jni::Env<'local>,
     class_name: &str,
 ) -> Result<jni::objects::JClass<'local>, String> {
-    let act = activity(env)?;
+    if class_name == "dev.gpui.mobile.GpuiPlatformView" {
+        if let Some(cached) = PLATFORM_VIEW_CLASS.get() {
+            return Ok(unsafe { jni::objects::JClass::from_raw(env, cached.as_raw()) });
+        }
+    }
 
-    // activity.getClassLoader() — call on the Context instance directly.
-    // Do NOT use activity.getClass().getClassLoader(): NativeActivity is a
-    // framework class loaded by BootClassLoader, which cannot see app classes.
-    let class_loader = env
-        .call_method(
-            &act,
-            jni::jni_str!("getClassLoader"),
-            jni::jni_sig!("()Ljava/lang/ClassLoader;"),
-            &[],
-        )
-        .and_then(|v| v.l())
-        .map_err(|e| {
-            env.exception_clear();
-            let msg = format!("getClassLoader failed: {e}");
-            log::error!("find_app_class({class_name}): {msg}");
-            msg
-        })?;
+    let class_loader = if let Some(loader) = APP_CLASS_LOADER.get() {
+        unsafe { JObject::from_raw(env, loader.as_raw()) }
+    } else {
+        let act = activity(env)?;
+        let loader = env
+            .call_method(
+                &act,
+                jni::jni_str!("getClassLoader"),
+                jni::jni_sig!("()Ljava/lang/ClassLoader;"),
+                &[],
+            )
+            .and_then(|v| v.l())
+            .map_err(|e| {
+                env.exception_describe();
+                env.exception_clear();
+                let msg = format!("getClassLoader failed: {e}");
+                log::error!("find_app_class({class_name}): {msg}");
+                msg
+            })?;
+        if let Ok(global) = env.new_global_ref(&loader) {
+            APP_CLASS_LOADER.set(global).ok();
+        }
+        loader
+    };
 
-    // classLoader.loadClass("dev.gpui.mobile.GpuiHelper")
     let jname = env.new_string(class_name).e()?;
     let loaded = env
         .call_method(
@@ -207,13 +223,18 @@ pub fn find_app_class<'local>(
         )
         .and_then(|v| v.l())
         .map_err(|e| {
-            // Print full Java stack trace to logcat, then clear.
             env.exception_describe();
             env.exception_clear();
             let msg = format!("loadClass({class_name}) failed: {e}");
             log::error!("{msg}");
             msg
         })?;
+
+    if class_name == "dev.gpui.mobile.GpuiPlatformView" {
+        if let Ok(global) = env.new_global_ref(&loaded) {
+            PLATFORM_VIEW_CLASS.set(global).ok();
+        }
+    }
 
     log::debug!("find_app_class: loaded {class_name}");
     Ok(unsafe { jni::objects::JClass::from_raw(env, loaded.as_raw()) })

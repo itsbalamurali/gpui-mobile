@@ -578,6 +578,11 @@ impl AndroidPlatform {
         transparent: bool,
     ) -> Result<Arc<AndroidWindow>> {
         let mut state = self.state.lock();
+        AndroidWindow::initialize_gpu_context(
+            &native_window,
+            &state.gpu_context,
+            state.preferred_backend,
+        )?;
         let window = AndroidWindow::new(
             native_window,
             Rc::clone(&state.gpu_context),

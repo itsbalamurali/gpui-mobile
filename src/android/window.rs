@@ -1045,6 +1045,40 @@ impl AndroidWindow {
         RawAndroidWindow { nw_ptr }
     }
 
+    /// Select one graphics API before it can claim the native window.
+    pub(crate) fn initialize_gpu_context(
+        native_window: &NativeWindow,
+        gpu_context: &GpuContext,
+        backend: super::AndroidBackend,
+    ) -> Result<()> {
+        if gpu_context.borrow().is_some() {
+            return Ok(());
+        }
+        let raw = Self::raw_window(native_window);
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: match backend {
+                super::AndroidBackend::Vulkan => wgpu::Backends::VULKAN,
+                super::AndroidBackend::Gles => wgpu::Backends::GL,
+            },
+            display: Some(Box::new(raw)),
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        });
+        // The NativeWindow outlives this temporary probe and the renderer surface.
+        let surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: None,
+                raw_window_handle: raw.window_handle()?.as_raw(),
+            })?
+        };
+        let context = gpui_wgpu::WgpuContext::new(instance, &surface, None)?;
+        // Release the probe before WgpuRenderer creates its presentation surface.
+        drop(surface);
+        *gpu_context.borrow_mut() = Some(context);
+        Ok(())
+    }
+
     /// Create a `WgpuRenderer` for the given `NativeWindow`.
     fn create_renderer(
         native_window: &NativeWindow,
