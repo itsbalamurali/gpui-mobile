@@ -45,6 +45,13 @@ xattr 1.6, preserving extended attributes while avoiding the removed Android
 `libc::ENOATTR` constant. Downstream application manifests must copy this
 `[patch.crates-io]` entry: Cargo ignores patches in dependencies.
 
+### iOS dependency compatibility
+
+libc 0.2.190 incorrectly hides SDK-public dyld image functions on iOS, breaking
+backtrace compilation. The library manifest pins a minimal platform restoration.
+Copy its libc `[patch.crates-io]` entry into downstream app manifests too;
+Cargo does not apply patches declared by dependencies.
+
 ### Manual Build
 
 ```bash

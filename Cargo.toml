@@ -124,6 +124,8 @@ uuid       = { version = "1", features = ["v5"] }
 # the same forked versions that the Zed workspace uses.
 
 [patch.crates-io]
+# libc 0.2.190 accidentally hides SDK-public dyld APIs on iOS.
+libc = { git = "https://github.com/tao-io/libc", rev = "04b1c8a98689864dcba18e84b8204478390fe6b8" }
 # Backport upstream xattr 1.6 without changing Zed's async-tar 0.5 API.
 async-tar = { git = "https://github.com/tao-io/async-tar", rev = "807e638ac2cfcbf29e2574573ef380702e7b9382" }
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
