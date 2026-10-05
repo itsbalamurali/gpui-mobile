@@ -52,6 +52,10 @@ backtrace compilation. The library manifest pins a minimal platform restoration.
 Copy its libc `[patch.crates-io]` entry into downstream app manifests too;
 Cargo does not apply patches declared by dependencies.
 
+The iOS Metal instance carries a UIKit display handle, as required by wgpu 29
+when creating a surface without an explicit raw display handle. This startup fix
+is backported from upstream [PR #49](https://github.com/itsbalamurali/gpui-mobile/pull/49).
+
 ### Manual Build
 
 ```bash
