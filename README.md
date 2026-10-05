@@ -37,6 +37,14 @@ cd example
 ./build.sh android --device --release
 ```
 
+### Android dependency compatibility
+
+The pinned Zed revision depends on async-tar 0.5.1. Both this crate and the
+independent example manifest patch it to a pinned maintenance fork that uses
+xattr 1.6, preserving extended attributes while avoiding the removed Android
+`libc::ENOATTR` constant. Downstream application manifests must copy this
+`[patch.crates-io]` entry: Cargo ignores patches in dependencies.
+
 ### Manual Build
 
 ```bash
