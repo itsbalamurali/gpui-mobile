@@ -62,6 +62,8 @@ unsafe extern "C" {
     ) -> i32;
     /// Removes a file-descriptor from the looper.
     fn ALooper_removeFd(looper: *mut libc_looper_opaque, fd: RawFd) -> i32;
+    /// Returns from a blocking poll on the looper; safe from any thread.
+    fn ALooper_wake(looper: *mut libc_looper_opaque);
 }
 
 // Opaque C type placeholder.
@@ -152,7 +154,8 @@ pub struct AndroidDispatcher {
 }
 
 // SAFETY: The `looper` pointer is only ever used on the main thread
-// (in `register_with_looper` and `unregister`).  The rest of the fields are
+// (in `register_with_looper` and `unregister`), except for `ALooper_wake`,
+// which is documented as safe from any thread.  The rest of the fields are
 // `Send`-safe via `Mutex` / `Arc`.
 unsafe impl Send for AndroidDispatcher {}
 unsafe impl Sync for AndroidDispatcher {}
@@ -285,6 +288,25 @@ impl AndroidDispatcher {
         });
         // Keep sorted by ascending due time.
         delayed.sort_by_key(|d| d.due);
+        drop(delayed);
+        self.wake_looper();
+    }
+
+    /// When the earliest delayed task is due, so the main loop can sleep
+    /// until then instead of polling `tick()` blindly.
+    pub fn next_delayed_due(&self) -> Option<Instant> {
+        self.delayed.lock().first().map(|d| d.due)
+    }
+
+    /// Interrupts a main loop blocked on the looper so it re-reads
+    /// `next_delayed_due()`; a delayed task posted from another thread would
+    /// otherwise wait for an unrelated wakeup.
+    fn wake_looper(&self) {
+        if !self.looper.is_null() {
+            // SAFETY: `ALooper_wake` is documented as safe from any thread,
+            // and the looper outlives the dispatcher's thread.
+            unsafe { ALooper_wake(self.looper) };
+        }
     }
 
     /// Process any delayed background tasks whose due time has passed.
@@ -533,6 +555,8 @@ impl PlatformDispatcher for AndroidDispatcher {
             }),
         });
         delayed.sort_by_key(|d| d.due);
+        drop(delayed);
+        self.wake_looper();
     }
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {

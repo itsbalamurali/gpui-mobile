@@ -552,6 +552,9 @@ impl AndroidWindow {
         self.force_render_once
             .store(true, std::sync::atomic::Ordering::Relaxed);
         drop(state);
+        // That repaint is not something GPUI knows it wants: ask the loop for
+        // the frame ourselves.
+        super::frame_source::resume();
 
         // A recreated Activity can hand back a surface of a *different* size (the
         // classic case being a rotation that recreates the Activity). `handle_resize`
@@ -757,7 +760,8 @@ impl AndroidWindow {
 
     /// Invoke the `request_frame_callback` if one is registered.
     ///
-    /// Called by the event loop on every iteration (~60 fps).
+    /// Called by the event loop once per vsync that GPUI asked for (see
+    /// `frame_source`); the callback draws only if the window is dirty.
     ///
     /// **Important**: The callback is taken out of the lock before being
     /// invoked and put back afterwards.  This avoids a deadlock: the GPUI
@@ -911,6 +915,11 @@ impl AndroidWindow {
                 }
             }
             log::info!("AndroidWindow::set_active({}) — done", active);
+        }
+        if active {
+            // A vsync callback posted before the app left the foreground may
+            // never fire; post afresh so demand raised meanwhile is served.
+            super::frame_source::resume();
         }
     }
 
@@ -1620,6 +1629,16 @@ impl PlatformWindow for AndroidPlatformWindow {
             let mut cb = send_callback.lock();
             cb();
         });
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        // GPUI calls this when a window turns dirty; the loop draws at the
+        // next vsync (see `frame_source`).
+        Some(Rc::new(super::frame_source::schedule_frame))
+    }
+
+    fn schedule_frame(&self) {
+        super::frame_source::schedule_frame();
     }
 
     fn draw(&self, scene: &gpui::Scene) {

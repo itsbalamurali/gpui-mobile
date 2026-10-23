@@ -938,6 +938,12 @@ impl AndroidPlatform {
         self.state.lock().dispatcher.tick();
     }
 
+    /// When the next delayed background task is due; the main loop sleeps
+    /// no longer than that.
+    pub fn next_delayed_due(&self) -> Option<std::time::Instant> {
+        self.state.lock().dispatcher.next_delayed_due()
+    }
+
     /// Drain all pending main-thread tasks synchronously.
     ///
     /// Useful in headless tests where there is no real ALooper.

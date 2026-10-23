@@ -34,6 +34,12 @@
 //! Lifecycle events (window creation/destruction, focus changes, etc.) are
 //! delivered via `AndroidApp::poll_events()`.  Input events are obtained via
 //! `AndroidApp::input_events_iter()`.
+//!
+//! ## Frames
+//!
+//! The loop blocks on the looper between events and draws only when GPUI
+//! asked for a frame and a vsync has passed since — see
+//! [`super::frame_source`].
 
 #![allow(unsafe_code)]
 #![allow(non_snake_case)]
@@ -608,6 +614,8 @@ pub fn run_event_loop(app: &AndroidApp) {
     // the callback is still pending, invoke it *after* poll_events has
     // returned so focus/input events have already been drained.
     INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
+    // Vsync pacing lives on this thread's looper.
+    super::frame_source::install();
     let mut iteration: u64 = 0;
     let mut last_heartbeat = std::time::Instant::now();
     let mut app_is_active = false;
@@ -637,12 +645,20 @@ pub fn run_event_loop(app: &AndroidApp) {
             platform.tick();
         }
 
-        // ── Poll for events (non-blocking) ──
+        // ── Poll for events ──
         //
-        // Non-blocking poll: process any pending events then immediately
-        // continue to rendering. No sleep — the GPU present call
-        // (get_current_texture / Mailbox) provides natural frame pacing.
-        app.poll_events(Some(Duration::ZERO), |event| match event {
+        // Blocks until something reaches the looper: a lifecycle command,
+        // input, a main-thread task, or the vsync callback that
+        // `frame_source` posted for a wanted frame. The timeout only covers
+        // the delayed dispatcher tasks `platform.tick()` has to release and
+        // the clock fallback without a choreographer.
+        let timeout = super::frame_source::poll_timeout(
+            PLATFORM
+                .get()
+                .and_then(|platform| platform.next_delayed_due()),
+            INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active,
+        );
+        app.poll_events(Some(timeout), |event| match event {
             PollEvent::Main(main_event) => {
                 handle_main_event(app, main_event);
             }
@@ -848,21 +864,24 @@ pub fn run_event_loop(app: &AndroidApp) {
         if let Some(platform) = PLATFORM.get() {
             if INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active {
                 platform.flush_main_thread_tasks();
-                if let Some(win) = platform.primary_window() {
-                    win.request_frame();
+                // Software-keyboard text bypasses GPUI's invalidator; the
+                // frame callback turns it into a forced render.
+                if crate::TEXT_INPUT_DIRTY.load(Ordering::Acquire) {
+                    super::frame_source::schedule_frame();
                 }
+                if super::frame_source::take_frame() {
+                    if let Some(win) = platform.primary_window() {
+                        win.request_frame();
+                    }
 
-                // Drain lifecycle events that arrived during rendering
-                // (e.g. rotation triggers TerminateWindow while we were
-                // in get_current_texture / present).
-                drain_events(app);
-                process_input_events(app);
+                    // Drain lifecycle events that arrived during rendering
+                    // (e.g. rotation triggers TerminateWindow while we were
+                    // in get_current_texture / present).
+                    drain_events(app);
+                    process_input_events(app);
+                }
             }
         }
-
-        // Yield CPU to avoid starving system threads and causing ANR.
-        // Keep this short — at 120Hz the frame budget is only 8.3ms.
-        std::thread::sleep(Duration::from_micros(500));
     }
 
     log::info!("run_event_loop: exiting main loop");
