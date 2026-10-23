@@ -330,6 +330,7 @@ pub fn shared_platform() -> Option<SharedPlatform> {
 const AMOTION_EVENT_ACTION_DOWN: u32 = 0;
 const AMOTION_EVENT_ACTION_UP: u32 = 1;
 const AMOTION_EVENT_ACTION_MOVE: u32 = 2;
+const AMOTION_EVENT_ACTION_CANCEL: u32 = 3;
 
 // ── night mode query via NDK Configuration ───────────────────────────────────
 
@@ -449,7 +450,7 @@ fn process_input_events(app: &AndroidApp) {
                                         AMOTION_EVENT_ACTION_UP
                                     }
                                     MotionAction::Move => AMOTION_EVENT_ACTION_MOVE,
-                                    MotionAction::Cancel => AMOTION_EVENT_ACTION_UP,
+                                    MotionAction::Cancel => AMOTION_EVENT_ACTION_CANCEL,
                                     _ => continue,
                                 };
 
@@ -1200,31 +1201,102 @@ pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
 
 // ── software keyboard (IME) control ───────────────────────────────────────────
 
-/// Show the software keyboard on Android with a specific keyboard type.
-/// Show the software keyboard on Android.
+/// Show the UI-thread EditText proxy supplied by GpuiInputActivity.
 ///
-/// Uses the NDK `ANativeActivity_showSoftInput` via `android-activity`.
-/// The previous EditText/JNI approach silently failed with
-/// `CalledFromWrongThreadException` because all JNI View operations
-/// must run on the Android UI thread, not the native Rust thread.
-/// The NDK function handles the UI-thread dispatch internally.
-///
-/// Text input arrives via `KeyEvent`s through `process_input_events()`.
-pub fn show_keyboard_android(_keyboard_type: crate::KeyboardType) {
-    if let Some(app) = android_app() {
-        log::info!("show_keyboard_android: using NDK show_soft_input");
-        app.show_soft_input(false);
+/// Unlike NativeActivity's key-event-only connection, its InputConnection
+/// supports composing text, commits and Unicode surrounding-text deletion.
+pub fn show_keyboard_android(keyboard_type: crate::KeyboardType) {
+    let kind = match keyboard_type {
+        crate::KeyboardType::Default => 0,
+        crate::KeyboardType::EmailAddress => 1,
+        crate::KeyboardType::Phone => 2,
+        crate::KeyboardType::NumberPad => 3,
+        crate::KeyboardType::URL => 4,
+        crate::KeyboardType::Decimal => 5,
+    };
+    let session = super::text_input::new_session();
+    if let Err(error) = with_env(|env| {
+        let activity = activity(env)?;
+        env.call_method(
+            &activity,
+            jni::jni_str!("gpuiShowKeyboard"),
+            jni::jni_sig!("(IJ)V"),
+            &[JValue::Int(kind), JValue::Long(session as i64)],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }) {
+        log::warn!("IME requires GpuiInputActivity: {error}");
+        let _ = with_env(|env| {
+            env.exception_clear();
+            Ok(())
+        });
     }
 }
 
 /// Hide the software keyboard on Android.
 ///
-/// Uses the NDK `ANativeActivity_hideSoftInput` via `android-activity`.
+/// Invalidates queued IME callbacks and clears the native composition buffer.
 pub fn hide_keyboard_android() {
+    let session = super::text_input::new_session();
+    let _ = with_env(|env| {
+        let activity = activity(env)?;
+        let result = env.call_method(
+            &activity,
+            jni::jni_str!("gpuiHideKeyboard"),
+            jni::jni_sig!("(J)V"),
+            &[JValue::Long(session as i64)],
+        );
+        env.exception_clear();
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    });
     if let Some(app) = android_app() {
-        log::info!("hide_keyboard_android: using NDK hide_soft_input");
         app.hide_soft_input(false);
     }
+}
+
+pub(super) fn reset_keyboard_composition() {
+    let session = super::text_input::new_session();
+    let _ = with_env(|env| {
+        let activity = activity(env)?;
+        let result = env.call_method(
+            &activity,
+            jni::jni_str!("gpuiResetComposition"),
+            jni::jni_sig!("(J)V"),
+            &[JValue::Long(session as i64)],
+        );
+        env.exception_clear();
+        result.map_err(|e| e.to_string())?;
+        Ok(())
+    });
+}
+
+/// Receive Java InputConnection updates without touching GPUI on the UI thread.
+///
+/// # Safety
+/// Called by JNI with a valid Java string and JNI call frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_dev_gpui_mobile_GpuiInputActivity_nativeIme(
+    _env: *mut c_void,
+    _class: *mut c_void,
+    session: i64,
+    kind: i32,
+    text: *mut c_void,
+    start: i32,
+    end: i32,
+) {
+    let _ = with_env(|env| {
+        let text = unsafe { JObject::from_raw(env, text as jni::sys::jobject) };
+        super::text_input::enqueue(super::text_input::ImeEvent {
+            session: session as u64,
+            kind,
+            text: get_string(env, &text),
+            start: start.max(0) as usize,
+            end: end.max(0) as usize,
+        });
+        Ok(())
+    });
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

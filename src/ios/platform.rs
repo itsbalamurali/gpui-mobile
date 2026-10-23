@@ -208,13 +208,9 @@ impl Platform for IosPlatform {
 
     fn prompt_for_paths(
         &self,
-        _options: PathPromptOptions,
+        options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-        let (tx, rx) = oneshot::channel();
-        // iOS uses UIDocumentPickerViewController for file selection
-        // This would need to be implemented with proper UIKit integration
-        let _ = tx.send(Err(anyhow!("File picker not yet implemented for iOS")));
-        rx
+        super::document_picker::prompt(options)
     }
 
     fn prompt_for_new_path(

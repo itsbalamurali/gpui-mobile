@@ -128,6 +128,12 @@
                 <data android:scheme="gpui" />
             </intent-filter>
         </activity>
+        <activity
+            android:name="dev.gpui.mobile.GpuiPathPicker"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        />
         <!-- Transparent helper Activity for file/image picker results. -->
         <activity
             android:name="dev.gpui.mobile.GpuiPickerActivity"

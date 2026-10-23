@@ -10,6 +10,7 @@
 pub(crate) mod cg_types;
 mod dispatcher;
 mod display;
+mod document_picker;
 mod events;
 pub mod ffi;
 mod platform;
