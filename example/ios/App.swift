@@ -63,7 +63,7 @@ final class GPUITextView: UIView {
         CATransaction.commit()
     }
 
-    func drawFrame() { gpui_ios_request_frame(gpuiWindow) }
+    func drawFrame() { _ = gpui_ios_request_frame(gpuiWindow) }
 }
 
 final class MarkdownContainerController: UIViewController {

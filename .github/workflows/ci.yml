@@ -109,6 +109,9 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
+          # The action defaults to "tools platform-tools"; the legacy "tools"
+          # package is gone from Google's repository and sdkmanager fails on it.
+          packages: platform-tools
 
       - name: Resolve NDK path
         run: |
@@ -169,6 +172,9 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
+          # The action defaults to "tools platform-tools"; the legacy "tools"
+          # package is gone from Google's repository and sdkmanager fails on it.
+          packages: platform-tools
 
       - name: Resolve NDK path
         run: |

@@ -12,6 +12,7 @@
 
 use super::events::*;
 use super::IosDisplay;
+use crate::frame_demand::FrameDemand;
 
 use gpui::{
     point, px, size, AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile,
@@ -528,6 +529,8 @@ pub(crate) struct IosWindow {
     /// Callback for frame requests
     /// Note: pub(super) to allow ffi.rs to access this for the display link callback
     pub(super) request_frame_callback: RefCell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
+    /// Whether GPUI wants a frame; see [`FrameDemand`].
+    pub(super) frame_demand: Rc<FrameDemand>,
     /// Callback for input events
     input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>>,
     /// Callback for active status changes
@@ -647,6 +650,7 @@ impl IosWindow {
                 scale_factor: Cell::new(scale_factor),
                 input_handler: RefCell::new(None),
                 request_frame_callback: RefCell::new(None),
+                frame_demand: Rc::new(FrameDemand::default()),
                 input_callback: RefCell::new(None),
                 active_status_callback: RefCell::new(None),
                 visibility_callback: RefCell::new(None),
@@ -1410,6 +1414,21 @@ impl PlatformWindow for IosWindow {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         *self.request_frame_callback.borrow_mut() = Some(callback);
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        // Weak: GPUI stores the waker in the window's invalidator for the
+        // window's lifetime, and this window is boxed inside that window.
+        let demand = Rc::downgrade(&self.frame_demand);
+        Some(Rc::new(move || {
+            if let Some(demand) = demand.upgrade() {
+                demand.wake();
+            }
+        }))
+    }
+
+    fn schedule_frame(&self) {
+        self.frame_demand.wake();
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {

@@ -144,6 +144,10 @@
 #endif
 @end
 
+#ifdef USE_GPUI_RUST
+static void GPUIResumeFrames(void *context);
+#endif
+
 @implementation GPUIAppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -164,9 +168,12 @@
     if (self.gpuiWindow) {
         NSLog(@"Got GPUI window pointer: %p", self.gpuiWindow);
 
-        // Setup CADisplayLink to drive rendering
+        // Setup CADisplayLink to drive rendering. GPUI says after each frame
+        // whether it wants another; the link is paused in between and resumed
+        // by the waker, so an idle screen costs no CPU.
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(renderFrame)];
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        gpui_ios_set_frame_waker(self.gpuiWindow, GPUIResumeFrames, (__bridge void *)self);
         NSLog(@"CADisplayLink started for GPUI rendering");
     } else {
         NSLog(@"Warning: No GPUI window was created");
@@ -186,9 +193,14 @@
 
 #ifdef USE_GPUI_RUST
 - (void)renderFrame {
-    if (self.gpuiWindow) {
-        gpui_ios_request_frame(self.gpuiWindow);
+    if (self.gpuiWindow && !gpui_ios_request_frame(self.gpuiWindow)) {
+        self.displayLink.paused = YES;
     }
+}
+
+static void GPUIResumeFrames(void *context) {
+    GPUIAppDelegate *delegate = (__bridge GPUIAppDelegate *)context;
+    delegate.displayLink.paused = NO;
 }
 #endif
 
@@ -201,6 +213,7 @@
     if (!self.displayLink && self.gpuiWindow) {
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(renderFrame)];
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        gpui_ios_set_frame_waker(self.gpuiWindow, GPUIResumeFrames, (__bridge void *)self);
     }
 #endif
 }
