@@ -636,6 +636,20 @@ impl IosWindow {
             let layer: *mut AnyObject = msg_send![view, layer];
             let scale: core_graphics::base::CGFloat = msg_send![screen_obj, scale];
             let _: () = msg_send![layer, setContentsScale: scale];
+            // UIKit animates the view's bounds (keyboard layout guide, split
+            // view, rotation) while `viewDidLayoutSubviews` reports only the
+            // final size, so the drawable is already rendered at the final
+            // size while Core Animation is still interpolating the presented
+            // bounds. With the default `resize` gravity that stretches the
+            // last drawable to every intermediate size — text and controls
+            // visibly deform for the length of the animation. Pinning the
+            // contents to the top-left keeps them at their true scale; the
+            // band the animation has not reached yet stays blank (behind the
+            // keyboard) instead. Core Animation's gravity names use its own
+            // y-up coordinate space, so the visual top-left of a UIKit view is
+            // `kCAGravityBottomLeft`.
+            let visual_top_left = crate::ios::util::nsstring("bottomLeft");
+            let _: () = msg_send![layer, setContentsGravity: visual_top_left];
 
             // Auto-resize the Metal view when the parent view changes size
             // (e.g. rotation). UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight
