@@ -39,6 +39,12 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                     sub_text,
                     cx.listener(|this, _event, _window, cx| {
                         this.dark_mode = !this.dark_mode;
+                        let mode = if this.dark_mode {
+                            gpui_kit::component::ThemeMode::Dark
+                        } else {
+                            gpui_kit::component::ThemeMode::Light
+                        };
+                        gpui_kit::component::Theme::change(mode, None, cx);
                         cx.notify();
                     }),
                 ))

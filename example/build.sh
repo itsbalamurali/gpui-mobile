@@ -310,12 +310,13 @@ _ios_run_simulator() {
     info "Booting simulator ${sim_id}..."
     xcrun simctl boot "$sim_id" 2>/dev/null || true
     open -a Simulator 2>/dev/null || true
+    xcrun simctl bootstatus "$sim_id" -b
 
     info "Installing app on simulator..."
     xcrun simctl install "$sim_id" "$app_path"
 
     info "Launching app..."
-    xcrun simctl launch "$sim_id" dev.gpui.mobile.example
+    xcrun simctl launch --terminate-running-process "$sim_id" dev.gpui.mobile.example
     info "App launched on simulator! 🚀"
 }
 

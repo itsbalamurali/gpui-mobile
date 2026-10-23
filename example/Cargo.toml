@@ -15,6 +15,8 @@ name = "gpui-example"
 path = "src/main.rs"
 
 [dependencies]
+# Pin the mobile facade support without requiring a published crate.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da", default-features = false, features = ["component"] }
 gpui-mobile = { path = ".." }
 gpui = { package = "gpui-pre", version = "=0.3.6", default-features = false }
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.6" }

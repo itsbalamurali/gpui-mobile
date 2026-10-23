@@ -440,6 +440,14 @@ unsafe impl Sync for AppCallbackCell {}
 
 static APP_CALLBACK: OnceLock<AppCallbackCell> = OnceLock::new();
 
+thread_local! {
+    // UIKit owns the run loop. Keep GPUI alive after the launch callback returns
+    // so native window pointers and their callbacks remain valid.
+    static IOS_APPLICATION: std::cell::RefCell<Option<gpui::ApplicationHandle>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 /// Register a callback that will be invoked inside `Application::run`.
 ///
 /// This must be called **before** [`run_app`] so that the run-loop
@@ -490,7 +498,7 @@ pub fn run_app() {
     }
 
     let platform = Rc::new(super::IosPlatform::new());
-    Application::with_platform(platform).run(|cx: &mut App| {
+    let application = Application::with_platform(platform).run_embedded(|cx: &mut App| {
         if let Some(cb) = take_app_callback() {
             log::info!("GPUI iOS: Invoking user-provided app callback");
             cb(cx);
@@ -508,7 +516,9 @@ pub fn run_app() {
         }
     });
 
-    // On iOS, Application::run() stores the callback and returns immediately.
+    IOS_APPLICATION.with(|slot| *slot.borrow_mut() = Some(application));
+
+    // On iOS, run_embedded() stores the callback and returns immediately.
     // The finish-launching callback is forwarded to set_finish_launching_callback
     // and invoked here synchronously (in a real app the app delegate does this).
     if let Some(state) = IOS_APP_STATE.get() {
@@ -516,6 +526,52 @@ pub fn run_app() {
         if let Some(callback) = callback {
             log::info!("GPUI iOS: Invoking Application::run callback");
             callback();
+        }
+    }
+}
+
+// Embedded mode is configured on the UIKit main thread before startup.
+thread_local! {
+    static EMBEDDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn is_embedded() -> bool {
+    EMBEDDED.with(|value| value.get())
+}
+
+/// Select view embedding before starting the application (main thread only).
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_set_embedded() {
+    EMBEDDED.with(|value| value.set(true));
+}
+
+/// Borrow the GPUI controller for UIKit child-controller containment.
+/// The application must remain alive while the host uses this controller.
+///
+/// # Safety
+/// Call on the main thread with null or a live pointer from `gpui_ios_get_window`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpui_ios_view_controller(window: *mut c_void) -> *mut c_void {
+    if window.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        (&*(window as *const super::window::IosWindow))
+            .view_controller_ptr()
+            .cast()
+    }
+}
+
+/// Forward host layout changes after assigning the embedded view's bounds.
+///
+/// # Safety
+/// Call on the main thread with null or a live pointer from `gpui_ios_get_window`.
+/// Do not call re-entrantly from a GPUI update.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpui_ios_layout_view(window: *mut c_void) {
+    if !window.is_null() {
+        unsafe {
+            (&*(window as *const super::window::IosWindow)).handle_layout_change();
         }
     }
 }

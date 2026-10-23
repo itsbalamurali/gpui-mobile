@@ -98,6 +98,19 @@ pub fn render(router: &Router, cx: &mut gpui::Context<Router>) -> impl IntoEleme
                         .child("Explore screens"),
                 )
                 .child(nav_card(
+                    "📖",
+                    "Markdown",
+                    "GPUI Kit TextView · Rich Markdown",
+                    BLUE,
+                    card_bg,
+                    text_color,
+                    sub_text,
+                    cx.listener(|this, _event, _window, cx| {
+                        this.navigate_to(Screen::Markdown);
+                        cx.notify();
+                    }),
+                ))
+                .child(nav_card(
                     "🔢",
                     "Counter",
                     "Tap the button and watch it count",
