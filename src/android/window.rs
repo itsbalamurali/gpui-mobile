@@ -1447,11 +1447,18 @@ impl PlatformWindow for AndroidPlatformWindow {
 
         // Preserve raw contacts so GPUI can arbitrate long presses, claimed
         // control drags and ordinary pans, including hover suppression and inertia.
+        // `FlingGuard` keeps a contact that stops a fling from inheriting its axis.
         {
             let cb = Arc::clone(&input_cb);
             let window = Arc::downgrade(&self.window);
             let mut next_id = 0u64;
+            let mut next_touch_id = move || {
+                let id = gpui::TouchId(next_id);
+                next_id = next_id.checked_add(1).expect("touch ID exhausted");
+                id
+            };
             let mut active_touches = HashMap::new();
+            let mut fling_guard = crate::fling_guard::FlingGuard::new();
             self.window.on_touch(move |touch| {
                 let phase = match touch.action {
                     0 => gpui::TouchPhase::Started,
@@ -1462,8 +1469,7 @@ impl PlatformWindow for AndroidPlatformWindow {
                 };
                 let id = if phase == gpui::TouchPhase::Started {
                     // Android pointer IDs are reused after release.
-                    let id = gpui::TouchId(next_id);
-                    next_id = next_id.checked_add(1).expect("touch ID exhausted");
+                    let id = next_touch_id();
                     active_touches.insert(touch.id, id);
                     id
                 } else {
@@ -1476,13 +1482,17 @@ impl PlatformWindow for AndroidPlatformWindow {
                     return;
                 };
                 let scale = window.scale_factor();
-                cb.lock()(gpui::PlatformInput::Touch(gpui::TouchEvent {
+                let event = gpui::TouchEvent {
                     id,
                     phase,
                     position: gpui::point(gpui::px(touch.x / scale), gpui::px(touch.y / scale)),
                     predicted_position: None,
                     force: None,
-                }));
+                };
+                let mut cb = cb.lock();
+                fling_guard.relay(event, &mut next_touch_id, |event| {
+                    cb(gpui::PlatformInput::Touch(event));
+                });
                 if matches!(phase, gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled) {
                     active_touches.remove(&touch.id);
                 }
