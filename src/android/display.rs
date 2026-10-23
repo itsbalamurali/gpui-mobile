@@ -226,7 +226,7 @@ impl PlatformDisplay for AndroidDisplay {
     fn id(&self) -> DisplayId {
         // Truncate the u64 id to u32 — on Android the pointer-derived id
         // fits in 32 bits for the lower half, and DisplayId only stores u32.
-        DisplayId::new(self.id as u32)
+        DisplayId::new(self.id as u64)
     }
 
     fn uuid(&self) -> Result<uuid::Uuid> {

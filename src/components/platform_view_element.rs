@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// painted and hidden when the element is removed from the tree.
 ///
 /// The returned element can be styled with `.w()`, `.h()`, `.size()`,
-/// `.flex_grow()`, etc. to control how much space it occupies in the layout.
+/// `.flex_grow(1.)`, etc. to control how much space it occupies in the layout.
 pub fn platform_view_element(handle: Arc<PlatformViewHandle>) -> gpui::Div {
     div().child(
         gpui::canvas(

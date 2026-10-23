@@ -38,6 +38,7 @@ use gpui::{
     self, AtlasKey, AtlasTile, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
     PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
     RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowVisibility,
 };
 use gpui_wgpu::{wgpu, GpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use parking_lot::Mutex;
@@ -218,6 +219,9 @@ pub type TouchCallback = Box<dyn FnMut(TouchPoint) + Send + 'static>;
 /// Called when the window's active status changes (foreground/background).
 pub type ActiveStatusCallback = Box<dyn FnMut(bool) + Send + 'static>;
 
+/// Called when the window becomes visible or hidden.
+pub type VisibilityCallback = Box<dyn FnMut(bool) + Send + 'static>;
+
 /// Called when a key event arrives.
 pub type KeyCallback = Box<dyn FnMut(AndroidKeyEvent) + Send + 'static>;
 
@@ -315,6 +319,7 @@ struct WindowState {
     close_callback: Option<CloseCallback>,
     appearance_callback: Option<AppearanceCallback>,
     active_status_callback: Option<ActiveStatusCallback>,
+    visibility_callback: Option<VisibilityCallback>,
 }
 
 // SAFETY: `WindowState` is only ever accessed while holding the
@@ -409,6 +414,7 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Ok(Arc::new(Self {
@@ -440,6 +446,7 @@ impl AndroidWindow {
             close_callback: None,
             appearance_callback: None,
             active_status_callback: None,
+            visibility_callback: None,
         }));
 
         Arc::new(Self {
@@ -812,9 +819,11 @@ impl AndroidWindow {
             // closure that acquires its own Mutex (and may call back into
             // GPUI), so calling it under the state lock deadlocks.
             let mut taken_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
+            let mut visibility_cb: Option<Box<dyn FnMut(bool) + Send>> = None;
             if let Some(mut state) = self.state.try_lock() {
                 state.is_active = active;
                 taken_cb = state.active_status_callback.take();
+                visibility_cb = state.visibility_callback.take();
             } else {
                 log::info!(
                     "AndroidWindow::set_active({}) — lock busy, skipping",
@@ -827,6 +836,12 @@ impl AndroidWindow {
                 // Put it back so future calls still fire.
                 if let Some(mut state) = self.state.try_lock() {
                     state.active_status_callback = Some(cb);
+                }
+            }
+            if let Some(mut cb) = visibility_cb {
+                cb(active);
+                if let Some(mut state) = self.state.try_lock() {
+                    state.visibility_callback = Some(cb);
                 }
             }
             log::info!("AndroidWindow::set_active({}) — done", active);
@@ -1013,6 +1028,13 @@ impl AndroidWindow {
         self.state.lock().active_status_callback = Some(Box::new(cb));
     }
 
+    pub fn on_visibility_change<F>(&self, cb: F)
+    where
+        F: FnMut(bool) + Send + 'static,
+    {
+        self.state.lock().visibility_callback = Some(Box::new(cb));
+    }
+
     // ── GPU introspection ─────────────────────────────────────────────────────
 
     /// Whether the GPU supports dual-source blending (subpixel text AA).
@@ -1176,6 +1198,14 @@ impl PlatformWindow for AndroidPlatformWindow {
     fn is_maximized(&self) -> bool {
         // Android windows are always effectively maximized (fullscreen).
         true
+    }
+
+    fn visibility(&self) -> WindowVisibility {
+        if self.window.is_active() {
+            WindowVisibility::Visible
+        } else {
+            WindowVisibility::Hidden
+        }
     }
 
     fn window_bounds(&self) -> WindowBounds {
@@ -1755,6 +1785,20 @@ impl PlatformWindow for AndroidPlatformWindow {
         });
     }
 
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        let send_callback: Box<dyn FnMut(WindowVisibility) + Send> =
+            unsafe { std::mem::transmute(callback) };
+        let send_callback = Mutex::new(send_callback);
+        self.window.on_visibility_change(move |visible| {
+            let mut cb = send_callback.lock();
+            cb(if visible {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            });
+        });
+    }
+
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         let _callback = Mutex::new(callback);
         // No hover concept on touch devices
@@ -1823,10 +1867,6 @@ impl PlatformWindow for AndroidPlatformWindow {
         );
 
         self.window.draw(scene);
-    }
-
-    fn completed_frame(&self) {
-        // No-op — frame completion is handled by wgpu's present.
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -1997,14 +2037,14 @@ impl FallbackAtlas {
 impl PlatformAtlas for FallbackAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(gpui::Size<gpui::DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<AtlasTile>> {
         let mut state = self.state.lock();
 
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(tile.clone()));
         }
 
@@ -2026,7 +2066,7 @@ impl PlatformAtlas for FallbackAtlas {
                 },
             };
 
-            state.tiles.insert(key.clone(), tile.clone());
+            state.tiles.insert(key, tile.clone());
             Ok(Some(tile))
         } else {
             Ok(None)

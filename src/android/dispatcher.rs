@@ -34,7 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{PlatformDispatcher, Priority, RunnableVariant, ThreadTaskTimings};
+use gpui::{PlatformDispatcher, Priority, RunnableVariant};
 use parking_lot::Mutex;
 
 // ── NDK / libc symbols we need ────────────────────────────────────────────────
@@ -495,21 +495,6 @@ unsafe fn libc_fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
 // ── impl PlatformDispatcher ───────────────────────────────────────────────────
 
 impl PlatformDispatcher for AndroidDispatcher {
-    fn get_all_timings(&self) -> Vec<ThreadTaskTimings> {
-        // Task-level profiling is not yet implemented on Android.
-        // Return an empty vec — GPUI treats this as "no data available".
-        Vec::new()
-    }
-
-    fn get_current_thread_timings(&self) -> ThreadTaskTimings {
-        ThreadTaskTimings {
-            thread_name: std::thread::current().name().map(|n| n.to_string()),
-            thread_id: std::thread::current().id(),
-            timings: Vec::new(),
-            total_pushed: 0,
-        }
-    }
-
     fn is_main_thread(&self) -> bool {
         // Delegate to the existing `is_main_thread` method.
         AndroidDispatcher::is_main_thread(self)
