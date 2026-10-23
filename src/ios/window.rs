@@ -414,6 +414,36 @@ fn register_text_input_view_class() -> &'static AnyClass {
             end_edit(this);
         }
 
+        // Holding the software keyboard's Backspace runs a UIKit timer
+        // (-[_UIKeyboardStateManager handleAutoDeleteWithExecutionContext:])
+        // that asks the first responder `_selectionAtDocumentStart` before every
+        // repeat and stops the moment the answer is YES. UITextView answers for
+        // the scratch document, which is empty between compositions, so a held
+        // key deleted exactly one character. Answer for the GPUI document while
+        // the scratch document has nothing UIKit could delete natively.
+        #[allow(deprecated)]
+        unsafe extern "C" fn selection_at_document_start(this: *mut AnyObject, _sel: Sel) -> Bool {
+            let text: *mut AnyObject = msg_send![this, text];
+            let length: usize = msg_send![text, length];
+            let native = length != 0 || (*this).get_ivar::<Bool>("gpui_marked_text").as_bool();
+            let window_ptr: *mut c_void = *(*this).get_ivar(GPUI_WINDOW_IVAR);
+            let gpui = if native || window_ptr.is_null() {
+                None
+            } else {
+                (&*(window_ptr as *const IosWindow)).selection_at_document_start()
+            };
+            if let Some(at_start) = gpui {
+                return Bool::new(at_start);
+            }
+            // UIKit only asks because UIResponder implements it; should that
+            // ever change, an empty scratch document is the closest answer.
+            if class!(UITextView).responds_to(sel!(_selectionAtDocumentStart)) {
+                msg_send![super(this, class!(UITextView)), _selectionAtDocumentStart]
+            } else {
+                Bool::new(length == 0)
+            }
+        }
+
         #[allow(deprecated)]
         unsafe extern "C" fn delete_backward(this: *mut AnyObject, _sel: Sel) {
             let text: *mut AnyObject = msg_send![this, text];
@@ -477,6 +507,10 @@ fn register_text_input_view_class() -> &'static AnyClass {
             decl.add_method(
                 sel!(deleteBackward),
                 delete_backward as unsafe extern "C" fn(*mut AnyObject, Sel),
+            );
+            decl.add_method(
+                sel!(_selectionAtDocumentStart),
+                selection_at_document_start as unsafe extern "C" fn(*mut AnyObject, Sel) -> Bool,
             );
         }
         decl.register();
@@ -1067,6 +1101,23 @@ impl IosWindow {
         if let Some(callback) = self.input_callback.borrow_mut().as_mut() {
             callback(event);
         }
+    }
+
+    /// Whether the focused GPUI document has nothing before its caret, so a
+    /// repeated Backspace would have nothing left to delete.
+    ///
+    /// `None` when nobody can say: no GPUI input handler is installed and no
+    /// legacy text callback is registered, or the handler is already borrowed
+    /// by an edit in progress. A legacy callback cannot report its content, so
+    /// it answers `false` and keeps the repeat going; each extra Backspace on
+    /// an empty field is a no-op for it.
+    fn selection_at_document_start(&self) -> Option<bool> {
+        if let Ok(mut handler) = self.input_handler.try_borrow_mut() {
+            if let Some(handler) = handler.as_mut() {
+                return Some(handler.selected_text_range(false)?.range.start == 0);
+            }
+        }
+        crate::has_text_input_callback().then_some(false)
     }
 
     /// Handle a key event from an external keyboard
