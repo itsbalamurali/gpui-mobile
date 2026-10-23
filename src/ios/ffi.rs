@@ -93,6 +93,25 @@ pub(crate) fn register_window(window: *const super::window::IosWindow) {
     }
 }
 
+/// Deregister a window from the FFI layer.
+///
+/// Called from `IosWindow::drop` so the raw pointer never outlives the window:
+/// `gpui_ios_get_window` returns `windows.last()`, and the app-lifecycle handlers
+/// (`gpui_ios_did_become_active` etc.) iterate this list and dereference every
+/// entry — a stale pointer would be use-after-free. Multi-window hosts that
+/// open/close windows at runtime rely on this cleanup.
+///
+/// # Safety
+/// This must only be called from the main thread.
+pub(crate) fn deregister_window(window: *const super::window::IosWindow) {
+    if let Some(wrapper) = IOS_WINDOW_LIST.get() {
+        unsafe {
+            (*wrapper.0.get()).retain(|&w| w != window);
+            log::info!("GPUI iOS: Deregistered window {:p}", window);
+        }
+    }
+}
+
 /// Get the most recently created window pointer.
 ///
 /// Returns the pointer to the IosWindow that was most recently registered,
