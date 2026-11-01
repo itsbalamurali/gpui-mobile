@@ -95,8 +95,8 @@ fn android_main(app: android_activity::AndroidApp) {
 
     log::info!("android_main: entered");
 
-    // Initialise the global AndroidApp + AndroidPlatform.
-    let _platform = jni::init_platform(&app);
+    // Keep this Activity's platform registered until the Application is dropped.
+    let _platform_session = jni::init_platform(&app);
     log::info!("android_main: platform initialised");
 
     // Get a SharedPlatform (Rc-compatible wrapper around the global

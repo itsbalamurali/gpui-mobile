@@ -23,6 +23,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.gpui.mobile.example"
+        testInstrumentationRunner = "dev.gpui.mobile.example.ActivityLifecycleTest"
         minSdk = 26          // Vulkan 1.0 is mandatory from API 26+
         targetSdk = 34
         versionCode = 1

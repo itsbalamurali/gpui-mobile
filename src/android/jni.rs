@@ -230,13 +230,13 @@ pub fn find_app_class<'local>(
 
 /// The `AndroidApp` handle from `android-activity`.
 ///
-/// Set once in `android_main`; read-only thereafter.
-static ANDROID_APP: OnceLock<AndroidApp> = OnceLock::new();
+/// Registered for one Activity and cleared before its native thread exits.
+static ANDROID_APP: parking_lot::Mutex<Option<AndroidApp>> = parking_lot::Mutex::new(None);
 
-/// Process-global `AndroidPlatform` instance.
+/// Current Android platform registration.
 ///
-/// Initialised once during `android_main`; read-only thereafter.
-static PLATFORM: OnceLock<Arc<AndroidPlatform>> = OnceLock::new();
+/// NativeActivity registrations end with the Activity; host registrations persist.
+static PLATFORM: parking_lot::Mutex<Option<Arc<AndroidPlatform>>> = parking_lot::Mutex::new(None);
 
 /// Get the unicode character produced by an Android key event via JNI.
 ///
@@ -305,7 +305,7 @@ struct HostActivity {
 /// safe areas, file pickers, `rustls-platform-verifier`) work exactly as on the
 /// `android-activity` path. A no-op when `android-activity` owns the process.
 pub fn set_host_activity(env: &mut jni::Env<'_>, activity: &JObject<'_>) -> Result<(), String> {
-    if ANDROID_APP.get().is_some() {
+    if ANDROID_APP.lock().is_some() {
         return Ok(());
     }
     let global = env.new_global_ref(activity).e()?;
@@ -326,7 +326,8 @@ pub fn set_host_activity(env: &mut jni::Env<'_>, activity: &JObject<'_>) -> Resu
 /// Used by `platform.rs` for JNI calls.
 pub fn java_vm() -> *mut c_void {
     ANDROID_APP
-        .get()
+        .lock()
+        .as_ref()
         .map(|app| app.vm_as_ptr())
         .unwrap_or_else(|| HOST_VM.load(std::sync::atomic::Ordering::SeqCst))
 }
@@ -342,7 +343,8 @@ pub fn java_vm() -> *mut c_void {
 /// as the activity jobject.
 pub fn activity_as_ptr() -> *mut c_void {
     ANDROID_APP
-        .get()
+        .lock()
+        .as_ref()
         .map(|app| app.activity_as_ptr())
         .unwrap_or_else(|| {
             HOST_ACTIVITY
@@ -357,7 +359,7 @@ pub fn activity_as_ptr() -> *mut c_void {
 
 /// Returns a clone of the stored `AndroidApp`, if initialised.
 pub fn android_app() -> Option<AndroidApp> {
-    ANDROID_APP.get().cloned()
+    ANDROID_APP.lock().clone()
 }
 
 /// Install the platform built by the host-driven path (`super::host`).
@@ -365,16 +367,19 @@ pub fn android_app() -> Option<AndroidApp> {
 /// The `android-activity` path calls `init_platform` instead; both end up in the same
 /// slot so every accessor in this module keeps working regardless of entry point.
 pub(crate) fn set_host_platform(platform: Arc<AndroidPlatform>) {
-    if PLATFORM.set(platform).is_err() {
+    let mut slot = PLATFORM.lock();
+    if slot.is_some() {
         log::warn!("set_host_platform: PLATFORM already set — both entry points in one process?");
+    } else {
+        *slot = Some(platform);
     }
 }
 
-/// Returns a reference to the global `AndroidPlatform`, if initialised.
+/// Returns an owned handle to the current `AndroidPlatform`, if initialised.
 ///
 /// Returns `None` before `android_main` has set it up.
-pub fn platform() -> Option<&'static Arc<AndroidPlatform>> {
-    PLATFORM.get()
+pub fn platform() -> Option<Arc<AndroidPlatform>> {
+    PLATFORM.lock().clone()
 }
 
 /// Returns a [`SharedPlatform`] wrapping the global `Arc<AndroidPlatform>`.
@@ -389,7 +394,8 @@ pub fn platform() -> Option<&'static Arc<AndroidPlatform>> {
 /// Returns `None` before `init_platform` has been called.
 pub fn shared_platform() -> Option<SharedPlatform> {
     PLATFORM
-        .get()
+        .lock()
+        .as_ref()
         .map(|arc| SharedPlatform::new(Arc::clone(arc)))
 }
 
@@ -424,7 +430,7 @@ pub fn query_night_mode_via_jni() -> bool {
 
 /// Process input events from the `AndroidApp` and dispatch them to the window.
 fn process_input_events(app: &AndroidApp) {
-    let platform = match PLATFORM.get() {
+    let platform = match platform() {
         Some(p) => p,
         None => {
             log::trace!("process_input_events: no platform yet");
@@ -593,485 +599,8 @@ fn process_input_events(app: &AndroidApp) {
     }
 }
 
-// ── main event loop ───────────────────────────────────────────────────────────
-
-/// The event loop that processes `android-activity` events and drives the
-/// platform.
-///
-/// Called from `android_main` after the platform is initialised.
-/// Runs until the platform requests quit or the activity is destroyed.
-pub fn run_event_loop(app: &AndroidApp) {
-    log::info!("run_event_loop: entering main loop");
-
-    // Track whether the on_init_window callback has already been invoked.
-    // We do NOT invoke it inside handle_main_event (which runs inside
-    // poll_events) because the callback can be heavy (shader compilation,
-    // GPUI Application setup).  Running it there blocks the event loop and
-    // prevents the system's FocusEvent from being consumed, triggering an
-    // ANR after 10 seconds.
-    //
-    // Instead we check each loop iteration: if a primary window exists and
-    // the callback is still pending, invoke it *after* poll_events has
-    // returned so focus/input events have already been drained.
-    INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
-    // Vsync pacing lives on this thread's looper.
-    super::frame_source::install();
-    let mut iteration: u64 = 0;
-    let mut last_heartbeat = std::time::Instant::now();
-    let mut app_is_active = false;
-
-    loop {
-        iteration += 1;
-
-        // Log a heartbeat every 5 seconds so we can tell if the loop is alive.
-        let now = std::time::Instant::now();
-        if now.duration_since(last_heartbeat) >= Duration::from_secs(5) {
-            log::info!(
-                "run_event_loop: heartbeat — iteration={}, init_done={}, active={}",
-                iteration,
-                INIT_WINDOW_DONE.load(Ordering::Relaxed),
-                app_is_active,
-            );
-            last_heartbeat = now;
-        }
-
-        // Check if quit was requested.
-        if let Some(platform) = PLATFORM.get() {
-            if platform.should_quit() {
-                log::info!("run_event_loop: platform requested quit");
-                dispose_all_platform_views();
-                break;
-            }
-            platform.tick();
-        }
-
-        // ── Poll for events ──
-        //
-        // Blocks until something reaches the looper: a lifecycle command,
-        // input, a main-thread task, or the vsync callback that
-        // `frame_source` posted for a wanted frame. The timeout only covers
-        // the delayed dispatcher tasks `platform.tick()` has to release and
-        // the clock fallback without a choreographer.
-        let timeout = super::frame_source::poll_timeout(
-            PLATFORM
-                .get()
-                .and_then(|platform| platform.next_delayed_due()),
-            INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active,
-        );
-        app.poll_events(Some(timeout), |event| match event {
-            PollEvent::Main(main_event) => {
-                handle_main_event(app, main_event);
-            }
-            PollEvent::Wake => {}
-            PollEvent::Timeout => {}
-            _ => {}
-        });
-
-        // ── Deferred lifecycle processing ──
-        //
-        // Between each handler, call poll_events again to drain any
-        // events the Java UI thread may have queued while we were
-        // processing.  This keeps the condvar wait short and prevents
-        // the InputDispatcher ANR (10s timeout on MotionEvent delivery).
-        //
-        // Helper closure to drain events quickly:
-        let drain_events = |app: &AndroidApp| {
-            app.poll_events(Some(Duration::ZERO), |event| {
-                if let PollEvent::Main(main_event) = event {
-                    handle_main_event(app, main_event);
-                }
-            });
-        };
-
-        // 1. TerminateWindow — unconfigure surface, release native window
-        if TERM_WINDOW_PENDING.swap(false, Ordering::Relaxed) {
-            log::info!("deferred: TerminateWindow (iter={})", iteration);
-            INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
-            *LAST_CHROME_STYLE.lock().unwrap() = None;
-            if let Some(platform) = PLATFORM.get() {
-                if let Some(win) = platform.primary_window() {
-                    win.term_window();
-                }
-            }
-            // Drain immediately — Java thread may be blocked on InitWindow condvar.
-            drain_events(app);
-        }
-
-        // 2. InitWindow — replace surface on existing renderer, or create new
-        if INIT_WINDOW_PENDING.swap(false, Ordering::Relaxed) {
-            log::info!("deferred: InitWindow (iter={})", iteration);
-            if let Some(platform) = PLATFORM.get() {
-                if let Some(native_window) = app.native_window() {
-                    let width = native_window.width();
-                    let height = native_window.height();
-                    log::info!("InitWindow: {}×{}", width, height);
-
-                    platform.update_primary_display(&native_window, &app.asset_manager());
-
-                    let scale_factor = platform
-                        .primary_display()
-                        .map(|d| d.scale_factor())
-                        .unwrap_or(1.0);
-
-                    if let Some(existing) = platform.primary_window() {
-                        let gpu_ctx = platform.gpu_context();
-                        match existing.init_window(native_window, gpu_ctx) {
-                            Ok(()) => {
-                                log::info!("InitWindow: reinitialised existing window");
-                            }
-                            Err(e) => {
-                                log::error!("failed to reinit window surface: {e:#}");
-                            }
-                        }
-
-                        // Trigger GPUI resize so layout adapts to new dimensions.
-                        existing.handle_resize();
-
-                        let cr = app.content_rect();
-                        existing.update_safe_area_from_content_rect(
-                            cr.left, cr.top, cr.right, cr.bottom,
-                        );
-
-                        INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
-                    } else {
-                        match platform.open_window(native_window, scale_factor, false) {
-                            Ok(win) => {
-                                log::info!(
-                                    "window opened — id={:#x} scale={:.1}",
-                                    win.id(),
-                                    scale_factor
-                                );
-
-                                let cr = app.content_rect();
-                                win.update_safe_area_from_content_rect(
-                                    cr.left, cr.top, cr.right, cr.bottom,
-                                );
-                            }
-                            Err(e) => {
-                                log::error!("failed to open window: {e:#}");
-                            }
-                        }
-                    }
-                }
-            }
-            // Drain — Java thread may have queued ConfigChanged/WindowResized.
-            drain_events(app);
-        }
-
-        // 3. WindowResized
-        if WINDOW_RESIZED_PENDING.swap(false, Ordering::Relaxed) {
-            log::debug!("deferred: WindowResized");
-            if let Some(platform) = PLATFORM.get() {
-                if let Some(win) = platform.primary_window() {
-                    win.handle_resize();
-                    let cr = app.content_rect();
-                    win.update_safe_area_from_content_rect(cr.left, cr.top, cr.right, cr.bottom);
-                }
-            }
-        }
-
-        // 4. ConfigChanged
-        if CONFIG_CHANGED_PENDING.swap(false, Ordering::Relaxed) {
-            log::debug!("deferred: ConfigChanged");
-            if let Some(platform) = PLATFORM.get() {
-                platform.notify_keyboard_layout_change();
-                let is_dark = query_night_mode_via_jni();
-                if let Some(win) = platform.primary_window() {
-                    let appearance = if is_dark {
-                        crate::android::window::WindowAppearance::Dark
-                    } else {
-                        crate::android::window::WindowAppearance::Light
-                    };
-                    win.set_appearance(appearance);
-                }
-            }
-        }
-
-        // 5. Pause / background
-        if PAUSE_PENDING.swap(false, Ordering::Relaxed) {
-            log::info!("deferred: Pause (iter={})", iteration);
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_enter_background();
-                if let Some(win) = platform.primary_window() {
-                    win.set_active(false);
-                }
-            }
-            // Pause platform views
-            pause_platform_views();
-        }
-
-        // 6. Resume / foreground
-        if RESUME_PENDING.swap(false, Ordering::Relaxed) {
-            log::info!("deferred: Resume (iter={})", iteration);
-            if let Some(platform) = PLATFORM.get() {
-                platform.did_become_active();
-                if let Some(win) = platform.primary_window() {
-                    win.set_active(true);
-                }
-            }
-            // Resume platform views
-            resume_platform_views();
-        }
-
-        // Track active/focused state.
-        if let Some(platform) = PLATFORM.get() {
-            if let Some(win) = platform.primary_window() {
-                let is_active = win.is_active();
-                if is_active != app_is_active {
-                    log::info!(
-                        "run_event_loop: active {} -> {} (iter={})",
-                        app_is_active,
-                        is_active,
-                        iteration,
-                    );
-                    app_is_active = is_active;
-                }
-            }
-        }
-
-        // Process input events.
-        process_input_events(app);
-
-        // Deferred initialisation callbacks (runs once).
-        if !INIT_WINDOW_DONE.load(Ordering::Relaxed) {
-            if let Some(platform) = PLATFORM.get() {
-                if platform.primary_window().is_some() {
-                    if let Some(finish_cb) = platform.take_finish_launching_callback() {
-                        log::info!("invoking finish_launching callback (iter={})", iteration);
-                        finish_cb();
-                    }
-
-                    if let Some(init_cb) = platform.take_on_init_window_callback() {
-                        let win = platform.primary_window().unwrap();
-                        log::info!("invoking on_init_window callback (iter={})", iteration);
-                        init_cb(win);
-                    }
-
-                    INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
-                    NATIVE_INITIALIZED.store(true, Ordering::Release);
-                    log::info!("NATIVE_INITIALIZED = true");
-
-                    // Render first frame immediately.
-                    platform.flush_main_thread_tasks();
-                    if let Some(win) = platform.primary_window() {
-                        win.request_frame();
-                    }
-                }
-            }
-        }
-
-        // ── Render ──
-        if let Some(platform) = PLATFORM.get() {
-            if INIT_WINDOW_DONE.load(Ordering::Relaxed) && app_is_active {
-                platform.flush_main_thread_tasks();
-                // Software-keyboard text bypasses GPUI's invalidator; the
-                // frame callback turns it into a forced render.
-                if crate::TEXT_INPUT_DIRTY.load(Ordering::Acquire) {
-                    super::frame_source::schedule_frame();
-                }
-                if super::frame_source::take_frame() {
-                    if let Some(win) = platform.primary_window() {
-                        win.request_frame();
-                    }
-
-                    // Drain lifecycle events that arrived during rendering
-                    // (e.g. rotation triggers TerminateWindow while we were
-                    // in get_current_texture / present).
-                    drain_events(app);
-                    process_input_events(app);
-                }
-            }
-        }
-    }
-
-    log::info!("run_event_loop: exiting main loop");
-}
-
-/// Pause all platform views when the app goes to background.
-fn pause_platform_views() {
-    let _ = with_env(|env| {
-        if let Ok(helper_class) = find_app_class(env, "dev.gpui.mobile.GpuiPlatformView") {
-            let _ = env.call_static_method(
-                &helper_class,
-                jni::jni_str!("pauseAll"),
-                jni::jni_sig!("()V"),
-                &[],
-            );
-            env.exception_clear();
-        }
-        Ok(())
-    });
-}
-
-/// Resume all platform views when the app returns to foreground.
-fn resume_platform_views() {
-    let _ = with_env(|env| {
-        if let Ok(helper_class) = find_app_class(env, "dev.gpui.mobile.GpuiPlatformView") {
-            let _ = env.call_static_method(
-                &helper_class,
-                jni::jni_str!("resumeAll"),
-                jni::jni_sig!("()V"),
-                &[],
-            );
-            env.exception_clear();
-        }
-        Ok(())
-    });
-}
-
-/// Dispose all platform views during app shutdown.
-fn dispose_all_platform_views() {
-    let _ = with_env(|env| {
-        if let Ok(helper_class) = find_app_class(env, "dev.gpui.mobile.GpuiPlatformView") {
-            let _ = env.call_static_method(
-                &helper_class,
-                jni::jni_str!("disposeAll"),
-                jni::jni_sig!("()V"),
-                &[],
-            );
-            env.exception_clear();
-        }
-        Ok(())
-    });
-}
-
-/// Handle a single `MainEvent` from `android-activity`.
-fn handle_main_event(_app: &AndroidApp, event: MainEvent<'_>) {
-    match event {
-        MainEvent::InitWindow { .. } => {
-            log::info!("MainEvent::InitWindow");
-            // Defer to after poll_events to avoid deadlock with state lock.
-            INIT_WINDOW_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::TerminateWindow { .. } => {
-            log::info!("MainEvent::TerminateWindow");
-            // Defer to after poll_events to avoid deadlock with state lock.
-            TERM_WINDOW_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::WindowResized { .. } => {
-            log::debug!("MainEvent::WindowResized");
-            // Defer to after poll_events to avoid deadlock with state lock.
-            WINDOW_RESIZED_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::GainedFocus => {
-            log::info!("MainEvent::GainedFocus");
-            RESUME_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::LostFocus => {
-            log::info!("MainEvent::LostFocus");
-            PAUSE_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::Resume { .. } => {
-            log::info!("MainEvent::Resume");
-            RESUME_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::Pause => {
-            log::info!("MainEvent::Pause");
-            // set_active uses AtomicBool so it never blocks.
-            PAUSE_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::ConfigChanged { .. } => {
-            log::debug!("MainEvent::ConfigChanged");
-            CONFIG_CHANGED_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::Start => {
-            log::info!("MainEvent::Start");
-        }
-
-        MainEvent::Stop => {
-            log::info!("MainEvent::Stop");
-        }
-
-        MainEvent::SaveState { .. } => {
-            log::info!("MainEvent::SaveState");
-        }
-
-        MainEvent::LowMemory => {
-            log::warn!("MainEvent::LowMemory — consider releasing cached resources");
-        }
-
-        MainEvent::Destroy => {
-            log::info!("MainEvent::Destroy");
-
-            if let Some(platform) = PLATFORM.get() {
-                platform.quit();
-            }
-        }
-
-        MainEvent::InsetsChanged { .. } => {
-            log::debug!("MainEvent::InsetsChanged");
-            WINDOW_RESIZED_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        MainEvent::ContentRectChanged { .. } => {
-            log::debug!("MainEvent::ContentRectChanged");
-            WINDOW_RESIZED_PENDING.store(true, Ordering::Relaxed);
-        }
-
-        _ => {
-            log::trace!("MainEvent: other variant");
-        }
-    }
-}
-
-// ── main loop helper (compat with existing code) ──────────────────────────────
-
-/// Run one iteration of the event loop.
-///
-/// This is a compatibility wrapper for code that uses a manual poll loop.
-/// Prefer `run_event_loop` for the standard event loop.
-///
-/// `timeout_ms` — how long to block waiting for events (milliseconds).
-/// Pass `0` for non-blocking, `-1` to block indefinitely.
-///
-/// Returns `true` if the application should exit.
-pub fn poll_events(timeout_ms: i32) -> bool {
-    if let Some(platform) = PLATFORM.get() {
-        if platform.should_quit() {
-            return true;
-        }
-        platform.tick();
-    }
-
-    let app = match ANDROID_APP.get() {
-        Some(app) => app,
-        None => return false,
-    };
-
-    let timeout = if timeout_ms < 0 {
-        None
-    } else {
-        Some(Duration::from_millis(timeout_ms as u64))
-    };
-
-    app.poll_events(timeout, |event| match event {
-        PollEvent::Main(main_event) => {
-            handle_main_event(app, main_event);
-        }
-        PollEvent::Wake => {}
-        _ => {}
-    });
-
-    process_input_events(app);
-
-    // Drive the GPUI rendering pipeline (same as run_event_loop).
-    if let Some(platform) = PLATFORM.get() {
-        platform.flush_main_thread_tasks();
-        if let Some(win) = platform.primary_window() {
-            win.request_frame();
-        }
-    }
-
-    false
-}
+mod event_loop;
+pub use event_loop::{poll_events, run_event_loop};
 
 // ── public init / run helpers ─────────────────────────────────────────────────
 
@@ -1103,183 +632,77 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Store the `AndroidApp` globally and create the `AndroidPlatform`.
+/// Owns the platform registration for one NativeActivity's native thread.
 ///
-/// Must be called exactly once from `android_main` before
-/// `run_event_loop`.  Returns a reference to the platform so the caller
-/// can register callbacks (e.g. `set_on_init_window`) before entering
-/// the event loop.
-pub fn init_platform(app: &AndroidApp) -> &'static Arc<AndroidPlatform> {
-    let _ = ANDROID_APP.set(app.clone());
-    log::info!("init_platform: stored AndroidApp");
-
-    let platform = Arc::new(AndroidPlatform::new(false));
-    log::info!("init_platform: AndroidPlatform created");
-
-    PLATFORM
-        .set(Arc::clone(&platform))
-        .unwrap_or_else(|_| log::warn!("PLATFORM already set — duplicate init_platform?"));
-
-    // SAFETY: we just set it above.
-    PLATFORM.get().unwrap()
+/// Keep this guard alive until the GPUI Application has been dropped. A recreated
+/// Activity gets a new AndroidApp, dispatcher and Looper, even in the same process.
+#[must_use]
+pub struct PlatformSession {
+    platform: Arc<AndroidPlatform>,
+    // Teardown must run on the native thread that registered the Looper callback.
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
-// ── system chrome (status bar / navigation bar) ───────────────────────────────
+impl std::ops::Deref for PlatformSession {
+    type Target = Arc<AndroidPlatform>;
 
-/// Cached last-applied system chrome style.
-///
-/// `set_system_chrome` is called on every frame render.  The JNI calls it
-/// makes (getWindow, setStatusBarColor, etc.) are View operations that can
-/// contend with the Android UI thread and intermittently deadlock.
-/// By caching the last applied style we skip the JNI calls entirely when
-/// nothing changed — which is the common case.
-#[allow(clippy::type_complexity)]
-static LAST_CHROME_STYLE: std::sync::Mutex<
-    Option<(Option<u32>, Option<u32>, crate::StatusBarContentStyle)>,
-> = std::sync::Mutex::new(None);
-
-/// Apply system chrome styling on Android.
-///
-/// Sets the status bar color, navigation bar color, and light/dark
-/// status bar icons via JNI calls to `Window` and `WindowInsetsController`.
-///
-/// Must be called from the main (native) thread that has JNI access.
-pub fn set_system_chrome(style: &crate::SystemChromeStyle) {
-    let status_bar_color = style.status_bar_color;
-    let navigation_bar_color = style.navigation_bar_color;
-    let status_bar_style = style.status_bar_style;
-
-    // Skip the (expensive, potentially deadlocking) JNI calls when nothing changed.
-    {
-        let key = (status_bar_color, navigation_bar_color, status_bar_style);
-        let mut last = LAST_CHROME_STYLE.lock().unwrap();
-        if *last == Some(key) {
-            return;
-        }
-        *last = Some(key);
+    fn deref(&self) -> &Self::Target {
+        &self.platform
     }
+}
 
-    let result = with_env(|env| {
-        let activity_obj = activity(env)?;
-
-        // 1. Get the Window: activity.getWindow()
-        let window = env
-            .call_method(
-                &activity_obj,
-                jni::jni_str!("getWindow"),
-                jni::jni_sig!("()Landroid/view/Window;"),
-                &[],
-            )
-            .and_then(|v: jni::objects::JValueOwned| v.l())
-            .map_err(|e| {
-                env.exception_clear();
-                e.to_string()
-            })?;
-        if window.is_null() {
-            return Err("getWindow returned null".into());
-        }
-
-        // 2. Set status bar color if provided
-        if let Some(color) = status_bar_color {
-            let argb = (0xFF000000_u32 | color) as i32;
-            let _ = env.call_method(
-                &window,
-                jni::jni_str!("setStatusBarColor"),
-                jni::jni_sig!("(I)V"),
-                &[JValue::Int(argb)],
-            );
-            env.exception_clear();
-        }
-
-        // 3. Set navigation bar color if provided
-        if let Some(color) = navigation_bar_color {
-            let argb = (0xFF000000_u32 | color) as i32;
-            let _ = env.call_method(
-                &window,
-                jni::jni_str!("setNavigationBarColor"),
-                jni::jni_sig!("(I)V"),
-                &[JValue::Int(argb)],
-            );
-            env.exception_clear();
-        }
-
-        // 4. Set light/dark status bar icons via WindowInsetsController (API 30+)
-        let insetsctl = env.call_method(
-            &window,
-            jni::jni_str!("getInsetsController"),
-            jni::jni_sig!("()Landroid/view/WindowInsetsController;"),
-            &[],
+impl Drop for PlatformSession {
+    fn drop(&mut self) {
+        super::frame_source::uninstall();
+        self.platform.foreground_executor().shutdown();
+        NATIVE_INITIALIZED.store(false, Ordering::Release);
+        PLATFORM.lock().take();
+        ANDROID_APP.lock().take();
+        log::info!(
+            "platform_session: released on {:?}",
+            std::thread::current().id()
         );
-
-        if let Ok(v) = insetsctl {
-            if let Ok(ctl) = v.l() {
-                if !ctl.is_null() {
-                    let mask: i32 = 0x00000008;
-                    let appearance: i32 = match status_bar_style {
-                        crate::StatusBarContentStyle::Dark => 0x00000008,
-                        crate::StatusBarContentStyle::Light => 0,
-                    };
-                    let _ = env.call_method(
-                        &ctl,
-                        jni::jni_str!("setSystemBarsAppearance"),
-                        jni::jni_sig!("(II)V"),
-                        &[JValue::Int(appearance), JValue::Int(mask)],
-                    );
-                    env.exception_clear();
-                }
-            }
-        } else {
-            env.exception_clear();
-
-            if let Ok(decor) = env
-                .call_method(
-                    &window,
-                    jni::jni_str!("getDecorView"),
-                    jni::jni_sig!("()Landroid/view/View;"),
-                    &[],
-                )
-                .and_then(|v: jni::objects::JValueOwned| v.l())
-            {
-                if !decor.is_null() {
-                    if let Ok(current) = env
-                        .call_method(
-                            &decor,
-                            jni::jni_str!("getSystemUiVisibility"),
-                            jni::jni_sig!("()I"),
-                            &[],
-                        )
-                        .and_then(|v: jni::objects::JValueOwned| v.i())
-                    {
-                        let new_flags = match status_bar_style {
-                            crate::StatusBarContentStyle::Dark => current | 0x00002000,
-                            crate::StatusBarContentStyle::Light => current & !0x00002000,
-                        };
-                        let _ = env.call_method(
-                            &decor,
-                            jni::jni_str!("setSystemUiVisibility"),
-                            jni::jni_sig!("(I)V"),
-                            &[JValue::Int(new_flags)],
-                        );
-                        env.exception_clear();
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    });
-
-    if let Err(e) = result {
-        log::warn!("set_system_chrome: {e}");
     }
-
-    log::info!(
-        "set_system_chrome: status_bar_color={:?}, nav_bar_color={:?}, style={:?}",
-        style.status_bar_color,
-        style.navigation_bar_color,
-        style.status_bar_style
-    );
 }
+
+/// Register a fresh platform for this Activity on its native thread.
+///
+/// The previous session must have ended before another Activity is initialized.
+/// Returns a guard that must outlive the GPUI Application.
+pub fn init_platform(app: &AndroidApp) -> PlatformSession {
+    assert!(
+        PLATFORM.lock().is_none(),
+        "previous Activity platform is still registered"
+    );
+    *ANDROID_APP.lock() = Some(app.clone());
+    for flag in [
+        &INIT_WINDOW_DONE,
+        &NATIVE_INITIALIZED,
+        &PAUSE_PENDING,
+        &RESUME_PENDING,
+        &TERM_WINDOW_PENDING,
+        &INIT_WINDOW_PENDING,
+        &WINDOW_RESIZED_PENDING,
+        &CONFIG_CHANGED_PENDING,
+    ] {
+        flag.store(false, Ordering::Release);
+    }
+    *LAST_CHROME_STYLE.lock().unwrap() = None;
+    let platform = Arc::new(AndroidPlatform::new(false));
+    *PLATFORM.lock() = Some(Arc::clone(&platform));
+    log::info!(
+        "platform_session: initialized on {:?}",
+        std::thread::current().id()
+    );
+    PlatformSession {
+        platform,
+        _thread_bound: std::marker::PhantomData,
+    }
+}
+
+mod chrome;
+pub use chrome::set_system_chrome;
+use chrome::LAST_CHROME_STYLE;
 
 // ── software keyboard (IME) control ───────────────────────────────────────────
 

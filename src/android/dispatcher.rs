@@ -49,6 +49,8 @@ const ALOOPER_EVENT_INPUT: i32 = 1;
 unsafe extern "C" {
     /// Returns the looper associated with the calling thread, or null.
     fn ALooper_forThread() -> *mut libc_looper_opaque;
+    fn ALooper_acquire(looper: *mut libc_looper_opaque);
+    fn ALooper_release(looper: *mut libc_looper_opaque);
     /// Adds a file-descriptor to the looper.
     fn ALooper_addFd(
         looper: *mut libc_looper_opaque,
@@ -181,6 +183,8 @@ impl AndroidDispatcher {
             "AndroidDispatcher::new() must be called on the Android main thread"
         );
 
+        unsafe { ALooper_acquire(looper) };
+
         let pool_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -257,6 +261,9 @@ impl AndroidDispatcher {
             return;
         }
         let mut q = self.main_queue.lock();
+        if self.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
         q.tasks.push_back(Box::new(f));
         wake_pipe(q.write_fd);
     }
@@ -282,6 +289,9 @@ impl AndroidDispatcher {
         }
         let due = Instant::now() + delay;
         let mut delayed = self.delayed.lock();
+        if self.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
         delayed.push(DelayedTask {
             due,
             task: Box::new(f),
@@ -343,10 +353,18 @@ impl AndroidDispatcher {
         }
     }
 
-    /// Stop accepting new tasks and signal the thread-pool to wind down.
+    /// Stop accepting tasks, cancel queued work and detach the Looper callback.
+    ///
+    /// Call on the owning native thread before releasing its Looper. After this,
+    /// outstanding executor handles may be dropped on other threads.
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.unregister_from_looper();
+        if !self.shutdown.swap(true, Ordering::SeqCst) {
+            self.unregister_from_looper();
+        }
+        // Cancellation can enqueue work, so drop runnables outside queue locks.
+        let tasks = std::mem::take(&mut self.main_queue.lock().tasks);
+        let delayed = std::mem::take(&mut *self.delayed.lock());
+        drop((tasks, delayed));
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
@@ -356,9 +374,8 @@ impl AndroidDispatcher {
         // is a free `extern "C"` function that reconstructs the Arc from the
         // raw pointer.
         //
-        // SAFETY: `self` outlives the looper registration because we hold an
-        // `Arc<Self>` for the lifetime of the process (stored in
-        // `GLOBAL_DISPATCHER`).
+        // SAFETY: the callback owns a queue Arc until shutdown unregisters it
+        // on the native thread, before the Activity releases its Looper.
         let data_ptr = Arc::into_raw(Arc::clone(&self.main_queue)) as *mut std::ffi::c_void;
 
         let ret = unsafe {
@@ -381,8 +398,17 @@ impl AndroidDispatcher {
     }
 
     fn unregister_from_looper(&self) {
-        unsafe {
-            ALooper_removeFd(self.looper, self.read_fd);
+        if !self.looper.is_null() {
+            assert!(
+                self.is_main_thread(),
+                "shutdown must run on the owning native thread"
+            );
+            unsafe {
+                ALooper_removeFd(self.looper, self.read_fd);
+                // Balance the Arc passed to ALooper_addFd, once the owning
+                // native thread can no longer enter the callback.
+                drop(Arc::from_raw(Arc::as_ptr(&self.main_queue)));
+            }
         }
     }
 }
@@ -398,8 +424,12 @@ impl Default for AndroidDispatcher {
 
 impl Drop for AndroidDispatcher {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.unregister_from_looper();
+        if !self.shutdown.swap(true, Ordering::SeqCst) {
+            self.unregister_from_looper();
+        }
+        if !self.looper.is_null() {
+            unsafe { ALooper_release(self.looper) };
+        }
         // Close file descriptors.
         unsafe {
             libc_close(self.read_fd);
@@ -414,8 +444,11 @@ impl Drop for AndroidDispatcher {
 ///
 /// Drains the entire task queue before returning 1 (keep the fd registered).
 unsafe extern "C" fn looper_callback(fd: RawFd, _events: i32, data: *mut std::ffi::c_void) -> i32 {
-    // Reconstruct the Arc without dropping it (we'll re-leak at the end).
-    let queue_arc = unsafe { Arc::from_raw(data as *const Mutex<MainQueue>) };
+    // Keep an independent reference while executing tasks. A task may release
+    // the last dispatcher handle and unregister the callback reentrantly.
+    let queue_ptr = data as *const Mutex<MainQueue>;
+    unsafe { Arc::increment_strong_count(queue_ptr) };
+    let queue_arc = unsafe { Arc::from_raw(queue_ptr) };
 
     // Drain the wake pipe (ignore errors — just consume the byte(s)).
     let mut buf = [0u8; 64];
@@ -437,10 +470,6 @@ unsafe extern "C" fn looper_callback(fd: RawFd, _events: i32, data: *mut std::ff
             None => break,
         }
     }
-
-    // Leak the Arc again so it isn't freed — the data pointer lifetime is
-    // managed by `AndroidDispatcher`.
-    std::mem::forget(queue_arc);
 
     1 // keep fd registered
 }
@@ -523,40 +552,21 @@ impl PlatformDispatcher for AndroidDispatcher {
     }
 
     fn dispatch(&self, runnable: RunnableVariant, _priority: Priority) {
-        // All non-realtime background tasks go to the thread-pool.
-        // Priority-based scheduling is not yet implemented; all tasks are
-        // treated equally by the pool.
-        self.pool.dispatch(Box::new(move || {
+        AndroidDispatcher::dispatch(self, move || {
             runnable.run();
-        }));
+        });
     }
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, _priority: Priority) {
-        if self.shutdown.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut q = self.main_queue.lock();
-        q.tasks.push_back(Box::new(move || {
+        AndroidDispatcher::dispatch_on_main_thread(self, move || {
             runnable.run();
-        }));
-        wake_pipe(q.write_fd);
+        });
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
-        if self.shutdown.load(Ordering::Relaxed) {
-            return;
-        }
-        let due = Instant::now() + duration;
-        let mut delayed = self.delayed.lock();
-        delayed.push(DelayedTask {
-            due,
-            task: Box::new(move || {
-                runnable.run();
-            }),
+        AndroidDispatcher::dispatch_after(self, duration, move || {
+            runnable.run();
         });
-        delayed.sort_by_key(|d| d.due);
-        drop(delayed);
-        self.wake_looper();
     }
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
@@ -629,13 +639,38 @@ mod tests {
         dispatcher.tick();
         assert!(!ran.load(Ordering::Relaxed), "task should not run yet");
 
-        // Cleanup — prevent Drop from calling ALooper_removeFd with a null pointer.
-        dispatcher.shutdown.store(true, Ordering::SeqCst);
-        std::mem::forget(dispatcher); // skip Drop (null looper)
-        unsafe {
-            libc_close(read_fd);
-            libc_close(write_fd);
-        }
+        // Headless dispatchers now support normal shutdown and Drop.
+        dispatcher.shutdown();
+    }
+
+    #[test]
+    fn shutdown_releases_queued_tasks_and_is_idempotent() {
+        let dispatcher = AndroidDispatcher::new_headless();
+        let payload = Arc::new(());
+        let foreground = Arc::clone(&payload);
+        let delayed = Arc::clone(&payload);
+        dispatcher.dispatch_on_main_thread(move || drop(foreground));
+        dispatcher.dispatch_after(Duration::from_secs(60), move || drop(delayed));
+        assert_eq!(Arc::strong_count(&payload), 3);
+
+        dispatcher.shutdown();
+        dispatcher.shutdown();
+
+        assert_eq!(Arc::strong_count(&payload), 1);
+    }
+
+    #[test]
+    fn shutdown_rejects_new_foreground_and_delayed_tasks() {
+        let dispatcher = AndroidDispatcher::new_headless();
+        dispatcher.shutdown();
+        let payload = Arc::new(());
+        let foreground = Arc::clone(&payload);
+        let delayed = Arc::clone(&payload);
+
+        dispatcher.dispatch_on_main_thread(move || drop(foreground));
+        dispatcher.dispatch_after(Duration::from_secs(60), move || drop(delayed));
+
+        assert_eq!(Arc::strong_count(&payload), 1);
     }
 
     /// Verify pipe creation succeeds.
