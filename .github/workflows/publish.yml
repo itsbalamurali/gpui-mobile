@@ -30,7 +30,7 @@ jobs:
           targets: aarch64-apple-ios, aarch64-apple-ios-sim
 
       - name: Cache Cargo registry + git deps
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
