@@ -22,7 +22,7 @@ use gpui::{
     PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, TileId, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, WindowVisibility,
 };
-use gpui_wgpu::{GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
+use gpui_wgpu::{wgpu, GpuContext, WgpuContext, WgpuRenderer, WgpuSurfaceConfig};
 use objc2::encode::{Encode, Encoding, RefEncode};
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
@@ -768,28 +768,30 @@ impl IosWindow {
 
             let surface_result = metal_instance.create_surface_unsafe(target);
             match surface_result {
-                Ok(surface) => match WgpuContext::new(metal_instance, &surface, None) {
-                    Ok(context) => {
-                        // Pre-populate gpu_context so WgpuRenderer::new()
-                        // reuses our Metal-backed context (and its instance)
-                        // instead of creating a Vulkan+GL one.
-                        let gpu_context: GpuContext = Rc::new(RefCell::new(Some(context)));
-                        drop(surface); // no longer needed — new() creates its own
+                Ok(surface) => {
+                    match WgpuContext::new(metal_instance, &surface, &config, None) {
+                        Ok(context) => {
+                            // Pre-populate gpu_context so WgpuRenderer::new()
+                            // reuses our Metal-backed context (and its instance)
+                            // instead of creating a Vulkan+GL one.
+                            let gpu_context: GpuContext = Rc::new(RefCell::new(Some(context)));
+                            drop(surface); // no longer needed — new() creates its own
 
-                        match WgpuRenderer::new(gpu_context, &raw_window, config, None) {
-                            Ok(renderer) => {
-                                log::info!("iOS wgpu renderer created (Metal)");
-                                *ios_window.renderer.lock() = Some(renderer);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to create iOS wgpu renderer: {e:#}");
+                            match WgpuRenderer::new(gpu_context, &raw_window, config, None) {
+                                Ok(renderer) => {
+                                    log::info!("iOS wgpu renderer created (Metal)");
+                                    *ios_window.renderer.lock() = Some(renderer);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to create iOS wgpu renderer: {e:#}");
+                                }
                             }
                         }
+                        Err(e) => {
+                            log::error!("Failed to create iOS WgpuContext: {e:#}");
+                        }
                     }
-                    Err(e) => {
-                        log::error!("Failed to create iOS WgpuContext: {e:#}");
-                    }
-                },
+                }
                 Err(e) => {
                     log::error!("Failed to create iOS wgpu Metal surface: {e:#}");
                 }
@@ -1325,6 +1327,10 @@ impl HasDisplayHandle for IosWindow {
 }
 
 impl PlatformWindow for IosWindow {
+    fn on_display_changed(&self, _: Box<dyn FnMut() + 'static>) {
+        // No-op: display configuration changes are managed by iOS.
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.bounds.get()
     }
@@ -1593,7 +1599,7 @@ impl PlatformWindow for IosWindow {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         let guard = self.renderer.lock();
-        guard.as_ref().map(|r| r.gpu_specs())
+        guard.as_ref().map(|r| r.gpu_specs())?
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {

@@ -20,7 +20,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   host:
     name: Host Check & Tests
-    runs-on: macos-14 # Apple Silicon runner — has Xcode + iOS SDKs
+    runs-on: macos-15 # Apple Silicon runner — has Xcode + iOS SDKs
     steps:
       - uses: actions/checkout@v6
 
@@ -57,7 +57,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   ios:
     name: iOS Build (${{ matrix.target }})
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
