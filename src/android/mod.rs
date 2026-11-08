@@ -253,3 +253,5 @@ pub fn init_logger() {
         log::info!("gpui-android logger initialised");
     });
 }
+
+pub(crate) mod assets;

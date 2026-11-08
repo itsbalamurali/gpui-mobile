@@ -225,31 +225,6 @@ fn font_has_cbdt_tables(data: &[u8]) -> bool {
     false
 }
 
-/// Load a file from the Android APK assets directory via the NDK
-/// `AAssetManager`.
-///
-/// `path` is relative to the `assets/` directory in the APK (e.g.
-/// `"fonts/NotoColorEmoji.ttf"`).
-fn load_asset_bytes(app: &android_activity::AndroidApp, path: &str) -> anyhow::Result<Vec<u8>> {
-    use std::ffi::CString;
-
-    let asset_manager = app.asset_manager();
-    let c_path = CString::new(path)?;
-
-    // Open the asset.  `AssetManager::open` returns `Option<Asset>`.
-    let mut asset = asset_manager
-        .open(&c_path)
-        .ok_or_else(|| anyhow::anyhow!("asset not found: {path}"))?;
-
-    // `Asset::buffer` returns `io::Result<&[u8]>` — the entire file mapped
-    // into memory.
-    let bytes = asset
-        .buffer()
-        .map_err(|e| anyhow::anyhow!("failed to read asset buffer for {path}: {e}"))?;
-
-    Ok(bytes.to_vec())
-}
-
 impl AndroidPlatform {
     // ── constructors ─────────────────────────────────────────────────────────
 
@@ -356,22 +331,17 @@ impl AndroidPlatform {
 
             if !emoji_loaded {
                 // Try loading the bundled CBDT NotoColorEmoji from APK assets.
-                if let Some(app) = crate::android::jni::android_app() {
-                    match load_asset_bytes(&app, "fonts/NotoColorEmoji.ttf") {
-                        Ok(bytes) => {
-                            log::info!(
-                                "loaded bundled CBDT emoji font from assets ({} bytes)",
-                                bytes.len()
-                            );
-                            font_data.push(std::borrow::Cow::Owned(bytes));
-                            emoji_loaded = true;
-                        }
-                        Err(e) => {
-                            log::warn!("failed to load bundled emoji font from assets: {e:#}");
-                        }
+                match super::assets::load_asset_bytes("fonts/NotoColorEmoji.ttf") {
+                    Ok(bytes) if font_has_cbdt_tables(&bytes) => {
+                        log::info!(
+                            "loaded bundled CBDT emoji font from assets ({} bytes)",
+                            bytes.len()
+                        );
+                        font_data.push(std::borrow::Cow::Owned(bytes));
+                        emoji_loaded = true;
                     }
-                } else {
-                    log::debug!("no AndroidApp available — cannot load bundled emoji font");
+                    Ok(_) => log::warn!("bundled emoji font has no CBDT table"),
+                    Err(error) => log::warn!("failed to load bundled emoji font: {error:#}"),
                 }
             }
 
