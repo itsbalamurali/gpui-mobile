@@ -200,6 +200,9 @@ pub type CloseCallback = Box<dyn FnOnce() + Send + 'static>;
 /// Called when the window appearance (light/dark) changes.
 pub type AppearanceCallback = Box<dyn FnMut(WindowAppearance) + Send + 'static>;
 
+/// Called with the new safe area, in logical pixels, when it changes.
+pub type SafeAreaCallback = Box<dyn FnMut(SafeAreaInsets) + Send + 'static>;
+
 // ── appearance ────────────────────────────────────────────────────────────────
 
 /// Light / dark / high-contrast appearance of the window.
@@ -219,7 +222,7 @@ pub enum WindowAppearance {
 /// These represent the areas of the screen occupied by system UI elements
 /// (status bar, navigation bar, camera notch, etc.) that the app content
 /// should avoid drawing into — or at least pad/account for.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SafeAreaInsets {
     /// Top inset in device pixels (status bar / camera notch).
     pub top: f32,
@@ -297,6 +300,7 @@ struct WindowState {
     resize_callback: Option<ResizeCallback>,
     close_callback: Option<CloseCallback>,
     appearance_callback: Option<AppearanceCallback>,
+    safe_area_callback: Option<SafeAreaCallback>,
     active_status_callback: Option<ActiveStatusCallback>,
     visibility_callback: Option<VisibilityCallback>,
 }
@@ -401,6 +405,7 @@ impl AndroidWindow {
             resize_callback: None,
             close_callback: None,
             appearance_callback: None,
+            safe_area_callback: None,
             active_status_callback: None,
             visibility_callback: None,
         }));
@@ -435,6 +440,7 @@ impl AndroidWindow {
             resize_callback: None,
             close_callback: None,
             appearance_callback: None,
+            safe_area_callback: None,
             active_status_callback: None,
             visibility_callback: None,
         }));
@@ -1013,6 +1019,46 @@ impl AndroidWindow {
         state.safe_area_insets = insets;
     }
 
+    /// Update the safe area from the content rect and the system-bar insets.
+    ///
+    /// With edge-to-edge enforced (target SDK 35+ on Android 15+) the content rect of
+    /// a NativeActivity spans the whole window and says nothing about the system
+    /// bars, so each edge takes the larger of the two sources. `system_bars` is
+    /// `(left, top, right, bottom)` in physical pixels, `None` when unknown.
+    /// Fires the safe-area callback when the result changes.
+    pub fn update_safe_area(
+        &self,
+        content_rect: (i32, i32, i32, i32),
+        system_bars: Option<(i32, i32, i32, i32)>,
+    ) {
+        let (insets, logical, changed) = {
+            let mut state = self.state.lock();
+            let insets = merge_safe_area(state.width, state.height, content_rect, system_bars);
+            let changed = insets != state.safe_area_insets;
+            state.safe_area_insets = insets;
+            (insets, insets.to_logical(state.scale_factor), changed)
+        };
+        if !changed {
+            return;
+        }
+        log::info!(
+            "safe_area_insets updated: top={:.0} bottom={:.0} left={:.0} right={:.0} (physical px)",
+            insets.top,
+            insets.bottom,
+            insets.left,
+            insets.right,
+        );
+        // Fire the callback outside the lock: it calls back into GPUI.
+        let cb = self.state.lock().safe_area_callback.take();
+        if let Some(mut cb) = cb {
+            cb(logical);
+            let mut state = self.state.lock();
+            if state.safe_area_callback.is_none() {
+                state.safe_area_callback = Some(cb);
+            }
+        }
+    }
+
     // ── state queries ─────────────────────────────────────────────────────────
 
     /// Whether the window currently has an active wgpu surface.
@@ -1093,6 +1139,14 @@ impl AndroidWindow {
         F: FnMut(WindowAppearance) + Send + 'static,
     {
         self.state.lock().appearance_callback = Some(Box::new(cb));
+    }
+
+    /// Register a callback invoked when the safe area changes.
+    pub fn on_safe_area_change<F>(&self, cb: F)
+    where
+        F: FnMut(SafeAreaInsets) + Send + 'static,
+    {
+        self.state.lock().safe_area_callback = Some(Box::new(cb));
     }
 
     /// Register a callback invoked when the window's active status changes.
@@ -1176,6 +1230,38 @@ impl Drop for AndroidWindow {
 }
 
 // ── AndroidPlatformWindow (PlatformWindow impl) ──────────────────────────────
+
+/// Safe area of a `width`×`height` window, in physical pixels.
+///
+/// Each edge is the larger of what the content rect leaves uncovered and what the
+/// system bars / display cutout report.
+fn merge_safe_area(
+    width: i32,
+    height: i32,
+    (content_left, content_top, content_right, content_bottom): (i32, i32, i32, i32),
+    system_bars: Option<(i32, i32, i32, i32)>,
+) -> SafeAreaInsets {
+    let (bar_left, bar_top, bar_right, bar_bottom) = system_bars.unwrap_or((0, 0, 0, 0));
+    SafeAreaInsets {
+        top: content_top.max(bar_top).max(0) as f32,
+        bottom: (height - content_bottom).max(bar_bottom).max(0) as f32,
+        left: content_left.max(bar_left).max(0) as f32,
+        right: (width - content_right).max(bar_right).max(0) as f32,
+    }
+}
+
+/// The safe area as GPUI's window insets.
+fn window_insets(safe_area: SafeAreaInsets) -> gpui::WindowInsets {
+    gpui::WindowInsets {
+        safe_area: gpui::Edges {
+            top: gpui::px(safe_area.top),
+            right: gpui::px(safe_area.right),
+            bottom: gpui::px(safe_area.bottom),
+            left: gpui::px(safe_area.left),
+        },
+        ..Default::default()
+    }
+}
 
 /// A wrapper around `Arc<AndroidWindow>` that implements `gpui::PlatformWindow`.
 ///
@@ -1641,6 +1727,21 @@ impl PlatformWindow for AndroidPlatformWindow {
         });
     }
 
+    fn insets(&self) -> gpui::WindowInsets {
+        window_insets(self.window.safe_area_insets_logical())
+    }
+
+    fn on_insets_changed(&self, callback: Box<dyn FnMut(gpui::WindowInsets)>) {
+        // Same contract as the other window callbacks: invoked on the main thread only.
+        let send_callback: Box<dyn FnMut(gpui::WindowInsets) + Send> =
+            unsafe { std::mem::transmute(callback) };
+        let send_callback = Mutex::new(send_callback);
+        self.window.on_safe_area_change(move |safe_area| {
+            let mut cb = send_callback.lock();
+            cb(window_insets(safe_area));
+        });
+    }
+
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
         // GPUI calls this when a window turns dirty; the loop draws at the
         // next vsync (see `frame_source`).
@@ -1970,6 +2071,39 @@ mod tests {
         let w = AndroidWindow::headless(1080, 1920, 2.0);
         w.set_appearance(WindowAppearance::Dark);
         assert_eq!(w.appearance(), WindowAppearance::Dark);
+    }
+
+    #[test]
+    fn safe_area_takes_the_larger_source_per_edge() {
+        // Edge-to-edge: the content rect covers the window, the bars say otherwise.
+        let insets = merge_safe_area(1080, 2400, (0, 0, 1080, 2400), Some((0, 136, 0, 63)));
+        assert_eq!((insets.top, insets.bottom), (136.0, 63.0));
+        assert_eq!((insets.left, insets.right), (0.0, 0.0));
+
+        // Content rect already inset and no bar information.
+        let insets = merge_safe_area(1080, 2400, (0, 80, 1080, 2300), None);
+        assert_eq!((insets.top, insets.bottom), (80.0, 100.0));
+
+        // A content rect larger than the window never yields a negative inset.
+        let insets = merge_safe_area(1080, 2400, (0, 0, 2400, 2400), Some((0, 0, 0, 0)));
+        assert_eq!(insets.right, 0.0);
+    }
+
+    #[test]
+    fn safe_area_callback_fires_once_per_change_in_logical_pixels() {
+        let w = AndroidWindow::headless(1080, 2400, 2.0);
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        w.on_safe_area_change(move |insets| seen_clone.lock().push(insets));
+
+        w.update_safe_area((0, 0, 1080, 2400), Some((0, 136, 0, 64)));
+        w.update_safe_area((0, 0, 1080, 2400), Some((0, 136, 0, 64)));
+        w.update_safe_area((0, 0, 1080, 2400), Some((0, 0, 0, 0)));
+
+        let seen = seen.lock();
+        assert_eq!(seen.len(), 2);
+        assert_eq!((seen[0].top, seen[0].bottom), (68.0, 32.0));
+        assert_eq!((seen[1].top, seen[1].bottom), (0.0, 0.0));
     }
 
     #[test]
