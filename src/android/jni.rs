@@ -727,10 +727,7 @@ pub fn run_event_loop(app: &AndroidApp) {
                         // Trigger GPUI resize so layout adapts to new dimensions.
                         existing.handle_resize();
 
-                        let cr = app.content_rect();
-                        existing.update_safe_area_from_content_rect(
-                            cr.left, cr.top, cr.right, cr.bottom,
-                        );
+                        refresh_safe_area(app, &existing);
 
                         INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
                     } else {
@@ -742,10 +739,7 @@ pub fn run_event_loop(app: &AndroidApp) {
                                     scale_factor
                                 );
 
-                                let cr = app.content_rect();
-                                win.update_safe_area_from_content_rect(
-                                    cr.left, cr.top, cr.right, cr.bottom,
-                                );
+                                refresh_safe_area(app, &win);
                             }
                             Err(e) => {
                                 log::error!("failed to open window: {e:#}");
@@ -764,8 +758,7 @@ pub fn run_event_loop(app: &AndroidApp) {
             if let Some(platform) = PLATFORM.get() {
                 if let Some(win) = platform.primary_window() {
                     win.handle_resize();
-                    let cr = app.content_rect();
-                    win.update_safe_area_from_content_rect(cr.left, cr.top, cr.right, cr.bottom);
+                    refresh_safe_area(app, &win);
                 }
             }
         }
@@ -807,6 +800,8 @@ pub fn run_event_loop(app: &AndroidApp) {
                 platform.did_become_active();
                 if let Some(win) = platform.primary_window() {
                     win.set_active(true);
+                    // The root insets may only be known once the window has focus.
+                    refresh_safe_area(app, &win);
                 }
             }
             // Resume platform views
@@ -885,6 +880,63 @@ pub fn run_event_loop(app: &AndroidApp) {
     }
 
     log::info!("run_event_loop: exiting main loop");
+}
+
+/// System-bar and display-cutout insets of the Activity window, in physical
+/// pixels as `(left, top, right, bottom)`. `None` when the decor view has no
+/// root insets yet or a JNI call fails.
+fn query_system_bar_insets() -> Option<(i32, i32, i32, i32)> {
+    with_env(|env| {
+        let activity_obj = activity(env)?;
+        macro_rules! object {
+            ($target:expr, $name:literal, $sig:literal) => {{
+                let value = env
+                    .call_method($target, jni::jni_str!($name), jni::jni_sig!($sig), &[])
+                    .and_then(|v| v.l())
+                    .map_err(|e| {
+                        env.exception_clear();
+                        e.to_string()
+                    })?;
+                if value.is_null() {
+                    return Err(concat!($name, " returned null").into());
+                }
+                value
+            }};
+        }
+        let window = object!(&activity_obj, "getWindow", "()Landroid/view/Window;");
+        let decor = object!(&window, "getDecorView", "()Landroid/view/View;");
+        let insets = object!(
+            &decor,
+            "getRootWindowInsets",
+            "()Landroid/view/WindowInsets;"
+        );
+        macro_rules! edge {
+            ($name:literal) => {
+                env.call_method(&insets, jni::jni_str!($name), jni::jni_sig!("()I"), &[])
+                    .and_then(|v| v.i())
+                    .map_err(|e| {
+                        env.exception_clear();
+                        e.to_string()
+                    })?
+            };
+        }
+        Ok((
+            edge!("getSystemWindowInsetLeft"),
+            edge!("getSystemWindowInsetTop"),
+            edge!("getSystemWindowInsetRight"),
+            edge!("getSystemWindowInsetBottom"),
+        ))
+    })
+    .ok()
+}
+
+/// Recompute the window's safe area from the content rect and the system bars.
+fn refresh_safe_area(app: &AndroidApp, win: &super::window::AndroidWindow) {
+    let cr = app.content_rect();
+    win.update_safe_area(
+        (cr.left, cr.top, cr.right, cr.bottom),
+        query_system_bar_insets(),
+    );
 }
 
 /// Pause all platform views when the app goes to background.
