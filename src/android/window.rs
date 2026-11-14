@@ -35,9 +35,9 @@
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot;
 use gpui::{
-    self, AtlasKey, AtlasTile, Capslock, DispatchEventResult, GpuSpecs, Modifiers, PlatformAtlas,
-    PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton, PromptLevel,
-    RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    self, AtlasKey, AtlasTile, Capslock, DispatchEventResult, FrameRequestSource, GpuSpecs,
+    Modifiers, PlatformAtlas, PlatformDisplay, PlatformInputHandler, PlatformWindow, PromptButton,
+    PromptLevel, RequestFrameOptions, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowVisibility,
 };
 use gpui_wgpu::{wgpu, GpuContext, WgpuRenderer, WgpuSurfaceConfig};
@@ -1032,7 +1032,7 @@ impl AndroidWindow {
     /// Returns GPU specs from the renderer, if available.
     pub fn gpu_specs(&self) -> Option<GpuSpecs> {
         let state = self.state.lock();
-        state.renderer.as_ref().map(|r| r.gpu_specs())
+        state.renderer.as_ref().map(|r| r.gpu_specs())?
     }
 
     /// Whether the window is currently active / visible.
@@ -1241,6 +1241,10 @@ impl HasDisplayHandle for AndroidPlatformWindow {
 }
 
 impl PlatformWindow for AndroidPlatformWindow {
+    fn on_display_changed(&self, _: Box<dyn FnMut() + 'static>) {
+        // No-op: display changes are handled by the system on Android.
+    }
+
     fn bounds(&self) -> gpui::Bounds<gpui::Pixels> {
         let state = self.window.state.lock();
         let w = state.width as f32 / state.scale_factor;
@@ -1412,9 +1416,12 @@ impl PlatformWindow for AndroidPlatformWindow {
             let surface_new = force_render_once.swap(false, std::sync::atomic::Ordering::AcqRel);
 
             let mut cb = send_callback.lock();
+            //I added signal_at and signal_source after updating gpui to v0.3.11
             cb(RequestFrameOptions {
                 require_presentation: false,
                 force_render: text_dirty || surface_new,
+                signal_at: None,
+                signal_source: FrameRequestSource::default(),
             });
         });
     }

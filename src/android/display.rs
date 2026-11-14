@@ -20,7 +20,7 @@ use super::{Bounds, DevicePixels, Pixels, Point, Size};
 use anyhow::Result;
 use gpui::{self, DisplayId, PlatformDisplay};
 use ndk::native_window::NativeWindow;
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use ndk::asset::AssetManager;
 use ndk::configuration::Configuration;
@@ -245,6 +245,10 @@ impl PlatformDisplay for AndroidDisplay {
             origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
             size: gpui::size(gpui::px(logical.width.0), gpui::px(logical.height.0)),
         }
+    }
+
+    fn refresh_interval(&self) -> Option<Duration> {
+        None
     }
 }
 

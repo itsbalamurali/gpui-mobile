@@ -37,9 +37,9 @@ use futures::channel::oneshot;
 use gpui::{
     Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
     ForegroundExecutor, GestureTuning, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem,
-    PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, ScrollPhysics, Task, ThermalState,
-    WindowAppearance, WindowParams,
+    OperatingSystem, PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformInfo,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem,
+    PlatformWindow, ScrollPhysics, Task, ThermalState, WindowAppearance, WindowParams,
 };
 use gpui_wgpu::CosmicTextSystem;
 use parking_lot::Mutex;
@@ -987,6 +987,16 @@ impl PlatformGestures for AndroidGestures {
 // file pickers, etc.) are no-ops or return sensible defaults.
 
 impl Platform for AndroidPlatform {
+    fn platform_info(&self) -> PlatformInfo {
+        PlatformInfo {
+            os: OperatingSystem::Android,
+            target: PlatformTarget::Native,
+        }
+    }
+    fn on_displays_changed(&self, _: Box<dyn FnMut() + 'static>) {
+        // No-op on Android
+    }
+
     fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
         Some(Rc::new(AndroidGestures))
     }
@@ -1340,6 +1350,16 @@ impl SharedPlatform {
 /// so the compiler never accidentally picks the inherent method (which may
 /// have a different return type).
 impl Platform for SharedPlatform {
+    fn platform_info(&self) -> PlatformInfo {
+        PlatformInfo {
+            os: OperatingSystem::Android,
+            target: PlatformTarget::Native,
+        }
+    }
+    fn on_displays_changed(&self, _: Box<dyn FnMut() + 'static>) {
+        // No-op on Android
+    }
+
     fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
         <AndroidPlatform as Platform>::gestures(&self.0)
     }
