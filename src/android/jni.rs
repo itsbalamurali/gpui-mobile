@@ -667,6 +667,16 @@ pub fn run_event_loop(app: &AndroidApp) {
             _ => {}
         });
 
+        // ── Main-thread tasks ──
+        //
+        // The dispatcher wakes the looper (`PollEvent::Wake`) when a task is
+        // queued for this thread; run them here, every iteration, whether or
+        // not a window is up, so work such as HTTP responses keeps moving
+        // while the app is in the background.
+        if let Some(platform) = PLATFORM.get() {
+            platform.flush_main_thread_tasks();
+        }
+
         // ── Deferred lifecycle processing ──
         //
         // Between each handler, call poll_events again to drain any
