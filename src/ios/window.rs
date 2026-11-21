@@ -943,6 +943,7 @@ impl IosWindow {
                 position,
                 predicted_position: None,
                 force: None,
+                timestamp: None,
             };
             self.fling_guard.borrow_mut().relay(
                 event,

@@ -528,6 +528,7 @@ fn process_input_events(app: &AndroidApp) {
                                     x: pointer.x(),
                                     y: pointer.y(),
                                     action: touch_action,
+                                    event_time_ns: Some(motion_event.event_time()),
                                 };
 
                                 log::debug!(

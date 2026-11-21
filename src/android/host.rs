@@ -410,6 +410,7 @@ pub fn motion_event(action: u32, action_index: usize, pointers: &[Pointer]) -> b
             x: pointer.x,
             y: pointer.y,
             action: touch_action,
+            event_time_ns: None,
         }));
     }
     true
