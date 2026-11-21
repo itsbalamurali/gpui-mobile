@@ -234,6 +234,29 @@ pub struct TouchPoint {
     pub y: f32,
     /// `AMOTION_EVENT_ACTION_*` action masked to a single pointer.
     pub action: u32,
+    /// When the hardware sampled the touch, in `System.nanoTime()`'s time
+    /// base (`CLOCK_MONOTONIC`), if the source reports it.
+    pub event_time_ns: Option<i64>,
+}
+
+impl TouchPoint {
+    /// [`Self::event_time_ns`] as an [`std::time::Instant`]. Both read
+    /// `CLOCK_MONOTONIC` on Android, so the sample's age converts exactly.
+    pub(crate) fn sampled_at(&self) -> Option<std::time::Instant> {
+        let event_time_ns = self.event_time_ns?;
+        let now = std::time::Instant::now();
+        let mut monotonic = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `monotonic` is a valid, writable timespec.
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut monotonic) } != 0 {
+            return None;
+        }
+        let now_ns = monotonic.tv_sec as i64 * 1_000_000_000 + monotonic.tv_nsec as i64;
+        let age_ns = now_ns.saturating_sub(event_time_ns).max(0) as u64;
+        now.checked_sub(std::time::Duration::from_nanos(age_ns))
+    }
 }
 
 // ── shared logging helper ─────────────────────────────────────────────────────
