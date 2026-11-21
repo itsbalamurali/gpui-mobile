@@ -947,9 +947,13 @@ impl AndroidPlatform {
 
     /// Drain all pending main-thread tasks synchronously.
     ///
-    /// Useful in headless tests where there is no real ALooper.
+    /// The main loop calls this each time the looper wakes it; headless tests
+    /// call it directly. The state lock is released before any task runs:
+    /// tasks call back into the platform (clipboard, `open_url`, displays…),
+    /// and `parking_lot::Mutex` is not re-entrant.
     pub fn flush_main_thread_tasks(&self) {
-        self.state.lock().dispatcher.flush_main_thread_tasks();
+        let dispatcher = Arc::clone(&self.state.lock().dispatcher);
+        dispatcher.flush_main_thread_tasks();
     }
 }
 
