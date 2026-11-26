@@ -87,6 +87,28 @@ static INIT_WINDOW_PENDING: AtomicBool = AtomicBool::new(false);
 static WINDOW_RESIZED_PENDING: AtomicBool = AtomicBool::new(false);
 static CONFIG_CHANGED_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// GPUI consumed the key-down of the Back press in flight, so its key-up is
+/// GPUI's too.
+static BACK_DOWN_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+/// Who answers a key event: GPUI or the Activity.
+///
+/// Every key stays with GPUI except Back when nothing in the app consumed it:
+/// that one falls through so the Activity leaves the app as Android expects.
+/// The Activity only acts when it sees both halves of the press, so the key-up
+/// follows what happened to its key-down.
+fn key_falls_through_to_activity(key_code: i32, is_down: bool, consumed_by_gpui: bool) -> bool {
+    if key_code != super::keyboard::AKEYCODE_BACK {
+        return false;
+    }
+    if is_down {
+        BACK_DOWN_CONSUMED.store(consumed_by_gpui, Ordering::Release);
+        !consumed_by_gpui
+    } else {
+        !BACK_DOWN_CONSUMED.swap(false, Ordering::AcqRel)
+    }
+}
+
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use super::platform::{AndroidPlatform, SharedPlatform};
@@ -575,8 +597,16 @@ fn process_input_events(app: &AndroidApp) {
                                 unicode_char,
                             };
 
+                            super::window::LAST_KEY_CONSUMED.store(false, Ordering::Release);
                             win.handle_key_event(key_event);
-                            android_activity::InputStatus::Handled
+                            let consumed =
+                                super::window::LAST_KEY_CONSUMED.load(Ordering::Acquire);
+                            if key_falls_through_to_activity(key_code as i32, action == 0, consumed)
+                            {
+                                android_activity::InputStatus::Unhandled
+                            } else {
+                                android_activity::InputStatus::Handled
+                            }
                         }
                         _ => android_activity::InputStatus::Unhandled,
                     }
@@ -737,10 +767,7 @@ pub fn run_event_loop(app: &AndroidApp) {
                         // Trigger GPUI resize so layout adapts to new dimensions.
                         existing.handle_resize();
 
-                        let cr = app.content_rect();
-                        existing.update_safe_area_from_content_rect(
-                            cr.left, cr.top, cr.right, cr.bottom,
-                        );
+                        refresh_safe_area(app, &existing);
 
                         INIT_WINDOW_DONE.store(true, Ordering::Relaxed);
                     } else {
@@ -752,10 +779,7 @@ pub fn run_event_loop(app: &AndroidApp) {
                                     scale_factor
                                 );
 
-                                let cr = app.content_rect();
-                                win.update_safe_area_from_content_rect(
-                                    cr.left, cr.top, cr.right, cr.bottom,
-                                );
+                                refresh_safe_area(app, &win);
                             }
                             Err(e) => {
                                 log::error!("failed to open window: {e:#}");
@@ -774,8 +798,7 @@ pub fn run_event_loop(app: &AndroidApp) {
             if let Some(platform) = PLATFORM.get() {
                 if let Some(win) = platform.primary_window() {
                     win.handle_resize();
-                    let cr = app.content_rect();
-                    win.update_safe_area_from_content_rect(cr.left, cr.top, cr.right, cr.bottom);
+                    refresh_safe_area(app, &win);
                 }
             }
         }
@@ -817,6 +840,8 @@ pub fn run_event_loop(app: &AndroidApp) {
                 platform.did_become_active();
                 if let Some(win) = platform.primary_window() {
                     win.set_active(true);
+                    // The root insets may only be known once the window has focus.
+                    refresh_safe_area(app, &win);
                 }
             }
             // Resume platform views
@@ -895,6 +920,63 @@ pub fn run_event_loop(app: &AndroidApp) {
     }
 
     log::info!("run_event_loop: exiting main loop");
+}
+
+/// System-bar and display-cutout insets of the Activity window, in physical
+/// pixels as `(left, top, right, bottom)`. `None` when the decor view has no
+/// root insets yet or a JNI call fails.
+fn query_system_bar_insets() -> Option<(i32, i32, i32, i32)> {
+    with_env(|env| {
+        let activity_obj = activity(env)?;
+        macro_rules! object {
+            ($target:expr, $name:literal, $sig:literal) => {{
+                let value = env
+                    .call_method($target, jni::jni_str!($name), jni::jni_sig!($sig), &[])
+                    .and_then(|v| v.l())
+                    .map_err(|e| {
+                        env.exception_clear();
+                        e.to_string()
+                    })?;
+                if value.is_null() {
+                    return Err(concat!($name, " returned null").into());
+                }
+                value
+            }};
+        }
+        let window = object!(&activity_obj, "getWindow", "()Landroid/view/Window;");
+        let decor = object!(&window, "getDecorView", "()Landroid/view/View;");
+        let insets = object!(
+            &decor,
+            "getRootWindowInsets",
+            "()Landroid/view/WindowInsets;"
+        );
+        macro_rules! edge {
+            ($name:literal) => {
+                env.call_method(&insets, jni::jni_str!($name), jni::jni_sig!("()I"), &[])
+                    .and_then(|v| v.i())
+                    .map_err(|e| {
+                        env.exception_clear();
+                        e.to_string()
+                    })?
+            };
+        }
+        Ok((
+            edge!("getSystemWindowInsetLeft"),
+            edge!("getSystemWindowInsetTop"),
+            edge!("getSystemWindowInsetRight"),
+            edge!("getSystemWindowInsetBottom"),
+        ))
+    })
+    .ok()
+}
+
+/// Recompute the window's safe area from the content rect and the system bars.
+fn refresh_safe_area(app: &AndroidApp, win: &super::window::AndroidWindow) {
+    let cr = app.content_rect();
+    win.update_safe_area(
+        (cr.left, cr.top, cr.right, cr.bottom),
+        query_system_bar_insets(),
+    );
 }
 
 /// Pause all platform views when the app goes to background.
@@ -1532,6 +1614,27 @@ mod tests {
         // be a safe no-op and return false (don't quit).
         let result = poll_events(0);
         let _ = result;
+    }
+
+    #[test]
+    fn back_falls_through_only_when_gpui_ignores_it() {
+        let back = super::super::keyboard::AKEYCODE_BACK;
+
+        // Nothing in the app took Back: both halves go to the Activity.
+        assert!(key_falls_through_to_activity(back, true, false));
+        assert!(key_falls_through_to_activity(back, false, false));
+
+        // GPUI consumed the key-down: its key-up stays with GPUI as well.
+        assert!(!key_falls_through_to_activity(back, true, true));
+        assert!(!key_falls_through_to_activity(back, false, false));
+
+        // A consumed press does not leak into the next one.
+        assert!(key_falls_through_to_activity(back, true, false));
+        assert!(key_falls_through_to_activity(back, false, false));
+
+        // Every other key stays with GPUI, consumed or not.
+        assert!(!key_falls_through_to_activity(66, true, false));
+        assert!(!key_falls_through_to_activity(66, false, false));
     }
 
     #[test]
