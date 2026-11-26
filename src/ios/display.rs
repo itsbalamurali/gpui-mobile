@@ -8,6 +8,7 @@ use gpui::{px, size, Bounds, DisplayId, Pixels, PlatformDisplay};
 use objc2::{class, msg_send};
 
 use super::cg_types::ObjcCGRect;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Represents an iOS display (UIScreen).
@@ -65,6 +66,10 @@ impl IosDisplay {
 }
 
 impl PlatformDisplay for IosDisplay {
+    fn refresh_interval(&self) -> Option<Duration> {
+        None
+    }
+
     fn id(&self) -> DisplayId {
         // iOS doesn't have display IDs like macOS, so we use the screen pointer as an ID
         DisplayId::new(self.screen as u64)

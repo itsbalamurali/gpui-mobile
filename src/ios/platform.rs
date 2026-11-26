@@ -13,9 +13,10 @@ use anyhow::anyhow;
 use futures::channel::oneshot;
 use gpui::{
     Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
-    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Result, Task, ThermalState, WindowAppearance, WindowParams,
+    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, OperatingSystem,
+    PathPromptOptions, Platform, PlatformDisplay, PlatformInfo, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTarget, PlatformTextSystem, PlatformWindow, Result, Task,
+    ThermalState, WindowAppearance, WindowParams,
 };
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
@@ -76,6 +77,17 @@ impl PlatformKeyboardLayout for IosKeyboardLayout {
 }
 
 impl Platform for IosPlatform {
+    fn platform_info(&self) -> PlatformInfo {
+        PlatformInfo {
+            os: OperatingSystem::Ios,
+            target: PlatformTarget::Native,
+        }
+    }
+
+    fn on_displays_changed(&self, _: Box<dyn FnMut() + 'static>) {
+        // No-op on iOS
+    }
+
     fn background_executor(&self) -> BackgroundExecutor {
         self.0.lock().background_executor.clone()
     }
