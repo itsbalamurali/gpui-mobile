@@ -2,9 +2,10 @@
 //!
 //! Mirrors the two-queue model used in `gpui_linux` and `IosDispatcher`:
 //!
-//! * **Foreground / main-thread tasks** — posted via a pipe-backed `ALooper`
-//!   callback so they run on the Android native-activity main thread (the same
-//!   thread that owns the `ANativeWindow` and processes input events).
+//! * **Foreground / main-thread tasks** — queued for the Android
+//!   native-activity main thread (the same thread that owns the
+//!   `ANativeWindow` and processes input events), which runs them from its
+//!   event loop.
 //!
 //! * **Background tasks** — dispatched onto a fixed-size Rust thread-pool
 //!   backed by `std::thread`.  The pool size defaults to
@@ -13,9 +14,17 @@
 //! ## Design notes
 //!
 //! `ALooper` (NDK) is the native equivalent of GCD's main queue or a Linux
-//! `epoll` loop.  We register a pipe file-descriptor with `ALooper_addFd` and
-//! write a single byte to wake it up whenever a foreground task is enqueued.
-//! The looper callback drains all pending tasks before returning.
+//! `epoll` loop.  Enqueueing a foreground task calls `ALooper_wake`, so a main
+//! loop blocked in `ALooper_pollOnce` returns, and the loop then drains the
+//! queue with [`AndroidDispatcher::flush_main_thread_tasks`].
+//!
+//! The wake carries no callback on purpose. `android-activity` polls this
+//! looper itself and logs every source it did not register as an error: a
+//! looper callback comes back as `Spurious ALOOPER_POLL_CALLBACK`, and an fd
+//! registered with an ident as `Ignoring spurious ALooper event source`.
+//! `ALOOPER_POLL_WAKE` is the one result it accepts silently. Running the
+//! tasks from the loop also gives them a fixed place in each iteration
+//! instead of inside `android-activity`'s poll.
 //!
 //! ## GPUI integration
 //!
@@ -26,7 +35,6 @@
 
 use std::{
     collections::VecDeque,
-    os::unix::io::RawFd,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -37,31 +45,11 @@ use std::{
 use gpui::{PlatformDispatcher, Priority, RunnableVariant};
 use parking_lot::Mutex;
 
-// ── NDK / libc symbols we need ────────────────────────────────────────────────
-
-/// `ALOOPER_POLL_CALLBACK` — the fd was signalled and the callback fired.
-#[allow(dead_code)]
-const ALOOPER_POLL_CALLBACK: i32 = -2;
-
-/// `ALOOPER_EVENT_INPUT` — data is available to read on the fd.
-const ALOOPER_EVENT_INPUT: i32 = 1;
+// ── NDK symbols we need ───────────────────────────────────────────────────────
 
 unsafe extern "C" {
     /// Returns the looper associated with the calling thread, or null.
     fn ALooper_forThread() -> *mut libc_looper_opaque;
-    /// Adds a file-descriptor to the looper.
-    fn ALooper_addFd(
-        looper: *mut libc_looper_opaque,
-        fd: RawFd,
-        ident: i32,
-        events: i32,
-        callback: Option<
-            unsafe extern "C" fn(fd: RawFd, events: i32, data: *mut std::ffi::c_void) -> i32,
-        >,
-        data: *mut std::ffi::c_void,
-    ) -> i32;
-    /// Removes a file-descriptor from the looper.
-    fn ALooper_removeFd(looper: *mut libc_looper_opaque, fd: RawFd) -> i32;
     /// Returns from a blocking poll on the looper; safe from any thread.
     fn ALooper_wake(looper: *mut libc_looper_opaque);
 }
@@ -75,13 +63,6 @@ struct libc_looper_opaque {
 // ── task queue ────────────────────────────────────────────────────────────────
 
 type BoxedTask = Box<dyn FnOnce() + Send + 'static>;
-
-/// Shared state between the dispatcher and the looper callback.
-struct MainQueue {
-    tasks: VecDeque<BoxedTask>,
-    /// Write end of the wake pipe.
-    write_fd: RawFd,
-}
 
 // ── thread-pool ───────────────────────────────────────────────────────────────
 
@@ -134,16 +115,15 @@ struct DelayedTask {
 
 /// GPUI dispatcher for Android.
 ///
-/// * Foreground tasks run on the Android main/native thread via `ALooper`.
+/// * Foreground tasks run on the Android main/native thread, from the main
+///   loop's call to `flush_main_thread_tasks()` after the looper wakes it.
 /// * Background tasks run on a Rust thread-pool.
 /// * Delayed tasks are checked on each `tick()` call (driven by the main loop).
 pub struct AndroidDispatcher {
-    /// Shared task queue + wake pipe for the main thread.
-    main_queue: Arc<Mutex<MainQueue>>,
-    /// Read end of the wake pipe (owned here for clean shutdown).
-    read_fd: RawFd,
-    /// Raw pointer to the main-thread `ALooper` (not `Send` — used only on the
-    /// main thread).
+    /// Tasks waiting to run on the main thread.
+    main_queue: Mutex<VecDeque<BoxedTask>>,
+    /// Raw pointer to the main-thread `ALooper`: compared in
+    /// `is_main_thread` and woken (from any thread) by `wake_looper`.
     looper: *mut libc_looper_opaque,
     /// Background thread-pool.
     pool: ThreadPool,
@@ -153,10 +133,10 @@ pub struct AndroidDispatcher {
     shutdown: AtomicBool,
 }
 
-// SAFETY: The `looper` pointer is only ever used on the main thread
-// (in `register_with_looper` and `unregister`), except for `ALooper_wake`,
-// which is documented as safe from any thread.  The rest of the fields are
-// `Send`-safe via `Mutex` / `Arc`.
+// SAFETY: The `looper` pointer is only compared against `ALooper_forThread()`
+// and passed to `ALooper_wake`, which is documented as safe from any thread;
+// the looper outlives the dispatcher.  The rest of the fields are `Send`-safe
+// via `Mutex`.
 unsafe impl Send for AndroidDispatcher {}
 unsafe impl Sync for AndroidDispatcher {}
 
@@ -168,13 +148,9 @@ impl AndroidDispatcher {
     ///
     /// # Panics
     ///
-    /// Panics if:
-    /// * `pipe(2)` fails.
-    /// * `ALooper_forThread()` returns null (i.e. not called on main thread).
+    /// Panics if `ALooper_forThread()` returns null (i.e. not called on the
+    /// main thread).
     pub fn new() -> Arc<Self> {
-        // Create wake pipe.
-        let (read_fd, write_fd) = create_pipe().expect("failed to create wake pipe");
-
         let looper = unsafe { ALooper_forThread() };
         assert!(
             !looper.is_null(),
@@ -186,23 +162,13 @@ impl AndroidDispatcher {
             .unwrap_or(4)
             .max(2);
 
-        let main_queue = Arc::new(Mutex::new(MainQueue {
-            tasks: VecDeque::new(),
-            write_fd,
-        }));
-
         let dispatcher = Arc::new(Self {
-            main_queue: Arc::clone(&main_queue),
-            read_fd,
+            main_queue: Mutex::new(VecDeque::new()),
             looper,
             pool: ThreadPool::new(pool_threads),
             delayed: Mutex::new(Vec::new()),
             shutdown: AtomicBool::new(false),
         });
-
-        // Register the read end of the pipe with the looper so we get a
-        // callback whenever a foreground task is enqueued.
-        dispatcher.register_with_looper();
 
         log::debug!("AndroidDispatcher created (pool_threads={})", pool_threads);
 
@@ -215,21 +181,13 @@ impl AndroidDispatcher {
     /// and unit tests).  Foreground tasks accumulate in the queue and must
     /// be drained manually via `flush_main_thread_tasks()`.
     pub fn new_headless() -> Arc<Self> {
-        let (read_fd, write_fd) = create_pipe().expect("failed to create wake pipe");
-
         let pool_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(2)
             .max(1);
 
-        let main_queue = Arc::new(Mutex::new(MainQueue {
-            tasks: VecDeque::new(),
-            write_fd,
-        }));
-
         Arc::new(Self {
-            main_queue,
-            read_fd,
+            main_queue: Mutex::new(VecDeque::new()),
             looper: std::ptr::null_mut(), // no real looper in headless mode
             pool: ThreadPool::new(pool_threads),
             delayed: Mutex::new(Vec::new()),
@@ -253,12 +211,19 @@ impl AndroidDispatcher {
     where
         F: FnOnce() + Send + 'static,
     {
+        self.push_main_task(Box::new(f));
+    }
+
+    /// Queues `task` for the main thread and wakes its loop. Wakes even when
+    /// called on the main thread: a task queued outside
+    /// `flush_main_thread_tasks` (from input or rendering) must not wait for
+    /// an unrelated wakeup.
+    fn push_main_task(&self, task: BoxedTask) {
         if self.shutdown.load(Ordering::Relaxed) {
             return;
         }
-        let mut q = self.main_queue.lock();
-        q.tasks.push_back(Box::new(f));
-        wake_pipe(q.write_fd);
+        self.main_queue.lock().push_back(task);
+        self.wake_looper();
     }
 
     /// Enqueue a task on the **background** thread-pool.
@@ -298,9 +263,9 @@ impl AndroidDispatcher {
         self.delayed.lock().first().map(|d| d.due)
     }
 
-    /// Interrupts a main loop blocked on the looper so it re-reads
-    /// `next_delayed_due()`; a delayed task posted from another thread would
-    /// otherwise wait for an unrelated wakeup.
+    /// Interrupts a main loop blocked on the looper so it drains the main
+    /// queue and re-reads `next_delayed_due()`; work posted from another
+    /// thread would otherwise wait for an unrelated wakeup.
     fn wake_looper(&self) {
         if !self.looper.is_null() {
             // SAFETY: `ALooper_wake` is documented as safe from any thread,
@@ -329,13 +294,13 @@ impl AndroidDispatcher {
 
     /// Drain all pending **main-thread** tasks synchronously.
     ///
-    /// Useful in tests or when the looper callback is not set up.
+    /// The main loop calls this every time the looper wakes it. Tasks queued
+    /// while it runs (including by the tasks themselves) run in the same call.
     pub fn flush_main_thread_tasks(&self) {
         loop {
-            let task = {
-                let mut q = self.main_queue.lock();
-                q.tasks.pop_front()
-            };
+            // The guard is dropped before the task runs, so a task can queue
+            // more tasks.
+            let task = self.main_queue.lock().pop_front();
             match task {
                 Some(f) => f(),
                 None => break,
@@ -346,44 +311,6 @@ impl AndroidDispatcher {
     /// Stop accepting new tasks and signal the thread-pool to wind down.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        self.unregister_from_looper();
-    }
-
-    // ── private helpers ───────────────────────────────────────────────────────
-
-    fn register_with_looper(&self) {
-        // We pass `main_queue` as the callback data pointer.  The callback
-        // is a free `extern "C"` function that reconstructs the Arc from the
-        // raw pointer.
-        //
-        // SAFETY: `self` outlives the looper registration because we hold an
-        // `Arc<Self>` for the lifetime of the process (stored in
-        // `GLOBAL_DISPATCHER`).
-        let data_ptr = Arc::into_raw(Arc::clone(&self.main_queue)) as *mut std::ffi::c_void;
-
-        let ret = unsafe {
-            ALooper_addFd(
-                self.looper,
-                self.read_fd,
-                0, // ident — unused when callback is Some
-                ALOOPER_EVENT_INPUT,
-                Some(looper_callback),
-                data_ptr,
-            )
-        };
-
-        if ret != 1 {
-            log::warn!(
-                "ALooper_addFd returned {} (expected 1); foreground dispatch may not work",
-                ret
-            );
-        }
-    }
-
-    fn unregister_from_looper(&self) {
-        unsafe {
-            ALooper_removeFd(self.looper, self.read_fd);
-        }
     }
 }
 
@@ -394,124 +321,6 @@ impl Default for AndroidDispatcher {
              on the main thread"
         );
     }
-}
-
-impl Drop for AndroidDispatcher {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.unregister_from_looper();
-        // Close file descriptors.
-        unsafe {
-            libc_close(self.read_fd);
-            libc_close(self.main_queue.lock().write_fd);
-        }
-    }
-}
-
-// ── ALooper callback ──────────────────────────────────────────────────────────
-
-/// Called by `ALooper` on the main thread when the wake pipe becomes readable.
-///
-/// Drains the entire task queue before returning 1 (keep the fd registered).
-unsafe extern "C" fn looper_callback(fd: RawFd, _events: i32, data: *mut std::ffi::c_void) -> i32 {
-    // Reconstruct the Arc without dropping it (we'll re-leak at the end).
-    let queue_arc = unsafe { Arc::from_raw(data as *const Mutex<MainQueue>) };
-
-    // Drain the wake pipe (ignore errors — just consume the byte(s)).
-    let mut buf = [0u8; 64];
-    loop {
-        let n = unsafe { libc_read(fd, buf.as_mut_ptr() as *mut std::ffi::c_void, buf.len()) };
-        if n <= 0 {
-            break;
-        }
-    }
-
-    // Run all queued tasks.
-    loop {
-        let task = {
-            let mut q = queue_arc.lock();
-            q.tasks.pop_front()
-        };
-        match task {
-            Some(f) => f(),
-            None => break,
-        }
-    }
-
-    // Leak the Arc again so it isn't freed — the data pointer lifetime is
-    // managed by `AndroidDispatcher`.
-    std::mem::forget(queue_arc);
-
-    1 // keep fd registered
-}
-
-// ── pipe helpers ──────────────────────────────────────────────────────────────
-
-fn create_pipe() -> std::io::Result<(RawFd, RawFd)> {
-    let mut fds = [0i32; 2];
-    let ret = unsafe { libc_pipe(fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // Set both ends non-blocking so we never block in the callback.
-    set_nonblocking(fds[0]);
-    set_nonblocking(fds[1]);
-    Ok((fds[0], fds[1]))
-}
-
-fn set_nonblocking(fd: RawFd) {
-    unsafe {
-        let flags = libc_fcntl(fd, LIBC_F_GETFL, 0);
-        if flags >= 0 {
-            libc_fcntl(fd, LIBC_F_SETFL, flags | LIBC_O_NONBLOCK);
-        }
-    }
-}
-
-/// Write a single wake byte to the pipe.
-fn wake_pipe(write_fd: RawFd) {
-    let buf = [1u8; 1];
-    unsafe {
-        libc_write(write_fd, buf.as_ptr() as *const std::ffi::c_void, 1);
-    }
-}
-
-// ── minimal libc bindings ─────────────────────────────────────────────────────
-// We declare only the symbols we actually use, keeping the dependency surface
-// small.  The `libc` crate could be used here instead, but this avoids adding
-// a workspace dependency just for this module.
-
-const LIBC_F_GETFL: i32 = 3;
-const LIBC_F_SETFL: i32 = 4;
-const LIBC_O_NONBLOCK: i32 = 0o4000;
-
-unsafe extern "C" {
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
-    fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
-    fn close(fd: i32) -> i32;
-    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-}
-
-#[inline(always)]
-unsafe fn libc_pipe(fds: *mut i32) -> i32 {
-    unsafe { pipe(fds) }
-}
-#[inline(always)]
-unsafe fn libc_read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize {
-    unsafe { read(fd, buf, count) }
-}
-#[inline(always)]
-unsafe fn libc_write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize {
-    unsafe { write(fd, buf, count) }
-}
-#[inline(always)]
-unsafe fn libc_close(fd: i32) -> i32 {
-    unsafe { close(fd) }
-}
-#[inline(always)]
-unsafe fn libc_fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
-    unsafe { fcntl(fd, cmd, arg) }
 }
 
 // ── impl PlatformDispatcher ───────────────────────────────────────────────────
@@ -532,14 +341,9 @@ impl PlatformDispatcher for AndroidDispatcher {
     }
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, _priority: Priority) {
-        if self.shutdown.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut q = self.main_queue.lock();
-        q.tasks.push_back(Box::new(move || {
+        self.push_main_task(Box::new(move || {
             runnable.run();
         }));
-        wake_pipe(q.write_fd);
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
@@ -602,22 +406,7 @@ mod tests {
     /// Verify that delayed tasks are not dispatched before their due time.
     #[test]
     fn delayed_tasks_not_early() {
-        // Build a dispatcher without a real looper by constructing state manually.
-        let (read_fd, write_fd) = create_pipe().unwrap();
-
-        let main_queue = Arc::new(Mutex::new(MainQueue {
-            tasks: VecDeque::new(),
-            write_fd,
-        }));
-
-        let dispatcher = AndroidDispatcher {
-            main_queue,
-            read_fd,
-            looper: std::ptr::null_mut(),
-            pool: ThreadPool::new(1),
-            delayed: Mutex::new(Vec::new()),
-            shutdown: AtomicBool::new(false),
-        };
+        let dispatcher = AndroidDispatcher::new_headless();
 
         let ran = Arc::new(AtomicBool::new(false));
         let ran2 = Arc::clone(&ran);
@@ -628,23 +417,40 @@ mod tests {
 
         dispatcher.tick();
         assert!(!ran.load(Ordering::Relaxed), "task should not run yet");
-
-        // Cleanup — prevent Drop from calling ALooper_removeFd with a null pointer.
-        dispatcher.shutdown.store(true, Ordering::SeqCst);
-        std::mem::forget(dispatcher); // skip Drop (null looper)
-        unsafe {
-            libc_close(read_fd);
-            libc_close(write_fd);
-        }
     }
 
-    /// Verify pipe creation succeeds.
+    /// Main-thread tasks wait in the queue until the loop flushes it, and a
+    /// task queued by a running task runs in the same flush.
     #[test]
-    fn pipe_creation() {
-        let (r, w) = create_pipe().expect("pipe");
-        unsafe {
-            libc_close(r);
-            libc_close(w);
-        }
+    fn main_thread_tasks_run_on_flush() {
+        let dispatcher = AndroidDispatcher::new_headless();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let first = Arc::clone(&order);
+        let inner_dispatcher = Arc::clone(&dispatcher);
+        dispatcher.dispatch_on_main_thread(move || {
+            first.lock().push(1);
+            let nested = Arc::clone(&first);
+            inner_dispatcher.dispatch_on_main_thread(move || nested.lock().push(3));
+        });
+        let second = Arc::clone(&order);
+        dispatcher.dispatch_on_main_thread(move || second.lock().push(2));
+
+        assert!(order.lock().is_empty(), "nothing runs before the flush");
+        dispatcher.flush_main_thread_tasks();
+        assert_eq!(*order.lock(), vec![1, 2, 3]);
+    }
+
+    /// After `shutdown()` no new main-thread tasks are accepted.
+    #[test]
+    fn shutdown_drops_new_main_thread_tasks() {
+        let dispatcher = AndroidDispatcher::new_headless();
+        dispatcher.shutdown();
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran2 = Arc::clone(&ran);
+        dispatcher.dispatch_on_main_thread(move || ran2.store(true, Ordering::Relaxed));
+        dispatcher.flush_main_thread_tasks();
+        assert!(!ran.load(Ordering::Relaxed));
     }
 }
