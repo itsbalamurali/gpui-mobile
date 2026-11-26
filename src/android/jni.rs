@@ -687,7 +687,7 @@ pub fn run_event_loop(app: &AndroidApp) {
         if TERM_WINDOW_PENDING.swap(false, Ordering::Relaxed) {
             log::info!("deferred: TerminateWindow (iter={})", iteration);
             INIT_WINDOW_DONE.store(false, Ordering::Relaxed);
-            *LAST_CHROME_STYLE.lock().unwrap() = None;
+            reset_chrome_style();
             if let Some(platform) = PLATFORM.get() {
                 if let Some(win) = platform.primary_window() {
                     win.term_window();
@@ -811,7 +811,6 @@ pub fn run_event_loop(app: &AndroidApp) {
             }
             // Resume platform views
             resume_platform_views();
-            rearm_deferred_system_chrome();
             rearm_deferred_system_chrome();
         }
 
