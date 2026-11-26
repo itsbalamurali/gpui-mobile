@@ -103,7 +103,7 @@ ndk-context = "0.1"
 ndk-sys     = "0.6"
 
 # Activity glue layer
-android-activity = { version = "0.6", features = ["native-activity"] }
+android-activity = { version = "0.6.1", features = ["native-activity"] }
 
 # Logging to logcat
 android_logger = "0.15"

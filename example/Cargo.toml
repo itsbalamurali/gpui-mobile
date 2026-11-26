@@ -28,7 +28,7 @@ objc2 = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
-android-activity = { version = "0.6", features = ["native-activity"] }
+android-activity = { version = "0.6.1", features = ["native-activity"] }
 
 [profile.release]
 opt-level = "z"
