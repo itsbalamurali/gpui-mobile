@@ -87,6 +87,28 @@ static INIT_WINDOW_PENDING: AtomicBool = AtomicBool::new(false);
 static WINDOW_RESIZED_PENDING: AtomicBool = AtomicBool::new(false);
 static CONFIG_CHANGED_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// GPUI consumed the key-down of the Back press in flight, so its key-up is
+/// GPUI's too.
+static BACK_DOWN_CONSUMED: AtomicBool = AtomicBool::new(false);
+
+/// Who answers a key event: GPUI or the Activity.
+///
+/// Every key stays with GPUI except Back when nothing in the app consumed it:
+/// that one falls through so the Activity leaves the app as Android expects.
+/// The Activity only acts when it sees both halves of the press, so the key-up
+/// follows what happened to its key-down.
+fn key_falls_through_to_activity(key_code: i32, is_down: bool, consumed_by_gpui: bool) -> bool {
+    if key_code != super::keyboard::AKEYCODE_BACK {
+        return false;
+    }
+    if is_down {
+        BACK_DOWN_CONSUMED.store(consumed_by_gpui, Ordering::Release);
+        !consumed_by_gpui
+    } else {
+        !BACK_DOWN_CONSUMED.swap(false, Ordering::AcqRel)
+    }
+}
+
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 
 use super::platform::{AndroidPlatform, SharedPlatform};
@@ -575,8 +597,16 @@ fn process_input_events(app: &AndroidApp) {
                                 unicode_char,
                             };
 
+                            super::window::LAST_KEY_CONSUMED.store(false, Ordering::Release);
                             win.handle_key_event(key_event);
-                            android_activity::InputStatus::Handled
+                            let consumed =
+                                super::window::LAST_KEY_CONSUMED.load(Ordering::Acquire);
+                            if key_falls_through_to_activity(key_code as i32, action == 0, consumed)
+                            {
+                                android_activity::InputStatus::Unhandled
+                            } else {
+                                android_activity::InputStatus::Handled
+                            }
                         }
                         _ => android_activity::InputStatus::Unhandled,
                     }
@@ -1522,6 +1552,27 @@ mod tests {
         // be a safe no-op and return false (don't quit).
         let result = poll_events(0);
         let _ = result;
+    }
+
+    #[test]
+    fn back_falls_through_only_when_gpui_ignores_it() {
+        let back = super::super::keyboard::AKEYCODE_BACK;
+
+        // Nothing in the app took Back: both halves go to the Activity.
+        assert!(key_falls_through_to_activity(back, true, false));
+        assert!(key_falls_through_to_activity(back, false, false));
+
+        // GPUI consumed the key-down: its key-up stays with GPUI as well.
+        assert!(!key_falls_through_to_activity(back, true, true));
+        assert!(!key_falls_through_to_activity(back, false, false));
+
+        // A consumed press does not leak into the next one.
+        assert!(key_falls_through_to_activity(back, true, false));
+        assert!(key_falls_through_to_activity(back, false, false));
+
+        // Every other key stays with GPUI, consumed or not.
+        assert!(!key_falls_through_to_activity(66, true, false));
+        assert!(!key_falls_through_to_activity(66, false, false));
     }
 
     #[test]

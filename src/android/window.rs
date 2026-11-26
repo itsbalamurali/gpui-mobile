@@ -191,6 +191,14 @@ pub type VisibilityCallback = Box<dyn FnMut(bool) + Send + 'static>;
 /// Called when a key event arrives.
 pub type KeyCallback = Box<dyn FnMut(AndroidKeyEvent) + Send + 'static>;
 
+/// Whether GPUI consumed the key event last bridged by `on_input`.
+///
+/// The key callback returns nothing, so the event loop reads this right after
+/// `AndroidWindow::handle_key_event` to decide whether Back falls through to the
+/// Activity. Written and read on the main native thread only.
+pub(super) static LAST_KEY_CONSUMED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Called when the window is resized.
 pub type ResizeCallback = Box<dyn FnMut(Size<DevicePixels>, f32) + Send + 'static>;
 
@@ -1550,7 +1558,8 @@ impl PlatformWindow for AndroidPlatformWindow {
                 };
 
                 let mut guard = cb.lock();
-                let _ = guard(event);
+                let result = guard(event);
+                LAST_KEY_CONSUMED.store(!result.propagate, std::sync::atomic::Ordering::Release);
             });
         }
     }
