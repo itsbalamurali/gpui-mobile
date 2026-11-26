@@ -246,6 +246,45 @@ fn register_metal_view_class() -> &'static AnyClass {
                 touches_cancelled
                     as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
             );
+            unsafe extern "C" fn pinch(
+                this: *mut AnyObject,
+                _sel: Sel,
+                recognizer: *mut AnyObject,
+            ) {
+                #[allow(deprecated)]
+                let window_ptr: *mut std::ffi::c_void = *(*this).get_ivar(GPUI_WINDOW_IVAR);
+                if window_ptr.is_null() {
+                    return;
+                }
+                let window = &*(window_ptr as *const IosWindow);
+                let state: isize = msg_send![recognizer, state];
+                let phase = match state {
+                    1 => gpui::TouchPhase::Started,
+                    2 => gpui::TouchPhase::Moved,
+                    3 => gpui::TouchPhase::Ended,
+                    4 | 5 => gpui::TouchPhase::Cancelled,
+                    _ => return,
+                };
+                let center: super::cg_types::ObjcCGPoint =
+                    msg_send![recognizer, locationInView: this];
+                let scale: f64 = msg_send![recognizer, scale];
+                let Some(delta) = step_pinch_delta(&window.last_pinch_scale, phase, scale as f32)
+                else {
+                    return;
+                };
+                if let Some(callback) = window.input_callback.borrow_mut().as_mut() {
+                    callback(PlatformInput::Pinch(gpui::PinchEvent {
+                        position: point(px(center.x as f32), px(center.y as f32)),
+                        delta,
+                        modifiers: window.modifiers.get(),
+                        phase,
+                    }));
+                }
+            }
+            decl.add_method(
+                sel!(gpuiPinch:),
+                pinch as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
         }
 
         decl.register();
@@ -593,6 +632,7 @@ pub(crate) struct IosWindow {
     active_touches: RefCell<HashMap<usize, gpui::TouchId>>,
     next_touch_id: Cell<u64>,
     fling_guard: RefCell<FlingGuard>,
+    last_pinch_scale: Cell<Option<f32>>,
     /// The wgpu renderer (Metal backend on iOS).
     /// Wrapped in a `Mutex<Option<…>>` so that `draw()` (called from the
     /// `request_frame` callback) can acquire a mutable reference without
@@ -670,6 +710,13 @@ impl IosWindow {
             // Enable user interaction on the Metal view for touch handling
             let _: () = msg_send![view, setUserInteractionEnabled: true];
             let _: () = msg_send![view, setMultipleTouchEnabled: true];
+            let recognizer: *mut AnyObject = msg_send![class!(UIPinchGestureRecognizer), alloc];
+            let recognizer: *mut AnyObject =
+                msg_send![recognizer, initWithTarget: view, action: sel!(gpuiPinch:)];
+            let _: () = msg_send![recognizer, setCancelsTouchesInView: false];
+            let _: () = msg_send![recognizer, setDelaysTouchesEnded: false];
+            let _: () = msg_send![view, addGestureRecognizer: recognizer];
+            let _: () = msg_send![recognizer, release];
 
             // Set the view as the view controller's view
             let _: () = msg_send![view_controller, setView: view];
@@ -726,6 +773,7 @@ impl IosWindow {
                 active_touches: RefCell::new(HashMap::new()),
                 next_touch_id: Cell::new(0),
                 fling_guard: RefCell::new(FlingGuard::new()),
+                last_pinch_scale: Cell::new(None),
                 renderer: Mutex::new(None),
             };
 
@@ -1667,5 +1715,52 @@ impl PlatformAtlas for FallbackAtlas {
 
     fn remove(&self, key: &AtlasKey) {
         self.state.lock().tiles.remove(key);
+    }
+}
+
+fn step_pinch_delta(last: &Cell<Option<f32>>, phase: gpui::TouchPhase, scale: f32) -> Option<f32> {
+    match phase {
+        gpui::TouchPhase::Started => {
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            last.set(Some(scale));
+            Some(0.0)
+        }
+        gpui::TouchPhase::Moved => {
+            if !scale.is_finite() || scale <= 0.0 {
+                return None;
+            }
+            let prev = last.get()?.max(1e-4);
+            last.set(Some(scale));
+            Some((scale / prev).clamp(0.2, 5.0).ln())
+        }
+        gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => last.take().map(|_| 0.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::step_pinch_delta;
+
+    #[test]
+    fn step_pinch_delta_tracks_incremental_log_scale() {
+        let last = Cell::new(None);
+        assert_eq!(step_pinch_delta(&last, gpui::TouchPhase::Moved, 1.5), None);
+        assert_eq!(
+            step_pinch_delta(&last, gpui::TouchPhase::Started, 1.0),
+            Some(0.0)
+        );
+        let d1 = step_pinch_delta(&last, gpui::TouchPhase::Moved, 1.25).unwrap();
+        assert!((d1.exp() - 1.25).abs() < 1e-5);
+        let d2 = step_pinch_delta(&last, gpui::TouchPhase::Moved, 1.5).unwrap();
+        assert!((d2.exp() - 1.2).abs() < 1e-5);
+        assert_eq!(
+            step_pinch_delta(&last, gpui::TouchPhase::Ended, 1.5),
+            Some(0.0)
+        );
+        assert_eq!(last.get(), None);
     }
 }
