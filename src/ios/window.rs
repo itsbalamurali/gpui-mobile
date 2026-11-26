@@ -265,7 +265,7 @@ fn register_metal_view_class() -> &'static AnyClass {
                     4 | 5 => gpui::TouchPhase::Cancelled,
                     _ => return,
                 };
-                let center: objc2_core_foundation::CGPoint =
+                let center: super::cg_types::ObjcCGPoint =
                     msg_send![recognizer, locationInView: this];
                 let scale: f64 = msg_send![recognizer, scale];
                 let Some(delta) = step_pinch_delta(&window.last_pinch_scale, phase, scale as f32)
