@@ -1,15 +1,8 @@
-use super::{
-    OpenFileOptions, SaveFileOptions, SecurityScopedDirectory, SelectedFile, TempExport, TypeGroup,
-};
-use objc2::rc::Retained;
+use super::{OpenFileOptions, SaveFileOptions, SelectedFile, TypeGroup};
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
-use std::cell::RefCell;
-use std::sync::mpsc;
 use std::sync::Once;
 
-#[path = "../permission_handler/ios_completion.rs"]
-mod completion;
 #[path = "ios_delegate.rs"]
 mod delegate;
 #[path = "request.rs"]
@@ -25,61 +18,24 @@ extern "C" {}
 
 static REQUEST: request::Slot = request::Slot::new();
 
-thread_local! {
-    // The document picker delegate and its completion run on the main thread.
-    static DIRECTORY_RESULT: RefCell<Option<mpsc::Sender<SecurityScopedDirectory>>> =
-        const { RefCell::new(None) };
-}
-
-struct DirectoryMailbox {
-    receiver: mpsc::Receiver<SecurityScopedDirectory>,
-}
-
-impl DirectoryMailbox {
-    fn install() -> Result<Self, String> {
-        let (sender, receiver) = mpsc::channel();
-        DIRECTORY_RESULT.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if slot.is_some() {
-                return Err("A directory request is already active".into());
-            }
-            *slot = Some(sender);
-            Ok(Self { receiver })
-        })
+fn ensure_background_thread() -> Result<(), String> {
+    let main: Bool = unsafe { msg_send![class!(NSThread), isMainThread] };
+    if main.as_bool() {
+        return Err(
+            "Call file_selector off the main thread; synchronous UIKit wait cannot block the main run loop"
+                .into(),
+        );
     }
-
-    fn take(&self) -> Result<Option<SecurityScopedDirectory>, String> {
-        match self.receiver.try_recv() {
-            Ok(directory) => Ok(Some(directory)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("Directory result channel disconnected".into())
-            }
-        }
-    }
-}
-
-impl Drop for DirectoryMailbox {
-    fn drop(&mut self) {
-        DIRECTORY_RESULT.with(|slot| {
-            slot.borrow_mut().take();
-        });
-    }
+    Ok(())
 }
 
 fn set_result_channel() -> Result<request::Request<'static>, String> {
-    let main: objc2::runtime::Bool = unsafe { msg_send![class!(NSThread), isMainThread] };
-    if !main.as_bool() {
-        return Err("Call the iOS document picker on the main thread".into());
-    }
+    ensure_background_thread()?;
     REQUEST.begin()
 }
 
 fn set_export_result_channel() -> Result<request::Request<'static>, String> {
-    let main: objc2::runtime::Bool = unsafe { msg_send![class!(NSThread), isMainThread] };
-    if !main.as_bool() {
-        return Err("Call the iOS document picker on the main thread".into());
-    }
+    ensure_background_thread()?;
     REQUEST.begin_export()
 }
 
@@ -123,14 +79,6 @@ unsafe extern "C" fn did_pick_documents(
         return;
     };
     if !token.claim() {
-        return;
-    }
-    if delegate::is_directory(this) {
-        let result = match deliver_directory(urls) {
-            Ok(()) => Ok(vec![]),
-            Err(error) => Err(error),
-        };
-        delegate::dismiss(controller, token, result, true, None);
         return;
     }
     if delegate::is_export(this) {
@@ -183,7 +131,7 @@ unsafe extern "C" fn did_pick_documents(
                 objc2::rc::autoreleasepool(|_| {
                     let mut imported = request::Imports::new();
                     for (path, scope) in selected {
-                        imported.push(completion::import_file(&path)?);
+                        imported.push(import_file(&path)?);
                         drop(scope);
                     }
                     Ok(imported.take())
@@ -272,37 +220,48 @@ unsafe fn url_path(url: *const AnyObject) -> Result<String, String> {
         .into_owned())
 }
 
-/// Start access for the one selected folder and hand ownership to the waiting
-/// request. Every failure path drops the handle, which stops a successful start.
-unsafe fn deliver_directory(urls: *mut AnyObject) -> Result<(), String> {
-    let count: usize = msg_send![urls, count];
-    if count != 1 {
-        return Err("Directory picker must return exactly one folder".into());
-    }
-    let url: *mut AnyObject = msg_send![urls, objectAtIndex: 0usize];
-    let url = Retained::retain(url).ok_or("Directory picker returned no folder URL")?;
-    let started: bool = msg_send![&*url, startAccessingSecurityScopedResource];
-    if !started {
-        return Err("iOS did not grant access to the selected directory".into());
-    }
-    let path = match url_path(Retained::as_ptr(&url)) {
-        Ok(path) => std::path::PathBuf::from(path),
-        Err(error) => {
-            let _: () = msg_send![&*url, stopAccessingSecurityScopedResource];
-            return Err(error);
+fn private_import_directory() -> Result<std::path::PathBuf, String> {
+    unsafe {
+        extern "C" {
+            fn NSSearchPathForDirectoriesInDomains(
+                directory: u64,
+                domain_mask: u64,
+                expand_tilde: bool,
+            ) -> *mut AnyObject;
         }
-    };
-    if let Err(error) = super::validate_directory_path(&path) {
-        let _: () = msg_send![&*url, stopAccessingSecurityScopedResource];
-        return Err(error);
+        let paths = NSSearchPathForDirectoriesInDomains(14, 1, true);
+        if paths.is_null() {
+            return Err("Application Support directory unavailable".into());
+        }
+        let count: usize = msg_send![paths, count];
+        if count == 0 {
+            return Err("Application Support directory unavailable".into());
+        }
+        let value: *mut AnyObject = msg_send![paths, objectAtIndex: 0usize];
+        let utf8: *const std::ffi::c_char = msg_send![value, UTF8String];
+        if utf8.is_null() {
+            return Err("Application Support path unavailable".into());
+        }
+        let path =
+            std::path::PathBuf::from(std::ffi::CStr::from_ptr(utf8).to_string_lossy().as_ref())
+                .join("gpui-picker-imports")
+                .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("Create private import directory: {e}"))?;
+        Ok(path)
     }
-    let directory = SecurityScopedDirectory::new(path, url);
-    match DIRECTORY_RESULT.with(|slot| slot.borrow_mut().take()) {
-        Some(sender) => sender
-            .send(directory)
-            .map_err(|_| "Directory request was cancelled before delivery".to_string()),
-        None => Err("No directory request is waiting".into()),
+}
+
+fn import_file(source: &std::path::Path) -> Result<String, String> {
+    let name = source.file_name().ok_or("Selected file has no name")?;
+    let directory = private_import_directory()?;
+    let destination = directory.join(name);
+    if let Err(error) = std::fs::copy(source, &destination) {
+        let _ = std::fs::remove_file(&destination);
+        let _ = std::fs::remove_dir(&directory);
+        return Err(format!("Import selected file: {error}"));
     }
+    Ok(destination.to_string_lossy().into_owned())
 }
 
 unsafe extern "C" fn did_cancel(this: *mut AnyObject, _: Sel, controller: *mut AnyObject) {
@@ -407,215 +366,90 @@ unsafe fn present_picker(picker: *mut AnyObject) -> Result<(), String> {
     Ok(())
 }
 
-struct PendingPresentation {
-    picker: *mut AnyObject,
-    token: request::Token,
-}
-
-unsafe extern "C" fn present_picker_callback(context: *mut std::ffi::c_void) {
-    let pending = Box::from_raw(context.cast::<PendingPresentation>());
-    if !pending.token.is_open() {
-        let _: () = msg_send![pending.picker, release];
-        return;
+fn dispatch_to_main<F>(token: request::Token, f: F)
+where
+    F: FnOnce(request::Token) -> Result<(), String> + Send + 'static,
+{
+    struct Pending<F> {
+        token: request::Token,
+        f: F,
     }
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        objc2::rc::autoreleasepool(|_| present_picker(pending.picker))
-    }))
-    .unwrap_or_else(|_| Err("Document picker presentation panicked".into()));
-    let _: () = msg_send![pending.picker, release];
-    if let Err(error) = result {
-        pending.token.finish(Err(error));
-    }
-}
-
-unsafe fn present_picker_async(picker: *mut AnyObject, token: request::Token) {
-    let pending = Box::into_raw(Box::new(PendingPresentation { picker, token }));
-    crate::ios::dispatch_async_f(
-        crate::ios::dispatch_get_main_queue(),
-        pending.cast(),
-        Some(present_picker_callback),
-    );
-}
-
-struct PreparedPicker {
-    request: request::Request<'static>,
-    picker: *mut AnyObject,
-}
-
-fn prepare_picker(options: &OpenFileOptions, multiple: bool) -> Result<PreparedPicker, String> {
-    let request = set_result_channel()?;
-    unsafe {
-        let content_types = if options.accept_type_groups.is_empty() {
-            let ut = uttype_from_identifier("public.item");
-            nsarray_from_objects(&[ut])
-        } else {
-            let mut all_types: Vec<*mut AnyObject> = Vec::new();
-            for group in &options.accept_type_groups {
-                let arr = type_group_to_uttypes(group);
-                let count: usize = msg_send![arr, count];
-                for index in 0..count {
-                    all_types.push(msg_send![arr, objectAtIndex: index]);
-                }
-            }
-            nsarray_from_objects(&all_types)
-        };
-
-        let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut AnyObject =
-            msg_send![picker, initForOpeningContentTypes: content_types, asCopy: false];
-        if picker.is_null() {
-            return Err("Failed to create UIDocumentPickerViewController".into());
+    unsafe extern "C" fn run<F>(context: *mut std::ffi::c_void)
+    where
+        F: FnOnce(request::Token) -> Result<(), String> + Send + 'static,
+    {
+        let pending = Box::from_raw(context.cast::<Pending<F>>());
+        if !pending.token.is_open() {
+            return;
         }
-        let _: () = msg_send![picker,
-            setAllowsMultipleSelection: objc2::runtime::Bool::from(multiple)
-        ];
-
-        let delegate_cls = delegate_class();
-        let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
-        let delegate: *mut AnyObject = msg_send![delegate, init];
-        delegate::bind(picker, delegate, request.token.clone())?;
-        Ok(PreparedPicker { request, picker })
-    }
-}
-
-struct PickerController(*mut AnyObject);
-
-// The retained UIKit controller is moved with the session, but it is only
-// messaged or released in a main-queue callback.
-unsafe impl Send for PickerController {}
-
-impl Drop for PickerController {
-    fn drop(&mut self) {
-        unsafe {
-            crate::ios::dispatch_async_f(
-                crate::ios::dispatch_get_main_queue(),
-                self.0.cast(),
-                Some(release_picker_callback),
-            );
-        }
-    }
-}
-
-unsafe extern "C" fn release_picker_callback(context: *mut std::ffi::c_void) {
-    let picker = context.cast::<AnyObject>();
-    let _: () = msg_send![picker, release];
-}
-
-pub(super) struct PromptSession {
-    request: request::Request<'static>,
-    multiple: bool,
-    controller: PickerController,
-}
-
-impl PromptSession {
-    pub(super) fn cancel(self, error: String) {
-        let token = self.request.token.clone();
-        if token.claim() && token.begin_dismissal() {
-            let picker = self.controller.0;
-            unsafe {
-                delegate::dismiss(
-                    picker,
-                    token,
-                    Err(error),
-                    false,
-                    Some(Box::new(move || drop(self))),
-                )
-            };
-        } else {
+        let token = pending.token.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            objc2::rc::autoreleasepool(|_| (pending.f)(pending.token))
+        }))
+        .unwrap_or_else(|_| Err("Document picker presentation panicked".into()));
+        if let Err(error) = result {
             token.finish(Err(error));
         }
     }
 
-    fn cancel_async(self, error: String) {
-        let pending = Box::new(PendingCancellation {
-            session: self,
-            error,
-        });
-        unsafe {
-            crate::ios::dispatch_async_f(
-                crate::ios::dispatch_get_main_queue(),
-                Box::into_raw(pending).cast(),
-                Some(cancel_prompt_callback),
+    let pending = Box::into_raw(Box::new(Pending { token, f }));
+    unsafe {
+        extern "C" {
+            fn dispatch_async_f(
+                queue: *mut std::ffi::c_void,
+                context: *mut std::ffi::c_void,
+                work: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
             );
         }
-    }
-
-    pub(super) fn wait_cancellable(self, cancelled: impl Fn() -> bool) -> PromptWaitResult {
-        let result = wait_for_picker(&self.request.receiver, &cancelled);
-        match result {
-            Ok(result) => PromptWaitResult::Complete(
-                result.and_then(|paths| picker_paths(self.multiple, paths)),
-            ),
-            Err(_error) if cancelled() => {
-                self.cancel_async("Document picker request was dropped".into());
-                PromptWaitResult::Cancelled
-            }
-            Err(error) => PromptWaitResult::Complete(Err(error)),
-        }
+        dispatch_async_f(
+            crate::ios::dispatch_get_main_queue(),
+            pending.cast(),
+            Some(run::<F>),
+        );
     }
 }
 
-fn wait_for_picker(
-    receiver: &std::sync::mpsc::Receiver<request::PickerResult>,
-    cancelled: impl Fn() -> bool,
-) -> Result<request::PickerResult, String> {
-    completion::wait_cancellable(receiver, || !cancelled())
+unsafe fn present_and_release(picker: *mut AnyObject) -> Result<(), String> {
+    let presented = present_picker(picker);
+    let _: () = msg_send![picker, release];
+    presented
 }
 
-pub(super) enum PromptWaitResult {
-    Complete(Result<Vec<std::path::PathBuf>, String>),
-    Cancelled,
-}
-
-struct PendingCancellation {
-    session: PromptSession,
-    error: String,
-}
-
-unsafe extern "C" fn cancel_prompt_callback(context: *mut std::ffi::c_void) {
-    let pending = Box::from_raw(context.cast::<PendingCancellation>());
-    pending.session.cancel(pending.error);
-}
-
-fn picker_paths(multiple: bool, paths: Vec<String>) -> Result<Vec<std::path::PathBuf>, String> {
-    if !multiple && paths.len() > 1 {
-        request::discard(&paths);
-        return Err("Single document picker returned multiple files".into());
-    }
-    let mut selected = Vec::with_capacity(paths.len());
-    for path in &paths {
-        let path = std::path::PathBuf::from(path.as_str());
-        if !path.is_absolute() || !path.is_file() {
-            request::discard(&paths);
-            return Err("Picker did not return an imported filesystem file".into());
-        }
-        selected.push(path);
-    }
-    Ok(selected)
-}
-
-pub(super) fn begin_prompt(
+unsafe fn build_and_present_open_picker(
     options: &OpenFileOptions,
     multiple: bool,
-) -> Result<PromptSession, String> {
-    let PreparedPicker { request, picker } = prepare_picker(options, multiple)?;
-    if let Err(error) = unsafe { present_picker(picker) } {
-        let _: () = unsafe { msg_send![picker, release] };
-        return Err(error);
-    }
-    Ok(PromptSession {
-        request,
-        multiple,
-        controller: PickerController(picker),
-    })
-}
+    token: request::Token,
+) -> Result<(), String> {
+    let content_types = if options.accept_type_groups.is_empty() {
+        let ut = uttype_from_identifier("public.item");
+        nsarray_from_objects(&[ut])
+    } else {
+        let mut all_types: Vec<*mut AnyObject> = Vec::new();
+        for group in &options.accept_type_groups {
+            let arr = type_group_to_uttypes(group);
+            let count: usize = msg_send![arr, count];
+            for index in 0..count {
+                all_types.push(msg_send![arr, objectAtIndex: index]);
+            }
+        }
+        nsarray_from_objects(&all_types)
+    };
 
-pub(super) fn discard_paths(paths: &[std::path::PathBuf]) {
-    let paths: Vec<String> = paths
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect();
-    request::discard(&paths);
+    let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
+    let picker: *mut AnyObject =
+        msg_send![picker, initForOpeningContentTypes: content_types, asCopy: false];
+    if picker.is_null() {
+        return Err("Failed to create UIDocumentPickerViewController".into());
+    }
+    let _: () = msg_send![picker,
+        setAllowsMultipleSelection: Bool::from(multiple)
+    ];
+
+    let delegate_cls = delegate_class();
+    let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
+    let delegate: *mut AnyObject = msg_send![delegate, init];
+    delegate::bind(picker, delegate, token)?;
+    present_and_release(picker)
 }
 
 fn url_to_selected_file(url_string: &str) -> SelectedFile {
@@ -633,13 +467,18 @@ fn url_to_selected_file(url_string: &str) -> SelectedFile {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, String> {
-    let PreparedPicker { request, picker } = prepare_picker(options, false)?;
-    unsafe {
-        present_picker_async(picker, request.token.clone());
-    }
+    let request = set_result_channel()?;
+    let options = options.clone();
+    dispatch_to_main(request.token.clone(), move |token| unsafe {
+        build_and_present_open_picker(&options, false, token)
+    });
 
     // Wait for result (blocks until user picks or cancels)
-    match completion::wait(&request.receiver)? {
+    match request
+        .receiver
+        .recv()
+        .map_err(|_| "Document picker closed without a result".to_string())?
+    {
         Ok(paths) if paths.is_empty() => Ok(None),
         Ok(paths) if paths.len() != 1 => {
             request::discard(&paths);
@@ -651,29 +490,35 @@ pub fn open_file(options: &OpenFileOptions) -> Result<Option<SelectedFile>, Stri
 }
 
 pub fn open_files(options: &OpenFileOptions) -> Result<Vec<SelectedFile>, String> {
-    let PreparedPicker { request, picker } = prepare_picker(options, true)?;
-    unsafe {
-        present_picker_async(picker, request.token.clone());
-    }
+    let request = set_result_channel()?;
+    let options = options.clone();
+    dispatch_to_main(request.token.clone(), move |token| unsafe {
+        build_and_present_open_picker(&options, true, token)
+    });
 
-    match completion::wait(&request.receiver)? {
+    match request
+        .receiver
+        .recv()
+        .map_err(|_| "Document picker closed without a result".to_string())?
+    {
         Ok(paths) => Ok(paths.iter().map(|p| url_to_selected_file(p)).collect()),
         Err(error) => Err(error),
     }
 }
 
-pub fn get_save_path(_options: &SaveFileOptions) -> Result<Option<String>, String> {
-    Err("iOS cannot return a writable save path without exporting file contents; this path-only API is unsupported".into())
-}
+pub fn get_save_path(options: &SaveFileOptions) -> Result<Option<String>, String> {
+    let request = set_export_result_channel()?;
+    let suggested_name = options
+        .suggested_name
+        .as_deref()
+        .unwrap_or("untitled")
+        .to_string();
+    dispatch_to_main(request.token.clone(), move |token| unsafe {
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(&suggested_name);
+        let _ = std::fs::write(&temp_file, b"");
 
-pub fn export_file(
-    options: &SaveFileOptions,
-    contents: &[u8],
-) -> Result<Option<SelectedFile>, String> {
-    let rx = set_export_result_channel()?;
-    let source = TempExport::new(options.suggested_name.as_deref(), contents)?;
-    unsafe {
-        let ns_path = crate::ios::util::nsstring(&source.path().to_string_lossy());
+        let ns_path = nsstring(&temp_file.to_string_lossy());
         let file_url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_path];
         if file_url.is_null() {
             return Err("Failed to create export file URL".into());
@@ -681,15 +526,12 @@ pub fn export_file(
         let urls: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: file_url];
 
         let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
-        let picker: *mut AnyObject = msg_send![picker,
-            initForExportingURLs: urls,
-            asCopy: objc2::runtime::Bool::from(true)
-        ];
+        let picker: *mut AnyObject =
+            msg_send![picker, initForExportingURLs: urls, asCopy: Bool::from(true)];
         if picker.is_null() {
             return Err("Failed to create export document picker".into());
         }
-        let _: () = msg_send![picker,
-            setAllowsMultipleSelection: objc2::runtime::Bool::from(false)];
+        let _: () = msg_send![picker, setAllowsMultipleSelection: Bool::from(false)];
 
         let delegate_cls = delegate_class();
         let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
@@ -699,27 +541,24 @@ pub fn export_file(
             return Err("Cannot allocate picker delegate".into());
         }
         delegate::mark_export(delegate);
-        delegate::bind(picker, delegate, rx.token.clone())?;
+        delegate::bind(picker, delegate, token)?;
+        present_and_release(picker)
+    });
 
-        let presented = present_picker(picker);
-        let _: () = msg_send![picker, release];
-        presented?;
-    }
-
-    match completion::wait(&rx.receiver)? {
+    match request
+        .receiver
+        .recv()
+        .map_err(|_| "Document picker closed without a result".to_string())?
+    {
         Ok(paths) if paths.is_empty() => Ok(None),
-        Ok(paths) if paths.len() != 1 => {
-            Err("Export document picker returned multiple destinations".into())
-        }
-        Ok(paths) => Ok(Some(url_to_selected_file(&paths[0]))),
+        Ok(paths) => Ok(Some(paths[0].clone())),
         Err(error) => Err(error),
     }
 }
 
-pub fn open_directory() -> Result<Option<SecurityScopedDirectory>, String> {
-    let rx = set_result_channel()?;
-    let directory = DirectoryMailbox::install()?;
-    unsafe {
+pub fn get_directory_path(_initial_directory: Option<&str>) -> Result<Option<String>, String> {
+    let request = set_export_result_channel()?;
+    dispatch_to_main(request.token.clone(), move |token| unsafe {
         let folder = uttype_from_identifier("public.folder");
         if folder.is_null() {
             return Err("Failed to create the folder content type".into());
@@ -727,17 +566,12 @@ pub fn open_directory() -> Result<Option<SecurityScopedDirectory>, String> {
         let content_types = nsarray_from_objects(&[folder]);
 
         let picker: *mut AnyObject = msg_send![class!(UIDocumentPickerViewController), alloc];
-        // Original URLs are security-scoped; an imported copy would not be a directory grant.
-        let picker: *mut AnyObject = msg_send![
-            picker,
-            initForOpeningContentTypes: content_types,
-            asCopy: objc2::runtime::Bool::from(false)
-        ];
+        let picker: *mut AnyObject =
+            msg_send![picker, initForOpeningContentTypes: content_types, asCopy: false];
         if picker.is_null() {
             return Err("Failed to create directory document picker".into());
         }
-        let _: () = msg_send![picker,
-            setAllowsMultipleSelection: objc2::runtime::Bool::from(false)];
+        let _: () = msg_send![picker, setAllowsMultipleSelection: Bool::from(false)];
 
         let delegate_cls = delegate_class();
         let delegate: *mut AnyObject = msg_send![delegate_cls, alloc];
@@ -746,69 +580,18 @@ pub fn open_directory() -> Result<Option<SecurityScopedDirectory>, String> {
             let _: () = msg_send![picker, release];
             return Err("Cannot allocate picker delegate".into());
         }
-        delegate::mark_directory(delegate);
-        delegate::bind(picker, delegate, rx.token.clone())?;
+        delegate::mark_export(delegate);
+        delegate::bind(picker, delegate, token)?;
+        present_and_release(picker)
+    });
 
-        let presented = present_picker(picker);
-        let _: () = msg_send![picker, release];
-        presented?;
-    }
-
-    match completion::wait(&rx.receiver)? {
-        Ok(_) => directory.take(),
+    match request
+        .receiver
+        .recv()
+        .map_err(|_| "Document picker closed without a result".to_string())?
+    {
+        Ok(paths) if paths.is_empty() => Ok(None),
+        Ok(paths) => Ok(Some(paths[0].clone())),
         Err(error) => Err(error),
-    }
-}
-
-pub fn get_directory_path(_initial_directory: Option<&str>) -> Result<Option<String>, String> {
-    Err("iOS directory access requires a security-scoped lifetime which this path-only API cannot represent".into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{mpsc, Arc};
-    use std::time::Duration;
-
-    #[test]
-    fn live_receiver_keeps_picker_wait_open() {
-        let (sender, receiver) = mpsc::channel();
-        let provider = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(30));
-            sender.send(Ok(vec![])).unwrap();
-        });
-
-        let result = wait_for_picker(&receiver, || false);
-        provider.join().unwrap();
-
-        assert_eq!(result, Ok(Ok(vec![])));
-    }
-
-    #[test]
-    fn cancellation_ends_picker_wait() {
-        let (_sender, receiver) = mpsc::channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let waiter_cancelled = cancelled.clone();
-        let (result_sender, result_receiver) = mpsc::channel();
-        let waiter = std::thread::spawn(move || {
-            result_sender
-                .send(wait_for_picker(&receiver, || {
-                    waiter_cancelled.load(Ordering::Acquire)
-                }))
-                .unwrap();
-        });
-
-        std::thread::sleep(Duration::from_millis(30));
-        cancelled.store(true, Ordering::Release);
-        let result = result_receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("cancellation must end the picker wait");
-        waiter.join().unwrap();
-
-        assert_eq!(
-            result,
-            Err("Native operation closed during completion".into())
-        );
     }
 }

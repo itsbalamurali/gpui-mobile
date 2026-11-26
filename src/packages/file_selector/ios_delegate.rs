@@ -1,5 +1,5 @@
 //! Per-controller token; no callback ever targets a global/current sender.
-use super::{completion, request};
+use super::request;
 use objc2::runtime::{AnyObject, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 use std::ffi::c_void;
@@ -22,15 +22,6 @@ unsafe fn export_pointer(delegate: *mut AnyObject) -> *mut *mut c_void {
         .load_ptr(object)
 }
 
-unsafe fn directory_pointer(delegate: *mut AnyObject) -> *mut *mut c_void {
-    let object = &*delegate;
-    object
-        .class()
-        .instance_variable(c"gpui_directory")
-        .unwrap()
-        .load_ptr(object)
-}
-
 /// The same delegate class serves import and export pickers. Export callbacks
 /// must return the destination instead of copying the destination into app storage.
 pub unsafe fn mark_export(delegate: *mut AnyObject) {
@@ -39,15 +30,6 @@ pub unsafe fn mark_export(delegate: *mut AnyObject) {
 
 pub unsafe fn is_export(delegate: *mut AnyObject) -> bool {
     !(*export_pointer(delegate)).is_null()
-}
-
-/// Directory callbacks retain the original URL and start its security scope.
-pub unsafe fn mark_directory(delegate: *mut AnyObject) {
-    *directory_pointer(delegate) = 1usize as *mut c_void;
-}
-
-pub unsafe fn is_directory(delegate: *mut AnyObject) -> bool {
-    !(*directory_pointer(delegate)).is_null()
 }
 
 pub unsafe fn token(delegate: *mut AnyObject) -> Option<request::Token> {
@@ -65,13 +47,35 @@ pub unsafe fn bind(
     }
     *token_pointer(delegate) = Box::into_raw(Box::new(token)).cast();
     // UIDocumentPickerDelegate owns result delivery; presentation dismissal can precede it.
-    completion::set_picker_delegate(picker, delegate)?;
+    set_picker_delegate(picker, delegate)?;
+    Ok(())
+}
+
+/// UIKit picker delegate properties are weak; retain until the picker is freed.
+unsafe fn set_picker_delegate(
+    picker: *mut AnyObject,
+    delegate: *mut AnyObject,
+) -> Result<(), String> {
+    if delegate.is_null() {
+        return Err("Failed to allocate picker delegate".into());
+    }
+    extern "C" {
+        fn objc_setAssociatedObject(
+            object: *mut AnyObject,
+            key: *const u8,
+            value: *mut AnyObject,
+            policy: usize,
+        );
+    }
+    static KEY: u8 = 0;
+    objc_setAssociatedObject(picker, &KEY, delegate, 1);
+    let _: () = msg_send![picker, setDelegate: delegate];
+    let _: () = msg_send![delegate, release];
     Ok(())
 }
 pub unsafe fn register(builder: &mut ClassBuilder) {
     builder.add_ivar::<*mut c_void>(c"gpui_request");
     builder.add_ivar::<*mut c_void>(c"gpui_export");
-    builder.add_ivar::<*mut c_void>(c"gpui_directory");
     builder.add_method(
         sel!(dealloc),
         dealloc as unsafe extern "C" fn(*mut AnyObject, Sel),
