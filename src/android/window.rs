@@ -1416,7 +1416,6 @@ impl PlatformWindow for AndroidPlatformWindow {
             let surface_new = force_render_once.swap(false, std::sync::atomic::Ordering::AcqRel);
 
             let mut cb = send_callback.lock();
-            //I added signal_at and signal_source after updating gpui to v0.3.11
             cb(RequestFrameOptions {
                 require_presentation: false,
                 force_render: text_dirty || surface_new,
