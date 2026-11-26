@@ -551,22 +551,29 @@ impl AndroidPlatform {
     /// Deliver URLs from an implicit or explicit intent.
     pub fn deliver_open_urls(&self, urls: Vec<String>) {
         log::debug!("AndroidPlatform: delivering {} URL(s)", urls.len());
-        if let Some(cb) = self.state.lock().open_urls_callback.as_mut() {
+        // Take the callback out of the mutex so it can call back into the platform.
+        let callback = self.state.lock().open_urls_callback.take();
+        if let Some(mut cb) = callback {
             cb(urls);
+            self.state.lock().open_urls_callback.get_or_insert(cb);
         }
     }
 
     /// Notify the platform that the keyboard layout has changed.
     pub fn notify_keyboard_layout_change(&self) {
-        if let Some(cb) = self.state.lock().keyboard_layout_callback.as_mut() {
+        let callback = self.state.lock().keyboard_layout_callback.take();
+        if let Some(mut cb) = callback {
             cb();
+            self.state.lock().keyboard_layout_callback.get_or_insert(cb);
         }
     }
 
     /// Deliver a "reopen" event (app tapped in recents while already running).
     pub fn deliver_reopen(&self) {
-        if let Some(cb) = self.state.lock().reopen_callback.as_mut() {
+        let callback = self.state.lock().reopen_callback.take();
+        if let Some(mut cb) = callback {
             cb();
+            self.state.lock().reopen_callback.get_or_insert(cb);
         }
     }
 
@@ -949,7 +956,10 @@ impl AndroidPlatform {
     ///
     /// Useful in headless tests where there is no real ALooper.
     pub fn flush_main_thread_tasks(&self) {
-        self.state.lock().dispatcher.flush_main_thread_tasks();
+        // Tasks may call back into the platform (`primary_window`, `window_count`,
+        // ...), so the state lock must not be held while they run.
+        let dispatcher = self.state.lock().dispatcher.clone();
+        dispatcher.flush_main_thread_tasks();
     }
 }
 
@@ -1715,6 +1725,34 @@ mod tests {
     fn flush_main_thread_tasks_no_panic() {
         // There are no tasks queued, so this should be a no-op.
         headless().flush_main_thread_tasks();
+    }
+
+    #[test]
+    fn flush_main_thread_tasks_runs_tasks_that_call_the_platform() {
+        // A queued task that calls back into the platform must not deadlock on
+        // the state lock; run the flush on a thread so a regression times out
+        // instead of hanging the test run.
+        let p = Arc::new(headless());
+        let p2 = p.clone();
+        p.foreground_executor().dispatch_on_main_thread(move || {
+            assert!(p2.primary_window().is_none());
+            assert_eq!(p2.window_count(), 0);
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p3 = p.clone();
+        std::thread::spawn(move || {
+            p3.flush_main_thread_tasks();
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("flush_main_thread_tasks deadlocked on the platform state lock")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the queued task or the flush panicked")
+            }
+        }
     }
 
     // ── tick ─────────────────────────────────────────────────────────────────
