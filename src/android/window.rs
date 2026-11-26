@@ -1588,6 +1588,11 @@ impl PlatformWindow for AndroidPlatformWindow {
                     position: gpui::point(gpui::px(touch.x / scale), gpui::px(touch.y / scale)),
                     predicted_position: None,
                     force: None,
+                    // GPUI estimates release velocity from this. The input
+                    // queue is drained between frames, so after a slow one
+                    // samples arrive bunched together (a Galaxy A50 flung
+                    // far faster than the finger moved).
+                    timestamp: touch.sampled_at(),
                 };
                 let mut cb = cb.lock();
                 fling_guard.relay(event, &mut next_touch_id, |event| {
@@ -2166,6 +2171,7 @@ mod tests {
             x: 100.0,
             y: 200.0,
             action: 0,
+            event_time_ns: None,
         });
 
         let pts = received.lock();
@@ -2277,6 +2283,7 @@ mod tests {
             x: 100.,
             y,
             action,
+            event_time_ns: None,
         });
     }
 
@@ -2333,6 +2340,7 @@ mod tests {
             x: 120.,
             y: 220.,
             action: 0,
+            event_time_ns: None,
         });
         send_touch(&window, 1, 200.);
         send_touch(&window, 0, 200.);

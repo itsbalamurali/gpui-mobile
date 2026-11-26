@@ -100,6 +100,7 @@ impl FlingGuard {
                             position: event.position,
                             predicted_position: None,
                             force: None,
+                            timestamp: event.timestamp,
                         });
                     }
                 }
@@ -149,6 +150,7 @@ mod tests {
             position: point(px(x), px(y)),
             predicted_position: None,
             force: None,
+            timestamp: None,
         }
     }
 
