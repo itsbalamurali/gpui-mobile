@@ -23,9 +23,9 @@
 //!    demand from inside the tick, which posts the next callback.
 //!
 //! Between frames the loop blocks on the looper for as long as
-//! [`poll_timeout`] allows; input, main-thread tasks and lifecycle commands
-//! all reach the looper through their own file descriptors, so nothing is
-//! missed while it sleeps.
+//! [`poll_timeout`] allows; input and lifecycle commands reach the looper
+//! through their own file descriptors and main-thread tasks wake it with
+//! `ALooper_wake`, so nothing is missed while it sleeps.
 //!
 //! The choreographer lives on its own thread rather than the loop's looper
 //! because `android-activity` treats every looper source it did not register
