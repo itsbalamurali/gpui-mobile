@@ -128,17 +128,33 @@ impl Default for SystemChromeStyle {
 ///
 /// On unsupported platforms this is a no-op.
 pub fn set_system_chrome(style: &SystemChromeStyle) {
+    apply_system_chrome(style, None);
+}
+
+/// Apply system chrome styling with an explicit Android navigation bar icon style.
+pub fn set_system_chrome_with_navigation_bar_style(
+    style: &SystemChromeStyle,
+    navigation_bar_style: StatusBarContentStyle,
+) {
+    apply_system_chrome(style, Some(navigation_bar_style));
+}
+
+fn apply_system_chrome(
+    style: &SystemChromeStyle,
+    navigation_bar_style: Option<StatusBarContentStyle>,
+) {
     #[cfg(target_os = "ios")]
     {
+        let _ = navigation_bar_style;
         ios::set_status_bar_style(style.status_bar_style);
     }
     #[cfg(target_os = "android")]
     {
-        android::jni::set_system_chrome(style);
+        android::jni::set_system_chrome_with_navigation_bar_style(style, navigation_bar_style);
     }
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
-        let _ = style;
+        let _ = (style, navigation_bar_style);
     }
 }
 
